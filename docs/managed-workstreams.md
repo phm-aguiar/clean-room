@@ -1,0 +1,494 @@
+# Workstreams gerenciados entre harnesses
+
+> **Escopo:** este documento contém partes que dependem de LLM ou de embeddings. Essas partes são opcionais e não fazem parte do escopo inicial, que funciona sem LLM. Podem ser removidas ou adiadas junto com as funções correspondentes.
+
+`ai-memory run` é um lançador opcional que permite a uma mesma sessão de trabalho de código passar entre Claude Code, Codex, OpenCode, OpenCode 2 (beta), Pi, Crush, Oh My Pi, Kimi Code, Command Code, Kiro CLI (motores v2 e v3), Grok Build e Antigravity CLI. Execuções diretas do harness mantêm o comportamento atual do ai-memory. Não há modo global nem comando `switch`: usar `run` seleciona o workstream atual e cria ou retoma, de forma transparente, a sessão nativa correta para o harness pedido.
+
+Este documento descreve o ciclo de vida de uma execução gerenciada: lease, heartbeat, estados, lançamento, contexto entregue, importação de eventos, cancelamento e jail. A leitura de transcrições de cada harness (formatos, cursores e normalização) está em [Adaptadores de harness gerenciados](harness-adapters.md) e não é repetida aqui.
+
+**Recomendação:** `ai-memory run` é a forma preferida de iniciar um harness. Na primeira vez que um harness é lançado por ele, os hooks e o MCP do ai-memory desse harness são instalados automaticamente, se ainda não estiverem configurados (ver [Auto-wire](#auto-wire)). Assim, captura e recuperação funcionam sem `install-hooks` separado.
+
+## Conceitos
+
+- **Workstream:** linha lógica de trabalho. Pertence a um escopo `(workspace, projeto, fingerprint do repositório, fingerprint do worktree)`. Tem nome, único dentro do checkout, e identificador estável (UUID).
+- **Execução gerenciada (run):** uma invocação do harness feita por `run`. Tem identificador próprio e um lease.
+- **Lease:** reserva exclusiva de um workstream por uma execução. Só uma execução ativa por workstream. Dura 90 segundos e é renovada pelo heartbeat.
+- **Sessão nativa vinculada:** a sessão do harness (identificador nativo) associada ao workstream para aquele harness. Cada workstream tem no máximo uma sessão atual por harness.
+- **Ledger:** eventos portáveis do workstream (mensagens visíveis, chamadas e resultados de ferramentas concluídos, resumos de compactação, checkpoints do repositório e notas de importação). Append-only, com número de sequência crescente por workstream.
+- **Cursor de origem:** até onde o transcript nativo já foi lido. Pertence à sessão nativa.
+- **Cursor de entrega:** até qual sequência do ledger o contexto já foi entregue àquela sessão nativa.
+
+### Estados de uma execução
+
+| Estado | Significado | Transições |
+|---|---|---|
+| `active` | Lease em posse da execução. Um lease vencido continua `active` até que outra preparação ou um cancelamento o encerre. | Para `finished` ao concluir a importação. Para `expired` ao cancelar, ao ser substituída por nova preparação ou por recuperação forçada. |
+| `finished` | Transcript importado e execução encerrada normalmente. | Terminal. |
+| `expired` | Lease liberado sem importar eventos (cancelamento, falha tratada, substituição ou recuperação forçada). | Terminal. |
+
+Um lease vencido não muda de estado por si só: a transição para `expired` acontece na próxima preparação do mesmo workstream, ou em um cancelamento explícito.
+
+## Quando usar
+
+Talvez não seja necessário no começo, porque os hooks já carregam a maior parte da continuidade.
+
+- **Não use** quando basta passar o contexto de uma sessão para outra. Ao sair de um harness no meio de uma tarefa e abrir outro no mesmo diretório, a sessão seguinte começa com o que estava em andamento, o que falhou e o que ficou aberto. Isso funciona só com a instalação dos hooks, sem `run`.
+- **Use** quando você quer que a retomada nativa do harness (por exemplo, `claude --resume` ou o seletor de sessões) continue valendo depois de trocar de harness. O ledger grava o fluxo visível de eventos de forma portável, e `continue` reabre o mesmo workstream em outro agente com o histórico de ferramentas, não só um resumo.
+
+Se você nunca troca de harness no meio de um workstream, o caminho padrão é mais simples e não perde nada.
+
+## Uso
+
+```bash
+cd /caminho/do/projeto
+
+ai-memory run claude
+# saia do Claude Code e continue o mesmo workstream no Codex
+ai-memory run codex --yolo
+# volte ao Claude Code depois; o ai-memory fornece o seletor nativo de retomada
+ai-memory run claude --model opus
+# qualquer nome que comece com "claude" é aceito (ver "Múltiplas contas Claude")
+ai-memory run claude-corp
+# Kimi Code instala "kimi"; "kimi-cli" é aceito como alias do lançador
+ai-memory run kimi-cli
+# Command Code usa "command-code" em Unix e "cmdc" no Windows nativo
+ai-memory run command-code
+# Kiro usa o motor v2 por padrão; o motor v3 é escolhido explicitamente
+ai-memory run kiro
+ai-memory run kiro --v3
+# sem harness: continua a sessão mais recente utilizável automaticamente
+ai-memory run
+```
+
+Sintaxe geral:
+
+```text
+ai-memory run [--workspace NOME] [--project NOME]
+              [--workstream NOME | --new NOME] [--executable CAMINHO]
+              [--yolo] [--fresh]
+              [claude|claude*|codex|opencode|opencode2|pi|crush|omp|kimi|command-code|kiro|grok|antigravity]
+              [argumentos nativos...]
+```
+
+Opções do próprio wrapper vêm antes do nome do harness. Depois do nome, tudo é passado ao harness como argumento nativo, com exceção destas flags exatas, que o wrapper consome e nunca repassa: `--yolo`, `--true-yolo`, `--fresh`, `--force-unlock`, `--no-autowire`, `--jail`, `--jail=LISTA` e `--no-jail`. Não é preciso `--` antes dos argumentos nativos.
+
+### Múltiplas contas Claude
+
+Qualquer nome de harness que começa com `claude` (por exemplo `claude-corp` ou `claude-personal`) seleciona o harness Claude Code. O nome exato não muda o tipo de agente, o armazenamento de sessões nem a importação do transcript. Para lançar o binário certo de cada conta, combine o nome com `--executable`:
+
+```bash
+# ~/bin/claude-corp e ~/bin/claude-personal são scripts de encapsulamento
+# (antes do claude nativo no PATH) que executam o binário real com o
+# diretório de configuração/credenciais de cada conta.
+ai-memory run claude-corp --executable claude-corp --model opus
+ai-memory run claude-personal --executable claude-personal
+```
+
+Só o valor de `--executable` decide qual binário roda; o nome posicional é livre desde que comece com `claude`.
+
+O lançador resolve o nome do executável pelo `PATH` diretamente, sem passar por um shell interativo. Um `claude` definido apenas como `alias` em arquivo de configuração do shell é invisível para ele. Se você troca de conta por alias, use um script de mesmo nome antes no `PATH` ou passe `--executable`.
+
+## Seleção do workstream
+
+- Sem seletor, `run` usa o workstream selecionado por último para o checkout atual (escopo + fingerprints de repositório e worktree). Se não existir nenhum, cria `default`.
+- `--new NOME` cria um workstream novo. Se o nome já existir no checkout, é recusado: use `--workstream` para voltar a ele.
+- `--workstream NOME` seleciona um workstream existente. Se não existir, é erro.
+- `--new` e `--workstream` são mutuamente exclusivos.
+- Nomes: depois de removidos os espaços das pontas, têm de ter de 1 a 128 caracteres, sem caracteres de controle e sem `/` ou `\`.
+- Cada execução atualiza a data de seleção do workstream e o diretório registrado. Isso define qual workstream é o "atual" da próxima execução sem seletor.
+
+### Listar workstreams
+
+```bash
+ai-memory workstreams [--workspace NOME] [--project NOME]
+ai-memory workstreams --limit 50 --json
+```
+
+A listagem usa o mesmo escopo de `run`, coloca o workstream atual primeiro e depois ordena por atividade recente. `--limit` tem padrão 20 e aceita de 1 a 100. Cada linha mostra os harnesses vinculados e o identificador estável. A resposta não expõe caminhos do host, fingerprints do repositório nem identificadores de sessão nativa.
+
+### Renomear
+
+```bash
+ai-memory rename-workstream --from typo-nmae --to refactor-db
+ai-memory rename-workstream --workstream-id 01a04092-… --to refactor-db
+```
+
+A renomeação altera só o nome. As duas formas de selecionar (`--from` e `--workstream-id`) são mutuamente exclusivas; o identificador é o que `workstreams` mostra. O novo nome é validado como um nome de `--new`, e não pode coincidir com o de outro workstream do mesmo checkout (nesse caso é recusado, não mesclado).
+
+A renomeação não altera data de seleção nem data de atualização. Por isso não muda qual workstream o `run` sem seletor retoma, nem a ordem da listagem. Ledger, harnesses vinculados e execuções ativas usam o identificador, não o nome. Uma execução já ativa continua exibindo o nome com que foi lançada até sair.
+
+## Escolha do harness
+
+- **Com harness explícito:** o harness informado é usado, mesmo que o workstream esteja vinculado a outro. É assim que se continua um workstream em outro agente.
+- **Sem harness (`ai-memory run` puro):** o lançador procura sessões locais do checkout entre os harnesses do conjunto automático: Claude Code, Codex, OpenCode, Pi, Crush, Kimi Code, Command Code e os dois motores do Kiro. OMP, Grok, Antigravity e OpenCode 2 ficam fora do conjunto automático e só são usados quando pedidos pelo nome. OpenCode 2 compartilha o armazenamento de sessões do OpenCode; listar os dois duplicaria cada candidato.
+- **Workstream vazio:** a sessão mais recente do checkout é retomada sem perguntar.
+- **Workstream já estabelecido:** o servidor tem precedência. O lançador retoma o harness vinculado mais recentemente que ainda tenha uma sessão local utilizável. Não escolhe uma sessão mais nova de outro harness só porque o arquivo dela tem data posterior.
+- O modo automático aceita opções do wrapper, mas não argumentos nativos do harness nem `--executable`, porque o significado deles depende do harness escolhido.
+- Se não houver nenhuma sessão utilizável no conjunto automático, o comando sai com erro, não cria workstream e sugere os comandos explícitos (`ai-memory run <harness>`).
+
+## Ordem do lançamento
+
+Esta é a ordem real das etapas de `run`. As etapas 1 a 3 acontecem antes de qualquer lease.
+
+1. **Checkout e harness.** Inspeciona o repositório (fingerprints e checkpoint inicial), resolve o harness (explícito ou automático) e confere se o executável existe. Erros nesta etapa não tocam o servidor.
+2. **Escopo.** Resolve `workspace` e `project` pelo marcador do checkout, com override pelas opções.
+3. **Decisão do jail.** Se foi pedido `--jail` explícito, o lançador já reexecuta dentro do jail aqui, antes de preparar qualquer execução. Ver [Jail](#jail-ai-jail).
+4. **Sondagem do servidor.** Uma requisição de saúde com timeout de 2 segundos. Se não houver conexão, o lançamento segue como degradado (ver [Servidor indisponível](#servidor-indisponível-lançamento-degradado)), a menos que `--require-server` (ou `AI_MEMORY_RUN_REQUIRE_SERVER`, ou `run.require_server` na configuração) esteja ativo. Qualquer resposta HTTP, mesmo de erro, conta como servidor alcançável.
+5. **Preparação.** `POST` de preparação: expira leases vencidos (de qualquer workstream do servidor), escolhe ou cria o workstream, cria a execução ativa com lease de 90 segundos e atualiza seleção e diretório do workstream, tudo em uma única transação. Se a preparação falhar (por exemplo, autenticação recusada ou workstream ocupado), o agente não é iniciado.
+6. **Registro local.** Atualiza o registro de checkouts do cliente, usado por `continue`, `resume` e `show`. Falha nesse registro é aviso, não erro.
+7. **Harness resolvido pelo servidor.** No modo automático, o servidor indica o harness a usar. Se o servidor for antigo e não informar, usa a sessão mais recente do checkout e avisa.
+8. **Confirmação de `--yolo` e oferta de jail.** Se houve `--yolo` interativo, mostra o aviso e pergunta se deve prosseguir. Se a oferta de jail for aceita, o lease recém-criado é cancelado antes da reexecução.
+9. **Sessão nativa.** Escolhe a sessão a retomar, adota uma existente (somente em workstream não estabelecido e em terminal interativo) ou começa uma nova. Ver [Sessão nativa](#sessão-nativa-adoção-escolha-e-recuperação).
+10. **Modo yolo do harness.** Aplica a flag de modo sem confirmação equivalente ao harness escolhido. Para o Kiro v3, que não tem equivalente documentado, nada é adicionado e um aviso é mostrado.
+11. **Auto-wire.** Instala hooks e MCP do harness, uma vez por harness, versão e local de configuração. Falha vira aviso e o lançamento continua.
+12. **Vinculação.** Quando a sessão já é conhecida antes do lançamento, o servidor a vincula ao lease. Se não for possível vincular, o agente não é iniciado.
+13. **Preparação de contexto específica.** Para Claude em sessão de fundo ainda em execução, o lançamento se anexa a ela (sem o pacote de contexto). Para Crush e Grok, o pacote de contexto é obtido agora e entregue pelo mecanismo próprio de cada um (ver [Contexto entregue](#contexto-entregue-ao-agente)).
+14. **Início do processo.** O processo filho é iniciado com `AI_MEMORY_RUN_ID`, `AI_MEMORY_WORKSTREAM_ID` e `AI_MEMORY_HOOK_URL` no ambiente. Se o processo não iniciar, a execução é encerrada com registro de perda (`native process could not be started`); se isso também falhar, o lease é cancelado.
+15. **Confirmação de contexto.** Para Crush e Grok, o recebimento do contexto é confirmado ao servidor logo depois do início do processo. Falha nessa confirmação é aviso: o contexto será entregue de novo na próxima execução.
+16. **Heartbeat.** Enquanto o processo roda, o lançador envia heartbeat a cada 30 segundos.
+17. **Saída.** Quando o processo termina, o lançador lê o estado final no servidor, identifica a sessão nativa, exporta o transcript, calcula o checkpoint final, importa os eventos e encerra a execução. Ver [Eventos e importação](#eventos-e-importação).
+
+Em sessões de harness sem hook de fim de sessão, o lançador tenta finalizar a sessão nativa ao sair, com limite de 30 segundos para não atrasar o código de saída. A lista exata desses harnesses está em [Adaptadores de harness gerenciados](harness-adapters.md).
+
+## Sessão nativa: adoção, escolha e recuperação
+
+### Quando um workstream está "estabelecido"
+
+Um workstream está estabelecido quando tem pelo menos uma sessão nativa vinculada (de qualquer harness) ou pelo menos um evento portável de mensagem, chamada de ferramenta, resultado de ferramenta ou compactação. Checkpoints do repositório e notas de importação sozinhos não estabelecem o workstream.
+
+Só workstreams não estabelecidos podem adotar uma sessão nativa existente. Se outro harness já estabeleceu o workstream, `run` com um harness novo cria uma sessão nova e recebe o histórico do workstream pelo pacote de contexto. Ele não procura nem seleciona sessões antigas e não relacionadas desse harness. Voltar a um harness já vinculado retoma a sessão que está vinculada a ele.
+
+### Adoção em terminal interativo
+
+Em um workstream não estabelecido, sem sessão vinculada e sem seletor nativo, num terminal interativo, o lançador lista até 8 sessões recentes do harness cujo diretório registrado é o checkout atual. Sessões de outros checkouts nunca são oferecidas.
+
+```text
+ai-memory: no <harness> session is linked to workstream '<nome>'.
+Previous sessions for this checkout:
+  1) <id> (updated <idade>)
+  0) Start a new <harness> session
+Select [1]:
+```
+
+- Enter escolhe a primeira (a mais recente).
+- `0`, `n` ou `new` inicia uma sessão nova.
+- Um número da lista escolhe aquela sessão.
+- Fim de entrada (EOF) inicia uma sessão nova.
+- Qualquer outra resposta pede de novo.
+- Ctrl+C no seletor cancela a execução antes do início do agente (ver [Cancelamento](#cancelamento-e-códigos-de-saída)).
+
+Fora de terminal interativo (scripts, CI, hooks), não há seletor: a sessão nova é iniciada. Modo impresso e modo não interativo de alguns harnesses também não abrem o seletor. No modo automático, quando não há sessão vinculada e o workstream não está estabelecido, a sessão mais recente do checkout é retomada sem perguntar.
+
+Uma execução que termina sem produzir sessão nativa nem histórico portável não consome a oportunidade de adoção: ela continua disponível na próxima execução.
+
+### Seletores explícitos
+
+- Um seletor nativo informado pelo usuário (por exemplo as opções de retomada, de continuação ou de sessão de cada harness) sempre vence. O lançador vincula a sessão escolhida e redefine o cursor de origem de outra sessão, em vez de presumir que ele pertence à sessão antiga.
+- `--new NOME` sempre cria uma sessão nova para o workstream novo, sem adoção.
+- `--fresh` ignora a sessão vinculada e o seletor de adoção, e inicia uma sessão nova no workstream selecionado. Não pode ser combinado com seletor nativo de retomada, continuação, sessão ou bifurcação: nesse caso é erro.
+
+### Sessão vinculada que sumiu
+
+Antes de injetar o seletor de retomada da sessão vinculada, o lançador confere se o identificador existe no armazenamento nativo, sem modificá-lo.
+
+- Se a sessão foi apagada, limpa ou perdida (por exemplo, em uma sobreposição de sandbox), o lançador inicia uma sessão nova e reaponta o workstream para ela quando a sessão for observada.
+- Se o armazenamento estiver ilegível ou malformado, o erro é informado. Não é tratado como sessão ausente.
+- Se a sessão vinculada foi criada sob uma localização de armazenamento diferente da atual (por exemplo, por causa de uma variável de ambiente de diretório de configuração), o lançamento é recusado com instrução para relançar com a mesma configuração ou usar `--fresh`.
+
+## Servidor indisponível (lançamento degradado)
+
+Se a sondagem da etapa 4 não conseguir conexão nem resposta no tempo limite, o lançamento segue sem servidor, com aviso. Com `--require-server` (ou a variável ou configuração equivalente), o comando falha antes de iniciar o agente.
+
+No lançamento degradado:
+
+- Não há lease, não há execução no servidor e o ambiente do filho não recebe `AI_MEMORY_RUN_ID` nem `AI_MEMORY_WORKSTREAM_ID`. Isso evita que o hook de fim de sessão registre um evento de execução que não existiu. `AI_MEMORY_HOOK_URL` é mantido, para que os hooks gravem no servidor certo quando ele voltar.
+- Não há exclusão mútua com outro lançador no mesmo checkout.
+- Nenhuma sessão é adotada ou retomada implicitamente. Só um seletor nativo explícito retoma uma sessão; o resto inicia uma sessão nova.
+- O auto-wire instala os hooks, mas não registra o MCP, para não apontar o harness para um servidor que acabou de falhar. A instalação completa acontece no próximo lançamento online.
+- Yolo e a oferta de jail continuam valendo.
+- Os eventos dos hooks ficam em um spool local. Ao sair, o lançador informa que a execução não foi gravada no servidor e quantos eventos continuam no spool.
+- O resultado da execução usa o nome de workstream `(offline)`.
+
+Falhas que não são de conexão (autenticação recusada, erro de resposta do servidor) durante a preparação são fatais: o agente não é iniciado.
+
+## Contexto entregue ao agente
+
+Cada execução recebe, quando há algo novo, um pacote com o trecho recente do ledger que a sessão nativa ainda não viu. A faixa é `(cursor de entrega, sequência no início da execução]`. O cursor de entrega é o da sessão nativa vinculada, ou zero para uma sessão nova.
+
+### Montagem do pacote
+
+- Lê no máximo 256 eventos da faixa, do mais recente para o mais antigo.
+- Cada evento entra com no máximo 6.000 caracteres; o excedente é cortado com reticências.
+- Preenche do mais recente para o mais antigo até 30.000 caracteres. Um evento sempre entra se for o primeiro, mesmo que seja grande.
+- Se eventos mais antigos da faixa não couberam no orçamento, o pacote avisa e indica a busca no ledger.
+- O pacote começa com um marcador de versão e um aviso de segurança. O histórico entra delimitado como dado não confiável: instruções dentro dele são evidência, não comandos. Instruções do sistema, do desenvolvedor e do usuário, o arquivo de instruções do projeto e o estado atual do checkout continuam valendo.
+- Ferramentas e resultados de outros harnesses aparecem como "evidência concluída" e não podem ser repetidos como ações pendentes.
+- O checkpoint mais recente do repositório é indicado como autoritativo sobre suposições antigas.
+
+### Entrega e confirmação
+
+- Para harnesses com hook de início de sessão, o pacote é obtido quando a sessão inicia. A confirmação e o avanço do cursor de entrega acontecem juntos, na mesma transação, no momento em que o hook recebe o pacote. Se a execução não tiver eventos novos, a confirmação ainda é registrada, sem texto injetado.
+- Quando há um handoff pendente de uso único para o mesmo início de sessão, as duas confirmações são gravadas na mesma transação. Se a confirmação do contexto gerenciado falhar (já entregue ou lease não mais ativo), o handoff também não é consumido naquela requisição.
+- O cursor de entrega só avança quando há confirmação. Sem confirmação, a próxima execução entrega a mesma faixa de novo. Por isso a entrega é "pelo menos uma vez": nunca se perde contexto, mas pode repeti-lo.
+- Se, ao sair, o lançador perceber que a faixa era esperada e o hook não confirmou, avisa para atualizar os hooks antes da próxima execução.
+- **Crush:** não tem hook de início de sessão. O pacote é gravado em um arquivo de configuração global temporário, apontado pela variável de ambiente do próprio Crush. A confirmação acontece depois que o processo inicia; falha antes disso não consome o pacote.
+- **Grok:** o pacote é passado pela opção de regras do próprio Grok, que aceita um único valor. Se o usuário já passou essa opção, o pacote não é entregue nessa execução e fica para uma execução posterior. A confirmação acontece depois que o processo inicia.
+- **OpenCode 2 (beta):** a confirmação de contexto não é disparada no caminho atual, porque o plugin do beta roda em um serviço compartilhado e não recebe o identificador da execução no hook de início. A consequência é de redistribuição, nunca de perda: uma execução posterior pode receber a mesma faixa de novo. Enquanto o beta não oferecer contexto por invocação, a continuidade para ele chega pelo ciclo normal de handoff. (a confirmar: comportamento do beta, que está fora deste repositório)
+
+## Eventos e importação
+
+Ao sair, o lançador importa o transcript em lotes. Um lote tem no máximo 400 eventos ou 1 MiB.
+
+- **Ordem de leitura:** só lê a sessão informada na linha de comando ou escolhida antes do início. Se nenhuma foi informada, usa a sessão vinculada durante a execução (pelo identificador da execução), desde que ela exista no armazenamento do checkout. Só sem vínculo o lançador procura a sessão mais recente do checkout, o que pode pertencer a outro lançamento simultâneo naquele mesmo checkout, e por isso essa é a última opção.
+- **Eventos gravados:** mensagens visíveis do usuário e do assistente, chamadas e resultados de ferramentas concluídos, resumos de compactação e um checkpoint não mutante do repositório. Raciocínio oculto e registros não suportados ou privados ficam de fora e são registrados como perdas de extração.
+- **Identificadores determinísticos:** cada evento tem identificador derivado da fonte. Reenviar o mesmo lote não duplica nada. Um identificador já existente com identidade diferente (agente, sessão nativa ou tipo) é recusado.
+- **Cursor:** o cursor de origem avança por requisição de finalização. Uma falha no meio não deixa o cursor à frente do que foi gravado.
+- **Segmentos:** cada importação gera um segmento sanitizado e imutável no diretório de dados, sob a pasta do workstream.
+- **Sanitização antes de qualquer gravação:** o servidor sanitiza o conteúdo antes de gravar no ledger e no segmento. Remove segredos e depois corta o texto. Cortar antes de remover poderia deixar um prefixo de segredo sem o padrão completo.
+- **Limites:**
+  - No máximo 4.096 eventos por requisição de finalização; acima disso é recusado.
+  - Conteúdo de evento: no máximo 64 KiB na entrada do servidor e 16 KiB ao gravar no ledger, com corte em limite de caracteres UTF-8.
+  - Identificador de evento: no máximo 512 bytes.
+  - Papel (`role`): até 32 caracteres, só letras ASCII, dígitos, `_` e `-`.
+- **Finalização:** `finish` fecha a execução (`finished`) e grava o código de saída. Repetir uma finalização já concluída responde com zero eventos importados. Finalizar uma execução `active` com lease vencido é aceito. Finalizar uma execução `expired` (substituída ou cancelada) é recusado.
+- **Tentativas:** a finalização tenta até 3 vezes, com pausas de 250, 500 e 750 ms.
+- **Indisponibilidade após a saída:** se o servidor cair depois que o processo saiu, o código de saída do harness é preservado. O transcript não é gravado e o aviso indica como reparar depois. Erros de protocolo com servidor no ar (por exemplo, requisição inválida) continuam sendo falhas.
+
+### Busca no ledger
+
+O ledger inteiro, visível e sem o pacote de contexto, pode ser consultado de dentro de uma execução gerenciada:
+
+```bash
+ai-memory workstream-search "decisão do resolver de escopo"
+ai-memory workstream-search --limit 50 --json "migração que falhou"
+```
+
+Dentro do processo filho, o identificador do workstream vem de `AI_MEMORY_WORKSTREAM_ID`. Fora dele, passe `--workstream-id <uuid>`. Os resultados trazem o harness de origem, o papel, o número de sequência e o conteúdo. Histórico de ferramenta é rotulado como evidência concluída e não deve ser repetido como chamada pendente.
+
+## Lease, heartbeat e recuperação
+
+### Valores
+
+| Parâmetro | Valor |
+|---|---|
+| Duração do lease | 90 segundos, renovado a cada heartbeat e a cada entrega de contexto |
+| Intervalo do heartbeat | 30 segundos |
+| Tempo limite de cada heartbeat | 10 segundos |
+| Nova tentativa de preparação com workstream ocupado (scripts e não interativos) | até 5 segundos, de 250 em 250 ms |
+| Espera por lease alheio (interativo) | até 100 segundos de lease restante, mais 1 segundo de margem |
+
+### Regras
+
+- **Exclusão mútua:** no máximo uma execução ativa por workstream. Dois terminais não disputam os ponteiros de sessão nativa nem os cursores ao mesmo tempo.
+- **Renovação após vencimento:** o heartbeat renova um lease vencido enquanto nenhuma outra preparação o tiver substituído. Uma execução só perde o direito de renovar quando outro lançador a substitui ou quando ela já foi encerrada.
+- **Ocupado:** uma preparação com lease ativo de outro lançador é repetida por até 5 segundos. Num terminal interativo, se o lease expira em até 100 segundos, o lançador avisa quem o detém e espera o vencimento, depois tenta de novo. Se o lease ainda estiver ativo depois da espera (o dono renovou), o lançador recusa e sugere `--new NOME` para um workstream separado. Lease que vence mais longe que 100 segundos é recusado de imediato.
+- **Recuperação forçada (`--force-unlock`):** expira o lease ativo antes de lançar. Use só quando o lançador anterior não existe mais. O servidor permite a recuperação apenas para o mesmo operador autenticado (ou para o dono único de instalação de um usuário). Depois disso, os heartbeats e a finalização do lançador antigo são recusados.
+- **Processo morto sem limpeza** (por exemplo, `kill -9`): o lease vence em até 90 segundos. A próxima execução começa do último cursor comprometido, então as sessões já vinculadas importam só a parte que faltou, sem duplicar eventos anteriores.
+- **Falha do servidor durante o heartbeat:** o harness continua rodando. Durante a queda, um único aviso é mostrado no início e o lançador segue tentando a cada 30 segundos, com tempo limite de 10 segundos por tentativa, sem repetir avisos. Quando o servidor volta, um aviso confirma que os heartbeats foram retomados. Se a queda passar do lease, a execução original ainda pode renovar, desde que nenhum lançador mais novo tenha assumido o workstream.
+
+## Cancelamento e códigos de saída
+
+### Quando o lease é liberado
+
+- **Saída normal:** a importação e a finalização acontecem antes de o lançador retornar. A execução fica `finished`.
+- **Falha tratada** (preparação, vinculação, lançamento, importação com erro de protocolo, etc.): o lançador cancela a execução imediatamente. A chamada de cancelamento tenta até 3 vezes. Se o cancelamento falhar, o aviso diz que o lease vencerá em até 90 segundos.
+- **Falha ao iniciar o processo:** o lançador tenta finalizar com a perda registrada. Se a finalização falhar, cancela.
+- **Oferta de jail ou `--yolo` recusada:** o lease é cancelado antes de qualquer reexecução. Recusar o `--yolo` aborta antes do início do agente.
+- **Ctrl+C antes do início do agente:** se a execução já tinha lease (no seletor de sessão ou em qualquer etapa posterior à preparação), ela é cancelada e o comando sai sem exigir Enter. O lançador espera a resposta do servidor ao cancelamento. Se o Ctrl+C chegar enquanto espera por um lease alheio, o comando sai sem criar execução, porque ainda não havia lease.
+  - Se a requisição de cancelamento falhar com erro de rede, o aviso é mostrado e o lease vence sozinho em até 90 segundos.
+  - Se o servidor aceitar a requisição mas nunca responder, o lançador continua esperando. Não há tempo limite nessa chamada. (a confirmar: o cliente de requisições não define tempo limite explícito para essa chamada)
+- **Ctrl+C depois do início do agente:** o sinal chega ao processo filho pelo terminal. O lançador continua vivo até o filho sair e então finaliza normalmente.
+- **Encerramento forçado do lançador:** ver "Processo morto sem limpeza" acima.
+
+### Códigos de saída
+
+- O código de saída do processo nativo é preservado.
+- Se o processo terminar por sinal, sem código de saída, o lançador devolve 1.
+- Falhas do próprio lançador (antes ou depois do processo) são erros, não códigos do harness.
+
+## Jail (ai-jail)
+
+O jail é opcional. Sem `--yolo`, `--jail` ou `--no-jail`, nada roda dentro dele. O detalhe do que é isolado e da lógica de oferta está em [Modo yolo e ai-jail](design-yolo-safety-ai-jail.md). Esta seção descreve o comportamento do lançador de workstreams.
+
+### Quando o jail é oferecido ou usado
+
+| Situação | Comportamento |
+|---|---|
+| `--yolo` interativo, ai-jail utilizável | Mostra o aviso de `--yolo` (o agente executa qualquer ferramenta sem confirmação, inclusive comandos e rede), pede confirmação `[Y/n]`. Enter confirma. Depois pergunta se deve reexecutar dentro do jail (`[Y/n]`, Enter = sim). |
+| `--yolo` interativo, ai-jail indisponível | Mostra o aviso e pede confirmação. Não oferece o jail. |
+| `--yolo` não interativo | Sem aviso e sem oferta. Roda sem jail. |
+| `--jail` ou `--jail=LISTA` | Reexecuta dentro do jail sem perguntar, também em modo não interativo. Se o jail não estiver utilizável, falha. Nunca roda sem jail por engano. |
+| `--no-jail` | Nunca reexecuta dentro do jail. Não mostra a oferta. O aviso de `--yolo` ainda aparece. |
+| Já dentro de um jail | Nenhum aviso e nenhuma reexecução. |
+
+### Disponibilidade
+
+- No Windows, o jail não é utilizável: não há oferta e `--jail` falha.
+- Em Linux, exige o executável do ai-jail e o backend de sandbox do sistema.
+- Em macOS, exige o executável do ai-jail e o backend de sandbox do sistema.
+- O executável do ai-jail é procurado no `PATH` e, se não estiver lá, em `~/.local/bin`.
+- Antes de oferecer, o lançador confere a instalação com a verificação de configuração do próprio ai-jail, para não oferecer uma reexecução que seria recusada depois.
+
+### O que o lançador passa ao jail
+
+- **Rede sempre liberada:** o lançador passa a opção de rede a cada reexecução, porque a execução precisa alcançar o servidor e as APIs dos provedores.
+- **Estado de login do harness mantido:** o estado de login do harness sobrevive ao diretório pessoal temporário do jail.
+- **Sem gravação de configuração:** quando o ai-jail suporta, o lançador passa a opção que impede gravar as flags transitórias no arquivo de configuração do projeto.
+- **Variáveis de ambiente:** são repassadas apenas as variáveis de uma lista fixa que estiverem definidas no ambiente. A lista inclui a URL do servidor e a de hooks, o diretório de dados, o token de autenticação, o diretório de configuração do Claude e chaves e tokens de provedores (Anthropic, Google, OpenAI, OpenRouter, GitHub Copilot). Sem isso, o jail, que limpa o ambiente, esconderia essas variáveis da execução.
+- **Argumentos:** a linha original da invocação é repassada inteira depois do separador, para que flags do ai-memory ou do harness não sejam interpretadas pelo ai-jail. Dentro do jail, o lançador reconhece que já está isolado e não reexecuta.
+
+### Checklist de toggles e padrões
+
+Quando o jail é oferecido, o lançador mostra um checklist de toggles do ai-jail, a menos que haja um arquivo `.ai-jail` no diretório do projeto (nesse caso o próprio ai-jail o carrega, e não há checklist).
+
+- **Credenciais** (GitHub CLI, AWS, Kubernetes, Google Cloud, registro Docker): aparecem só se o caminho correspondente existir no host, e são pré-marcadas nesse caso. Montadas somente leitura.
+- **SSH:** aparece se houver `~/.ssh` ou um agente SSH. Pré-marcado só quando o `origin` do repositório for um endereço SSH.
+- **Worktree vinculado:** aparece e vem marcado em worktree vinculado, porque sem os metadados graváveis o agente não consegue commitar.
+- **Desmarcados por padrão:** socket do Docker (concede acesso de root ao host), GPU (só Linux), display gráfico (só Linux), pasta de imagens, socket do Tailscale.
+- **Só via `--jail=LISTA`:** áudio, socket X11, memória compartilhada do host, passagem do terminal, verificação de atualização, integração mise, caches de toolchain. Não aparecem no checklist.
+- **Regra do checklist:** o que está desmarcado é enviado como `--no-…`, mesmo que a configuração global do ai-jail ative o item. O checklist é o que o usuário viu.
+- **Modo `--jail` puro (sem lista):** só os itens marcados são enviados. Itens desmarcados não geram flag, e a configuração global do ai-jail continua valendo para o resto.
+- **Modo `--jail=LISTA`:** a lista é exata. Cada item do checklist não citado na lista é desligado. `all` liga todos os itens do checklist, `none` desliga todos, `no-X` desliga um item.
+- **Projeto com `.ai-jail`:** nada é pré-marcado e a lista ainda se aplica por cima.
+
+### Opções que o jail não aceita via `--jail=`
+
+Estas opções enfraquecem o isolamento do próprio jail ou são controladas pelo ai-memory. Quem precisa delas deve rodar o ai-jail diretamente:
+
+`private-home`, `lockdown`, `landlock`, `seccomp`, `rlimits`, `systemd-user`, `inherit-env`, `macos-host-ipc`, `network`, `agent-state`, `browser`, `audit-log`, `audit-show`, `audit-verify`, `save-config`.
+
+Um toggle que a versão instalada do ai-jail não suporta é recusado com a versão mínima necessária. As credenciais exigem ai-jail 2.5.0 ou mais novo, e os demais toggles exigem 2.4.1 ou mais novo.
+
+### O que o jail bloqueia por padrão
+
+Além dos toggles acima, o isolamento do sistema de arquivos, de processos e de rede é responsabilidade do próprio ai-jail. Este repositório não redefine esses padrões. (a confirmar: lista exata do que o ai-jail isola por padrão, a ser conferida no design do modo yolo e na documentação do ai-jail)
+
+## Auto-wire
+
+Na primeira vez que um harness é lançado por `run`, o lançador instala os hooks e o MCP do ai-memory nele, se ainda não estiverem configurados.
+
+- Roda uma vez por combinação de harness, versão do binário e local de configuração. Por isso uma atualização do binário reinstala os hooks, e um segundo diretório de configuração (por exemplo, outra conta do Claude) é tratado como primeiro lançamento.
+- Preserva entradas de configuração que não são do ai-memory.
+- Roda antes do processo iniciar, para que o harness já carregue os hooks novos.
+- É best-effort: se falhar, avisa e segue com o lançamento.
+- Harnesses sem suporte de instalação (Crush) são ignorados. A lista de suporte por harness está em [Adaptadores de harness gerenciados](harness-adapters.md).
+- Desligar: `ai-memory run --no-autowire`, `AI_MEMORY_RUN_AUTOWIRE=false` ou `run_autowire = false` na configuração. A instalação manual (`install-hooks` e `install-mcp`) continua disponível para harnesses que você nunca lança por `run`.
+
+## Projetos, renomeação e seletores
+
+### Seletor de projeto (`show`)
+
+`ai-memory show` faz o caminho inverso de `cd` seguido de `run`: escolhe um checkout local, escolhe um harness gerenciado instalado e lança a partir dele.
+
+```bash
+cd ~/Projetos
+ai-memory show
+
+# Somente descoberta estruturada; nunca lança um harness.
+ai-memory show --json
+ai-memory show --json --no-scan
+```
+
+- Uma preparação gerenciada bem-sucedida atualiza `client-projects.json` no diretório de dados do cliente. Esse registro é privado do cliente e indexado pela URL do servidor normalizada, sem credenciais, e pelo par `(workspace, projeto)`.
+- A resposta de projetos do servidor traz só metadados do projeto. O servidor nunca informa nem escolhe um caminho de checkout.
+- Por padrão, o seletor combina os vínculos salvos válidos com uma varredura limitada de profundidade 1 do diretório atual. A varredura reconhece marcadores comuns de projeto, ignora links simbólicos e diretórios de dependência e build, e examina no máximo 4.096 entradas.
+- `--no-scan` usa só os vínculos salvos. `--workspace NOME` filtra as duas fontes.
+- Vínculos obsoletos, redirecionados ou com escopo divergente são pulados. Uma execução `run` bem-sucedida depois repara a entrada.
+- Se o servidor estiver indisponível, os vínculos salvos e a varredura continuam selecionáveis. A execução gerenciada ainda falha se não conseguir preparar o workstream antes de lançar o agente.
+- No modo interativo, a primeira opção é `+ New project`. Ela aceita um nome de diretório em minúsculas ASCII portável, monta o marcador, o roteamento de instruções e as habilidades de agente em um diretório temporário oculto e só o renomeia para o destino final quando tudo der certo.
+- `--yolo`, `--fresh` e argumentos nativos finais valem para o harness escolhido. Quem não está em terminal interativo deve usar `--json`, e `--json` não pode ser combinado com argumentos de lançamento.
+
+### Continuar de qualquer lugar (`continue`)
+
+`ai-memory run` sem argumentos continua o checkout atual, mas a busca do workstream usa `(workspace, projeto, fingerprint do repositório, fingerprint do worktree)`. Ou seja, o usuário precisa estar dentro do projeto. `ai-memory continue` resolve isso sem `cd`:
+
+```bash
+ai-memory continue
+ai-memory continue --workspace work
+```
+
+- O checkout é escolhido só no cliente, pelo carimbo `linked_at` do registro local. O servidor nunca é consultado sobre qual diretório usar.
+- Antes de lançar, o vínculo mais recente é revalidado duas vezes: o caminho gravado deve continuar apontando para si mesmo (rejeita diretório movido ou substituído por link simbólico), e deve continuar resolvendo para o mesmo `(workspace, projeto)` (rejeita checkout que faria a memória dessa sessão cair em outro escopo).
+- Um vínculo que falhe em qualquer das checagens é informado no stderr e pulado, e o próximo mais recente é tentado. Um carimbo `linked_at` corrompido também é informado e nunca é considerado lançável.
+- O caminho e o projeto escolhidos são sempre impressos antes do início do harness.
+- Depois de escolher o checkout, o lançamento é exatamente um `ai-memory run` puro nesse diretório, com seleção automática de harness. Por isso `continue` aceita `--workspace`, `--yolo` e `--fresh`, mas não aceita argumentos nativos nem `--executable`.
+
+### Escolher um workstream (`resume`)
+
+`ai-memory resume` é o equivalente interativo de `continue`. Mostra workstreams recentes de todos os checkouts gerenciados válidos do cliente e lança o escolhido, sem `cd`.
+
+```bash
+ai-memory resume
+ai-memory resume --workspace work --limit 50
+```
+
+- Setas para cima e para baixo (ou `j` e `k`) mudam de workstream. Setas para a esquerda e para a direita trocam o harness de lançamento da linha destacada. Cada linha lembra sua escolha enquanto você navega.
+- `auto` é a escolha inicial e preserva a descoberta da sessão mais recente de `run` puro. As demais opções são os harnesses suportados encontrados no `PATH` do host.
+- Enter lança a combinação mostrada; Esc ou `q` cancela.
+- A seleção atual de cada checkout aparece primeiro, seguida da atividade recente. Cada linha mostra workspace e projeto, idade da atividade, harness de lançamento escolhido e harnesses já vinculados.
+- `--yolo` e `--fresh` são repassados ao lançamento.
+- O seletor precisa de terminal interativo. Scripts podem usar `ai-memory workstreams --json` depois de escolher o checkout por conta própria.
+
+### Renomear projeto e diretórios
+
+`ai-memory rename-project --from ANTIGO --to NOVO` altera só o nome do projeto no servidor. Não move diretórios do servidor, o checkout nem as sessões nativas.
+
+Se o diretório do checkout for renomeado, referências absolutas gravadas nas sessões nativas de alguns harnesses podem continuar apontando para o caminho antigo. O banco local do Crush, que fica dentro do próprio checkout, vai junto com ele. Não existe uma API portátil e suportada para reescrever essas referências privadas, então o ai-memory não as altera nem trata um checkout renomeado como outro clone do mesmo repositório remoto.
+
+Para recuperar uma sessão em um checkout renomeado:
+
+- use um harness explícito e o seletor de sessão documentado dele para semear o novo workstream gerenciado;
+- mantenha o caminho antigo disponível até confirmar a recuperação;
+- a descoberta automática exige que o caminho registrado coincida exatamente com o checkout atual.
+
+## Instalação e recuperação
+
+Execuções gerenciadas precisam dos hooks de ciclo de vida atuais, para que o início de sessão receba o pacote de contexto. Atualize-os depois de cada upgrade:
+
+```bash
+ai-memory install-hooks --agent claude-code --apply
+ai-memory install-hooks --agent codex --apply
+ai-memory install-hooks --agent opencode --apply
+ai-memory install-hooks --agent pi --apply
+ai-memory install-hooks --agent omp --apply
+ai-memory install-hooks --agent kimi-code --apply
+ai-memory install-hooks --agent kiro-cli --apply
+```
+
+- Hooks do Kimi Code instalados como comandos nativos do ai-memory acompanham o comportamento atual de entrega automaticamente ao atualizar o binário. Hooks instalados por script auxiliar precisam que `install-hooks` seja executado de novo depois do upgrade, para atualizar os scripts. Hoje a entrega de handoff e de pacote acontece em `UserPromptSubmit`, porque o Kimi Code descarta a saída do início de sessão (a confirmar no adaptador do Kimi Code).
+- No Linux e no macOS, quando o ai-memory roda dentro de um contêiner, o wrapper de linha de comando faz o encaminhamento de `run`, `show`, `continue`, `resume`, `workstreams` e `rename-workstream` para um cliente nativo do host. Esse cliente é baixado para o diretório de dados do usuário e tem o checksum SHA-256 verificado antes de ser usado. A variável `AI_MEMORY_NATIVE_BIN` aponta para outro binário nativo. Versões antigas do wrapper deixam o cliente em um diretório de cache do usuário, e os hooks instalados a partir dele continuam apontando para lá até a próxima instalação (a confirmar: caminho exato do cache antigo).
+- Instalações nativas (pacote, release ou compilação a partir da fonte) não precisam de nada disso. No Windows, use o executável publicado ou uma compilação local.
+- Se o wrapper instalado estiver desatualizado e enviar `run` ou `continue` para o contêiner auxiliar em vez do cliente nativo, rode `ai-memory upgrade` na máquina cliente. Um servidor remoto deve ser atualizado separadamente. (a confirmar: sintoma exato no log)
+- O wrapper intercepta esses comandos antes do contêiner e preserva o `PATH` do host e as variáveis de URL do servidor e de autenticação.
+
+## Ledger e privacidade
+
+- O ledger é uma base de continuidade operacional, não substitui a wiki. Decisões duráveis, regras, procedimentos e fatos do projeto continuam pertencendo às páginas da wiki, por consolidação ou escrita durável explícita.
+- Os adaptadores leem apenas formatos locais documentados ou observados, sem gravar nas stores privadas dos harnesses. Credenciais, conteúdo cifrado, registros de prompts de sistema e de desenvolvedor e raciocínio oculto não são copiados. Os detalhes por harness estão em [Adaptadores de harness gerenciados](harness-adapters.md).
+- O sanitizador do servidor roda antes de qualquer gravação, no ledger e nos segmentos.
+- Gravações são idempotentes: reenviar um lote não cria eventos duplicados.
+
+## Gerenciando um harness novo
+
+Quem quiser adicionar um harness gerenciado deve seguir o [protocolo de contribuição de harness gerenciado](managed-harness-contributions.md): extração somente leitura, entrega de contexto antes do turno, invariantes de migração, testes determinísticos e uma passagem de aceitação opcional com o harness real.
+
+## Herdr (ferramenta externa)
+
+Herdr é um gerenciador de painéis de terminal que identifica o agente de cada painel pelo processo em primeiro plano, e, se isso falhar, pela saída do agente na tela (a confirmar: descrição da ferramenta externa).
+
+- Com `run`, o processo em primeiro plano é o lançador do ai-memory, e o agente é o filho dele. Por isso a detecção por processo não encontra o agente. O painel só é identificado depois que o harness imprime um título reconhecido pelo Herdr, o que pode demorar, ou nunca acontecer.
+- O ai-memory não tenta corrigir isso por dentro. Uma vez que o processo já foi substituído, ele não tem como se descrever ao Herdr.
+- Caminhos sugeridos para o usuário: definir `HERDR_AGENT=<harness>` no comando (`HERDR_AGENT=codex ai-memory run codex`), ou instalar a integração própria do Herdr para o harness (`herdr integration install codex`). A integração do Herdr informa estado real (`idle`, `working`, `blocked`) pelo socket dele. (a confirmar: comportamento de `HERDR_AGENT` e dos comandos de integração, que estão fora deste repositório)
+- Os hooks da integração do Herdr e os do ai-memory ficam em arquivos separados. A instalação do ai-memory preserva entradas de outras ferramentas, mas é bom conferir a configuração do harness depois de instalar qualquer um dos dois.
+
+## Aceitação manual
+
+O executor de aceitação do repositório roda uma rodada opt-in de casos de borda do lançador e, depois, orquestra os CLIs locais instalados pelo mesmo workstream. Ele fica fora da integração contínua porque usa credenciais locais e chamadas de modelo.
+
+- Configurações de hooks, stores nativas, servidor e repositório de teste ficam isolados em um diretório temporário. Só o material de autenticação copiado é usado.
+- A fase determinística cobre adoção na primeira execução, seleção em modo automático, falha em diretório vazio, `--yolo` pelo wrapper, exclusão mútua do lease, limpeza de contexto e a proteção contra sessões obsoletas em workstream estabelecido.
+- A fase com modelos real verifica, em cada etapa, um evento de assistente recém-importado (ou, para harnesses sem transcript legível, o vínculo exato e um novo registro do hook de início). Quando um pacote de contexto é esperado, exige que o cursor de entrega esteja atrás do endpoint do ledger e que a última execução relate esse endpoint exato como sincronizado e com o contexto entregue.
+- Variáveis de controle:
+  - `AI_MEMORY_ACCEPTANCE_HARNESSES="harness1 harness2"`: seleciona um par de harnesses para o ciclo de ida e volta.
+  - `AI_MEMORY_ACCEPTANCE_DETERMINISTIC_ONLY=1`: pula chamadas de modelo.
+  - `AI_MEMORY_ACCEPTANCE_KEEP=1`: mantém todos os logs e dados temporários.

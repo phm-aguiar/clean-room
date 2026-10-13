@@ -1,0 +1,11 @@
+{
+  "query": "writer sqlite",
+  "limit": 10,
+  "paths": [
+    "controle/writer-sqlite.md",
+    "controle/so-texto.md",
+    "sessions/architecture-decision.md",
+    "sessions/gotcha-with-rule.md",
+    "sessions/rust-bug-fix.md"
+  ]
+}

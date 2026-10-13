@@ -1,0 +1,18 @@
+# Segredos e configuração local (INV-01: ver .env.example)
+.env
+.env.*
+!.env.example
+
+# Binários e artefatos de build
+/bin/
+/dist/
+*.exe
+
+# Dados locais do ai-memory em desenvolvimento
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Preferências locais do Claude Code
+.claude/settings.local.json

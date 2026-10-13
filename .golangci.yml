@@ -1,0 +1,25 @@
+# Configuração do golangci-lint (formato v2) para o projeto clean-room.
+#
+# Propósito: definir o conjunto mínimo de verificações estáticas exigido pela
+# constituição (.github/memory/constitution.md) e pelo plano 001-nucleo:
+# formatação (gofmt), análise estática do go vet, erros não tratados (errcheck)
+# e staticcheck. Este arquivo é usado pelo pipeline de CI da T069
+# (GitHub Actions, windows-latest e ubuntu-latest).
+#
+# Linters habilitados: exatamente gofmt (formatter), govet, errcheck e staticcheck.
+# `default: none` desabilita o conjunto padrão do golangci-lint, para que nenhum
+# outro linter rode além dos listados aqui.
+# Exclusões: nenhuma.
+
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+
+formatters:
+  enable:
+    - gofmt

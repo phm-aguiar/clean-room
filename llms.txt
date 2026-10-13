@@ -1,0 +1,93 @@
+# ai-memory-go (clean-room)
+
+Reimplementação clean-room, em Go, de uma memória de longo prazo para agentes de código. O binário único `ai-memory` guarda páginas em markdown versionado em git (fonte da verdade) e mantém um índice SQLite derivado, reconstruível a partir dos arquivos. Fase atual: 001 Núcleo (zero-LLM). Hooks, MCP e CLI de usuário ficam na 002; LLM e embeddings ficam na F003.
+
+## Como começar
+
+Ordem de leitura recomendada:
+
+1. `.github/memory/constitution.md`: regras incontornáveis (invariantes INV-nn, grafo de imports, anti-padrões).
+2. `specs/features/001-nucleo/spec.md`: o que a 001 entrega e o que fica fora (`Aprovado: true`).
+3. `specs/features/001-nucleo/plan.md`: decisões P-01 a P-11, layout de pacotes e auditoria de constituição.
+4. `README.md`: pré-requisitos, build, configuração, comandos (`reindex`, `backup`) e verificação.
+5. `docs/`: referência do produto (ver "Onde achar os docs").
+6. `specs/features/001-nucleo/tasks.md` e `specs/features/001-nucleo/notes/inv-test-matrix.md`: estado da implementação e mapa invariante para teste.
+
+## Mapa de pacotes
+
+- `cmd/ai-memory/`: ponto de entrada do binário; só delega a `internal/cli`.
+- `internal/config/`: carga da configuração (padrões, TOML, `.env`, `AI_MEMORY_*`), feita uma vez; único pacote que lê ambiente e arquivos de configuração (INV-01).
+- `internal/domain/`: tipos de domínio sem I/O (ID UUIDv7, Scope, PagePath, Tier, Page, tipos de observação).
+- `internal/domain/sanitize/`: fronteira de privacidade do texto; o tipo `Sanitized` só nasce de `Text()` (INV-06).
+- `internal/storage/`: SQLite pure-Go (`modernc.org/sqlite`), escritor único (`Writer`), pool de leitura (`Reader`), migrações, busca RRF e resolução de escopo que falha fechado.
+- `internal/storage/migrations/`: migrações `V<nn>__nome.sql` embutidas no binário.
+- `internal/wiki/`: camada de arquivos markdown: escrita atômica, supersessão, repositório git, watcher, reindex e locks. Única camada que escreve arquivos da wiki.
+- `internal/cli/`: composição do processo (cobra), comandos `reindex` e `backup`, guarda de processo vivo e logging com filtro do próprio módulo (INV-15).
+- `internal/archtest/`: teste do grafo de imports da constituição (`TestImportGraph`).
+- `test/acceptance/`: cenários de aceitação da 001, derivados de `specs/features/001-nucleo/acceptance/nucleo.feature`.
+- `test/contract/`: testes de contrato das invariantes (`TestINVnn_*`).
+- `test/bench/`: benchmark da busca com corpus de 5 mil páginas (`BenchmarkSearch5k`).
+- `test/smoke/`: teste fim a fim da CLI (compila o binário).
+- `scripts/`: `check.sh` e `check.ps1`, verificação completa (build cruzado, vet, race).
+
+Pacotes `ingest` e `mcp` ainda não existem; entram na feature 002.
+
+## Invariantes
+
+Fonte: `.github/memory/constitution.md`. Marcação: [001] vale para a feature atual; [002] feature 002; [F003] fase LLM.
+
+- INV-01 [001]: configuração carregada uma vez, em `internal/config`, chamada pela `cli`; nenhum outro `os.Getenv`. Teste: `TestINV01_ConfigCarregadaUmaVez`.
+- INV-02 [001]: escritor SQLite único (goroutine, fila de 1024); leitura em pool somente leitura. Testes: `TestINV02_EscritorSerializaConcorrentes`, `TestINV02_LeituraNaoEsperaTransacaoDeEscrita`, `TestINV02_PoolDeLeituraRecusaEscrita`.
+- INV-03 [001]: índices (FTS, entidades, links) na mesma transação dos dados. Testes: `TestINV03_IndicesMesmaTransacaoAposRetorno`, `TestINV03_FalhaDesfazIndicesEPagina`.
+- INV-04 [001]: identidade tipada `(workspace_id, project_id, path)` em toda linha e página. Testes: `TestINV04_MesmoPathProjetosDiferentesCoexistem`, `TestINV04_MesmoPathWorkspacesDiferentesCoexistem`, `TestINV04_MesmoEscopoSupersedeSemDuplicarCorrente`, `TestINV04_TodaLinhaTemIdentidadeTipada`.
+- INV-05 [002]: hooks fire-and-forget; `/hook` responde 202 ou 429. Sem teste na 001. Ver divergência em "Dúvidas" abaixo.
+- INV-06 [001]: sanitização antes do limite de tamanho (título até 80 caracteres, corpo até 16 KiB). Testes: `TestINV06_SegredoNuncaChegaAoArmazenamento`, `TestINV06_RedacaoAntesDoLimiteDeCorpo`, `TestINV06_CorpoLimitadoA16KiB`, `TestINV06_TituloLimitadoA80Runas`.
+- INV-07 [F003]: saídas de LLM estruturadas por JSON Schema.
+- INV-08 [F003]: `{provider, model, dim}` junto de todo embedding.
+- INV-09 [001]: `reset`, `restore`, `reindex` e `uninstall --purge-data` checam processo vivo antes de agir; `backup` é online. Teste: `TestINV09_GuardaDeProcessoVivoAntesDeReindex`.
+- INV-10 [001]: escrita de arquivo atômica (temporário, fsync, rename, fsync do diretório). Testes: `TestINV10_EscritaAtomicaSemTemporarioSobrando`, `TestINV10_WikiWriteUsaRenameSemTemporario`.
+- INV-11 [001]: diretório de dados absoluto e canônico, registrado no log. Teste: `TestINV11_DataDirAbsolutoECanonicoNoLog`.
+- INV-12 [reservada]: sem regra imposta e sem teste (ADR-04).
+- INV-13 [001]: caminho padrão zero-LLM. Teste: `TestINV13_FuncionaSemProvedorLLM`.
+- INV-14 [F003]: autenticação do provedor resolvida antes do cliente.
+- INV-15 [001]: assinantes de log filtram o próprio módulo. Teste: `TestINV15_LogIgnoraProprioModulo`.
+- INV-16 [001 parcial; completo na 002]: multi-sessão. Supersede nunca destrói e leitura não filtra por autoria. Testes: `TestINV16_SupersedeNuncaDestroi`, `TestINV16_ReadPageDevolveCorrenteSemFiltrarAutoria`, `TestINV16_EscritaConcorrenteDivergenteSupersede`. Handoff com reivindicação única e ponteiro de projeto ativo por ator ficam na 002, ainda sem teste.
+
+Os testes `TestINVnn_*` estão em `test/contract/` (`runtime_inv_test.go`, `storage_inv_test.go`, `wiki_inv_test.go`).
+
+## Onde achar os docs
+
+Referência do produto (`docs/`):
+
+- `docs/overview.md`: visão do produto e invariantes de origem (§4).
+- `docs/domain-vocabulary.md`: vocabulário e regras de domínio.
+- `docs/database-schema.md`: esquema SQL; nomes de tabelas e colunas são contrato.
+- `docs/storage-and-retrieval.md`: armazenamento e busca (RRF).
+- `docs/wiki-files-layer.md`: formato em disco da wiki.
+- `docs/okf.md`: documento de referência OKF (conteúdo não resumido aqui).
+- `docs/test-fixtures.md` e `docs/assets/fixtures`: fixtures dos testes de contrato.
+- `docs/architecture.md` e `docs/design-decisions.md`: arquitetura e decisões de design.
+
+Specs, planos e decisões:
+
+- `specs/features/001-nucleo/spec.md`, `plan.md`, `tasks.md`.
+- `specs/features/001-nucleo/acceptance/nucleo.feature`: cenários Gherkin da 001.
+- `specs/features/001-nucleo/notes/`: contratos e notas da 001 (`inv-test-matrix.md`, `constitution-audit.md`, `domain-contract.md`, `search-contract.md`, `wiki-layout-contract.md`, `markdown-contract.md`, `sanitizer-patterns.md`, `fixtures-contract.md`, `bench-baseline.md`, `phase0-findings.md`).
+- `specs/features/002-captura-e-acesso/spec.md`: feature seguinte.
+- `reports/001-ai-memory-go-clean-room-discovery.md`: discovery com as ADRs de origem.
+- `.github/memory/constitution.md` e `.github/memory/tech.md`: regras e lista de dependências homologadas.
+
+## Regras de trabalho
+
+- SDD: nenhuma implementação sem `Aprovado: true` no `spec.md` e sem cenário Gherkin correspondente. A ordem é spec, plan, tasks, código.
+- Antes de alterar código, ler `.github/memory/constitution.md`. Regras da constituição só mudam com aprovação do autor.
+- Antes de adicionar dependência, consultar `.github/memory/tech.md`. Se não estiver listada, registrar ADR antes de usar.
+- Clean-room: contratos vêm só da documentação; nada é copiado do binário original.
+- Escopo e multi-sessão: mudanças em escopo, supersessão, identidade de sessão, escritor SQLite ou filtros de dono exigem teste multi-sessão (INV-16).
+- Mutações da wiki passam só pela camada `internal/wiki`.
+- Segredos: `.env` nunca é versionado (está no `.gitignore`); `.env.example` tem só nomes e valores de exemplo.
+- Verificação: `sh scripts/check.sh` (ou `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check.ps1`). `go test -race` usa gcc do host ou, sem ele, o container Docker `golang:<major.minor de go.mod>` (feito pelos scripts).
+
+## Dúvidas abertas
+
+- INV-05: `specs/features/001-nucleo/spec.md` lista "INV-01..06" como critério da 001, o que inclui a INV-05. O `plan.md` e a matriz marcam a INV-05 como fora da 001 (feature 002). Prevalece o `plan.md` até o autor decidir.
