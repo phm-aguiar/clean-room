@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 017
-- **Status:** draft (revisada contra os docs em 2026-10-13, incluindo `docs-adiados/`; nova revisão prevista quando a 016 terminar)
+- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 016 terminar)
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (erros, HTTP limitado, saúde passiva), 004 (agendador de manutenção), 002 (busca híbrida, status)
@@ -17,14 +17,14 @@ A busca híbrida da 001 tem FTS, entidades e grafo. Com vetores, ela encontra pa
 ## Escopo
 
 ### Dentro do escopo
-- **Interface do embedder** (`docs-adiados/llm-client.md` §8.1): rótulo, nome do modelo, identidade do modelo para documentos, dimensão, `embed`/`embed_document`/`embed_query`, vetor unitário. Prefixo de documento não vazio muda a identidade (`+dp1-` e 16 hex do SHA-256 do prefixo); prefixo de consulta não muda.
-- **Embedders remotos** (§8.2 a §8.4, `docs-adiados/llm-providers.md` §7): `openai`, `voyage`, `google`/`gemini`, `openai-compat`, com modelos e dimensões padrão, credenciais (`EMBEDDING_API_KEY`, `OPENAI_API_KEY`, `LLM_API_KEY` nos casos do doc, `VOYAGE_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`), timeout de 120 s, retentativa só para 429 (2, 4, 8, 16, 32 s), prefixos só em `openai` e `openai-compat`, truncamento (`min(max_tokens × 3, 8000)` bytes), parse do formato OpenAI, dimensão divergente como forma inesperada, normalização L2. `copilot` fica na 018.
-- **Embedder local** (`docs-adiados/local-embeddings.md`, `llm-client.md` §8.6): `all-MiniLM-L6-v2`, 384 dimensões, três arquivos com SHA-256 fixado (`model.safetensors`, `tokenizer.json`, `config.json`), diretório `<data_dir>/models/all-MiniLM-L6-v2/`, download do hub público (30 s de conexão, 600 s por arquivo, temporário e renomeação, checksum antes de instalar), sondagem barata por existência no boot, checksum no carregamento, pipeline (corte a 6144 bytes, tokenização com tokens especiais e sem preenchimento, 512 tokens, máscara real, média ponderada, L2, erro em norma zero ou não finita, inferência fora da goroutine de requisição), teste de calibração opt-in (0,15 a 0,45).
+- **Interface do embedder** (`docs/llm-client.md` §8.1): rótulo, nome do modelo, identidade do modelo para documentos, dimensão, `embed`/`embed_document`/`embed_query`, vetor unitário. Prefixo de documento não vazio muda a identidade (`+dp1-` e 16 hex do SHA-256 do prefixo); prefixo de consulta não muda.
+- **Embedders remotos** (§8.2 a §8.4, `docs/llm-providers.md` §7): `openai`, `voyage`, `google`/`gemini`, `openai-compat`, com modelos e dimensões padrão, credenciais (`EMBEDDING_API_KEY`, `OPENAI_API_KEY`, `LLM_API_KEY` nos casos do doc, `VOYAGE_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`), timeout de 120 s, retentativa só para 429 (2, 4, 8, 16, 32 s), prefixos só em `openai` e `openai-compat`, truncamento (`min(max_tokens × 3, 8000)` bytes), parse do formato OpenAI, dimensão divergente como forma inesperada, normalização L2. `copilot` fica na 018.
+- **Embedder local** (`docs/local-embeddings.md`, `llm-client.md` §8.6): `all-MiniLM-L6-v2`, 384 dimensões, três arquivos com SHA-256 fixado (`model.safetensors`, `tokenizer.json`, `config.json`), diretório `<data_dir>/models/all-MiniLM-L6-v2/`, download do hub público (30 s de conexão, 600 s por arquivo, temporário e renomeação, checksum antes de instalar), sondagem barata por existência no boot, checksum no carregamento, pipeline (corte a 6144 bytes, tokenização com tokens especiais e sem preenchimento, 512 tokens, máscara real, média ponderada, L2, erro em norma zero ou não finita, inferência fora da goroutine de requisição), teste de calibração opt-in (0,15 a 0,45).
 - **Padrão e degradação** (`local-embeddings.md` § Comportamento padrão, `llm-client.md` §8.5): sem `embedding_provider`, local em melhor esforço (download em segundo plano no primeiro boot, busca sem vetores até o boot seguinte, aviso e continuação se falhar); `none`/`off`/`disabled` desligam; provedor explícito que falha interrompe a inicialização; `local` explícito baixa antes de iniciar e falha se não conseguir.
 - **Embedder sintético** (§8.7) só para testes.
-- **Armazenamento** (`docs-adiados/vector-backend-policy.md` § Armazenamento, `docs/database-schema.md` §4): `page_embeddings` e `page_abstract_embeddings` (float32 little-endian, `dim × 4` bytes), `page_embed_failures` (`failed`, `unreadable`, `skipped_empty`, só a última falha). Sem extensão vetorial (decisões D1 e D2).
+- **Armazenamento** (`docs/vector-backend-policy.md` § Armazenamento, `docs/database-schema.md` §4): `page_embeddings` e `page_abstract_embeddings` (float32 little-endian, `dim × 4` bytes), `page_embed_failures` (`failed`, `unreadable`, `skipped_empty`, só a última falha). Sem extensão vetorial (decisões D1 e D2).
 - **Busca vetorial** (`docs/storage-and-retrieval.md` §11.3, `vector-backend-policy.md` § Busca vetorial): fluxos `vector` e `abstract` (opt-in `abstract_vectors`), varredura completa por projeto e tripla, produto escalar, top-k na janela de candidatos, vetor da consulta com degradação para FTS, entidade e grafo; linha corrompida devolve erro da consulta (comportamento do doc); `streams_active` com `vector` e `abstract`.
-- **Backfill** (`docs-adiados/consolidation-llm.md` §12, `local-embeddings.md` § Convivência): no boot e periódico (`maintenance.embedding_backfill_interval_secs`, padrão 0), lotes de 100, resumo em tabela própria, `reembed`, `dry_run`, contadores (`embedded`, `skipped`, `failed`, `would_embed`, `abstracts_embedded`), aviso no boot quando há outras triplas; `ai-memory embed [--force] [--project] [--dry-run]` como cliente HTTP de `POST /admin/embed` (`docs/api-reference.md` §3.4, 503 sem embedder).
+- **Backfill** (`docs/consolidation-llm.md` §12, `local-embeddings.md` § Convivência): no boot e periódico (`maintenance.embedding_backfill_interval_secs`, padrão 0), lotes de 100, resumo em tabela própria, `reembed`, `dry_run`, contadores (`embedded`, `skipped`, `failed`, `would_embed`, `abstracts_embedded`), aviso no boot quando há outras triplas; `ai-memory embed [--force] [--project] [--dry-run]` como cliente HTTP de `POST /admin/embed` (`docs/api-reference.md` §3.4, 503 sem embedder).
 - **Status e saúde**: páginas sem embedding (com corpo e vazias), linhas por tripla, papel `embedding` na saúde passiva da 016.
 
 ### Fora do escopo (explicitamente)
@@ -69,7 +69,7 @@ Pacote `internal/embed` (interface, remotos, sintético) e `internal/embed/minil
 - **Inferência local em Go puro (decisão nossa de implementação):** o doc define o modelo, os arquivos e o pipeline, não a tecnologia. Como o binário é `CGO_ENABLED=0`, o encoder é escrito em Go; a fidelidade é provada contra vetores de referência.
 
 ## Dependências
-- 016, 004, 002; `docs-adiados/llm-client.md` §8, `local-embeddings.md`, `vector-backend-policy.md`, `consolidation-llm.md` §12, `llm-providers.md` §7; `docs/storage-and-retrieval.md` §11.3, `docs/api-reference.md` §3.4, `docs/backup.md` (`models/` fora do backup).
+- 016, 004, 002; `docs/llm-client.md` §8, `local-embeddings.md`, `vector-backend-policy.md`, `consolidation-llm.md` §12, `llm-providers.md` §7; `docs/storage-and-retrieval.md` §11.3, `docs/api-reference.md` §3.4, `docs/backup.md` (`models/` fora do backup).
 
 ## Checklist de Prontidão
 - [x] Propósito claro e sem ambiguidade

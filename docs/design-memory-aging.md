@@ -13,9 +13,9 @@ as a proposal. Items whose behavior could not be fully checked are marked
 
 Related docs: [database-schema.md](database-schema.md) (tables),
 [consolidation.md](consolidation.md) (consolidation pipeline),
-[design-hindsight-borrowings.md](../docs-adiados/design-hindsight-borrowings.md) (belief
+[design-hindsight-borrowings.md](design-hindsight-borrowings.md) (belief
 strength), [lifecycle-ops.md](lifecycle-ops.md) (operations),
-[experience.md](../docs-adiados/experience.md) (cross-session experience pass).
+[experience.md](experience.md) (cross-session experience pass).
 
 ## 1. Principles (invariants every pass obeys)
 
@@ -107,7 +107,7 @@ Stored in `pages.salience`, changed by the page-feedback operation.
   window).
 - Callers in other areas (embedding, the wiki layer, the reader, the server) also
   reference the score. Whether any of them feeds search ranking is "a confirmar".
-  The belief-strength discussion is in [design-hindsight-borrowings.md](../docs-adiados/design-hindsight-borrowings.md).
+  The belief-strength discussion is in [design-hindsight-borrowings.md](design-hindsight-borrowings.md).
 
 Salience and breadth do not change search ranking in the code paths checked for
 this doc (see section "Not implemented").
@@ -389,7 +389,7 @@ terminal for clustering because of `compacted_at`.
 ## 8. Entropy and boilerplate pre-filter
 
 Pure function that classifies a text as `keep` or `skip(reason)`. It is used by the
-cross-session experience pass (see [experience.md](../docs-adiados/experience.md)) to drop
+cross-session experience pass (see [experience.md](experience.md)) to drop
 low-information session pages before they reach the LLM prompt. Skipped pages are
 not consolidated and never deleted.
 
@@ -607,7 +607,7 @@ Items below are proposals or known gaps. They are not current behavior.
 - Ranking influence from retention, access or evidence. Retrieval ranking does not
   read the retention score in the paths checked for this doc (other callers are
   "a confirmar"). Belief strength as a ranking factor is discussed in
-  [design-hindsight-borrowings.md](../docs-adiados/design-hindsight-borrowings.md).
+  [design-hindsight-borrowings.md](design-hindsight-borrowings.md).
 - Type or kind-dependent retention beyond the four tiers.
 - Dedup in the manual sweep entry points (MCP tool, admin route, CLI). Only the
   scheduled sweep runs it.

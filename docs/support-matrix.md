@@ -174,6 +174,6 @@ Os vetores são gravados com o rótulo do provedor e do modelo. Uma consulta com
 - [`harness-adapters.md`](harness-adapters.md) para os adaptadores de transcrição.
 - [`auto-scope.md`](auto-scope.md) para o isolamento por sessão com `--session-aware`.
 - [`marker-file.md`](marker-file.md) para o marcador `.ai-memory.toml`.
-- [`llm-providers.md`](../docs-adiados/llm-providers.md) e [`local-embeddings.md`](../docs-adiados/local-embeddings.md) para os detalhes de provedores.
+- [`llm-providers.md`](llm-providers.md) e [`local-embeddings.md`](local-embeddings.md) para os detalhes de provedores.
 - [`windows-native-extras.md`](windows-native-extras.md) para o que fica fora do repositório principal no Windows.
 - Páginas de produtos de terceiros: [`desktop/claude-desktop.md`](desktop/claude-desktop.md), [`desktop/cursor.md`](desktop/cursor.md), [`desktop/codex-desktop.md`](desktop/codex-desktop.md), [`desktop/zed.md`](desktop/zed.md), [`desktop/grok-desktop.md`](desktop/grok-desktop.md), [`desktop/antigravity.md`](desktop/antigravity.md) e [`desktop/extensions.md`](desktop/extensions.md).

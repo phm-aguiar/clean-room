@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 018
-- **Status:** draft (revisada contra os docs em 2026-10-13, incluindo `docs-adiados/`; nova revisão prevista quando a 017 terminar)
+- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 017 terminar)
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (interface de provedor, cadeia, saúde), 017 (interface de embedder), 009 (`auth.json`, comandos `auth`)
@@ -12,12 +12,12 @@
 ## Propósito
 > Para quem, o quê e por quê.
 
-Quem já paga uma assinatura (Claude Pro/Max, ChatGPT Plus/Pro, Codex, GitHub Copilot) quer usar os recursos de LLM sem comprar chave de API (`docs-adiados/design-hindsight-borrowings.md` P5). Esta feature acrescenta os provedores que se autenticam por token de assinatura ou login, sobre a fronteira da 016.
+Quem já paga uma assinatura (Claude Pro/Max, ChatGPT Plus/Pro, Codex, GitHub Copilot) quer usar os recursos de LLM sem comprar chave de API (`docs/design-hindsight-borrowings.md` P5). Esta feature acrescenta os provedores que se autenticam por token de assinatura ou login, sobre a fronteira da 016.
 
 ## Escopo
 
 ### Dentro do escopo
-- **`anthropic-oauth`** (`docs-adiados/llm-client.md` §4.1 e §5.1, `llm-providers.md` §4.2): `ANTHROPIC_OAUTH_TOKEN` com alias `CLAUDE_CODE_OAUTH_TOKEN` (o canônico vence), bearer e `anthropic-beta: oauth-2025-04-20,claude-code-20250219`, sem cabeçalho de chave, base URL aceita, modelo padrão; o aviso de que o uso vai contra as políticas do fornecedor aparece na documentação e no `llm-test`.
+- **`anthropic-oauth`** (`docs/llm-client.md` §4.1 e §5.1, `llm-providers.md` §4.2): `ANTHROPIC_OAUTH_TOKEN` com alias `CLAUDE_CODE_OAUTH_TOKEN` (o canônico vence), bearer e `anthropic-beta: oauth-2025-04-20,claude-code-20250219`, sem cabeçalho de chave, base URL aceita, modelo padrão; o aviso de que o uso vai contra as políticas do fornecedor aparece na documentação e no `llm-test`.
 - **`openai-oauth`** (§4.3 e §5.3, `llm-providers.md` §4.4): `ai-memory auth login openai-oauth` (espera de até 600 s, `--timeout-secs`), entrada `oauth` no `auth.json` da 009 com acesso, renovação e expiração em ms, renovação com 60 s de margem por refresh grant (timeout 300 s, refresh novo substitui, padrão 3600 s), Responses por stream SSE (`stream: true`, `store: false`, evento de conclusão obrigatório, erro como 502 sintético, stream truncado), cabeçalho `chatgpt-account-id`, identificador de sessão novo por requisição, `auth logout openai-oauth`.
 - **`codex`** (§5.4, `llm-providers.md` §4.5): leitura de `tokens.access_token` e `tokens.account_id` de `$CODEX_HOME/auth.json` ou `.codex/auth.json` a cada chamada, nunca grava credencial; recuperação de 401 (reler; se igual, executar `codex app-server --stdio` serializado no processo com os limites de saída de 256 KiB por linha, 1 MiB no total, 64 KiB de stderr e o menor entre o timeout e 30 s; nova tentativa única); `AI_MEMORY_CODEX_EXECUTABLE`.
 - **`copilot`** (§4.1, §4.3 e §5.7, `llm-providers.md` §4.7 e §7.5): ordem de credenciais (`GITHUB_COPILOT_API_TOKEN` direto; `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`; login armazenado), troca por token de API de curta duração com cache e margem de 120 s, base por `COPILOT_API_URL` ou configuração ou token, escolha de Chat Completions ou Responses pelo catálogo de modelos (com cache na instância e recaída para Chat Completions), cabeçalhos de integração de editor sem o `User-Agent` padrão; `ai-memory auth login copilot` (fluxo de dispositivo do GitHub, `--client-id` ou `AI_MEMORY_COPILOT_CLIENT_ID`, `--github-token`); embedder `copilot` (`text-embedding-3-small`, 1536, timeout 300 s, retentativa para 429, truncamento).
@@ -61,7 +61,7 @@ Arquivos novos em `internal/llm` (um por provedor e um para o stream de Response
 - **Fluxo do `auth login openai-oauth`:** os docs dão o prazo (600 s), o armazenamento e a renovação, mas não o protocolo de autorização. A T002 procura nos docs; se não houver, a escolha (navegador com PKCE ou dispositivo) é decisão nossa registrada no plano.
 
 ## Dependências
-- 016, 017, 009, 015; `docs-adiados/llm-client.md` §4 e §5, `llm-providers.md` §4, §7.5 e §8, `install.md` § Anthropic via Claude subscription, § OpenAI OAuth, § Codex credential reuse, § GitHub Copilot.
+- 016, 017, 009, 015; `docs/llm-client.md` §4 e §5, `llm-providers.md` §4, §7.5 e §8, `install.md` § Anthropic via Claude subscription, § OpenAI OAuth, § Codex credential reuse, § GitHub Copilot.
 
 ## Checklist de Prontidão
 - [x] Propósito claro e sem ambiguidade

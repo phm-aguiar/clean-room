@@ -35,7 +35,7 @@ Detalhes de cada área estão também em [complementary-contracts.md](complement
 (identidade de repositório, ledger de log, manifesto de backup de ativos de agentes,
 perfil entre projetos), [agent-messaging.md](agent-messaging.md),
 [okf.md](okf.md), [managed-workstreams.md](managed-workstreams.md),
-[prompts-schemas-and-sanitizer.md](../docs-adiados/prompts-schemas-and-sanitizer.md) e
+[prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md) e
 [marker-file.md](marker-file.md).
 
 ---

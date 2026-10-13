@@ -98,7 +98,7 @@ type Reader interface {
   - **Alternativa Rejeitada:** `os.WriteFile` direto (não atômico) e biblioteca de terceiros de rename atômico (dependência para ~40 linhas).
 
 - **Decisão (P-07): sanitizador como fronteira de tipo.** Pacote `domain/sanitize` expõe `Text()` e o tipo `Sanitized` (campo privado); `storage` e `wiki` só aceitam `Sanitized` nas assinaturas de escrita. Padrões de segredo em lista versionada (chaves de API de provedores comuns, tokens Bearer, JWT, chaves privadas PEM, `password=`/`secret=`/`token=`, URLs com credenciais), testados contra fixtures em `internal/domain/sanitize/testdata`. Remove segredo antes de truncar; trunca em fronteira de rune.
-  - **Justificativa:** INV-06 imposta pelo compilador, não por convenção. `docs-adiados/` está ausente, então a lista é nossa e fica registrada como débito de fidelidade.
+  - **Justificativa:** INV-06 imposta pelo compilador, não por convenção. `docs-adiados/` estava ausente, então a lista é nossa (hoje em `docs/prompts-schemas-and-sanitizer.md` §11; alinhamento na 002/T093) e fica registrada como débito de fidelidade.
   - **Alternativa Rejeitada:** sanitizar nos handlers (esquecível) e `string` com função `Clean()` opcional.
 
 - **Decisão (P-08): watcher com `fsnotify`, debounce de 300 ms e reconciliação de 30 s; reindex como caminho único.** O watcher e a reconciliação convergem para `wiki.IndexFile(ref)`, o mesmo código do `reindex` completo, que lê o markdown, deriva e chama `storage.UpsertPage`. Escritas próprias são ignoradas pelo prefixo e pelo identificador do arquivo. `reindex` e `reset` consultam processo vivo antes de agir (INV-09). Remoção de arquivo não apaga a página por padrão (tombstone opcional, desligado).

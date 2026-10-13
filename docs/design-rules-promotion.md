@@ -240,12 +240,12 @@ decisão.*
 
 ## Referências internas
 
-- [Ciclo de melhoria automática](../docs-adiados/auto-improvement-loop.md): propostas,
+- [Ciclo de melhoria automática](auto-improvement-loop.md): propostas,
   revisão e área pendente.
-- [Portões de avaliação da melhoria automática](../docs-adiados/auto-improve-eval-gates.md).
+- [Portões de avaliação da melhoria automática](auto-improve-eval-gates.md).
 - [Relações tipadas](typed-edges.md): `causes`, `fixes` e `contradicts`.
 - [Envelhecimento de memória](design-memory-aging.md): decaimento e saliência.
-- [Empréstimos de design para confiança de crença](../docs-adiados/design-hindsight-borrowings.md).
+- [Empréstimos de design para confiança de crença](design-hindsight-borrowings.md).
 - [Perfil entre projetos](cross-project-profile.md): aplicação de perfil em
   bloco delimitado.
 - [CLI](cli.md): instalação de instruções e comandos.

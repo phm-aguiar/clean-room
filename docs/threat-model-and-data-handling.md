@@ -293,7 +293,7 @@ garantias.
 - Não há análises de uso, relatório de falhas nem telemetria. O programa não tem dependência de telemetria.
 - Páginas da wiki e banco de dados ficam no diretório de dados do operador.
 - O padrão de embeddings é **local em processo**: modelo all-MiniLM-L6-v2, 384 dimensões, sem chave de API e
-  sem envio de conteúdo ([local-embeddings.md](../docs-adiados/local-embeddings.md)).
+  sem envio de conteúdo ([local-embeddings.md](local-embeddings.md)).
 - **Ressalva**: na primeira inicialização, o modelo (cerca de 87 MB) é baixado **uma vez** de um repositório
   público de modelos. Os arquivos têm SHA-256 fixado, verificado antes do uso. Em ambiente sem internet,
   instale o modelo antes ([airgapped-install.md](airgapped-install.md)).

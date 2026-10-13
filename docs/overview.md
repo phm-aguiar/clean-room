@@ -275,4 +275,4 @@ referência e podem mudar entre versões. Confirme os valores que forem crítico
   desinstalação. Para um detalhe fino, consulte a implementação de referência.
 - Constantes numéricas foram conferidas na versão 2.6.2; o changelog do projeto registra as alterações.
 - O esquema SQL está consolidado (estado final das 76 migrações) em [database-schema.md](database-schema.md); os arquivos de migração individuais não estão transcritos.
-- Os argumentos de cada ferramenta MCP e as rotas `/admin/*` estão em [api-reference.md](api-reference.md). Os prompts de LLM, os schemas de saída e as regexes do sanitizador estão literalmente em [prompts-schemas-and-sanitizer.md](../docs-adiados/prompts-schemas-and-sanitizer.md).
+- Os argumentos de cada ferramenta MCP e as rotas `/admin/*` estão em [api-reference.md](api-reference.md). Os prompts de LLM, os schemas de saída e as regexes do sanitizador estão literalmente em [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md).

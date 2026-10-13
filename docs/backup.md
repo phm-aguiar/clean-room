@@ -41,7 +41,7 @@ Back up by durability:
 | `raw/` | Optional. | Created at initialization. What it holds, and whether the system needs it to run, is a confirmar. The `backup` command does not include it. |
 | `db/` | **Yes, if you want anything that is not in the markdown.** | Holds the search index, which `ai-memory reindex` rebuilds from `wiki/`. It also holds database-only state: sessions, observations, handoffs, users, audit rows, embeddings, and decay counters. Rebuilding from markdown does not restore that state. The database uses write-ahead logging, so copy it only with the server stopped or through the `backup` command. See [`lifecycle-ops.md#reindex`](lifecycle-ops.md#reindex). |
 | `logs/` | No. | Daily rolling log output. Nothing durable. |
-| `models/` | No. | Local embedding model, about 87 MB. Files are checked against pinned checksums. They are downloaded again when missing at server startup. See [`local-embeddings.md`](../docs-adiados/local-embeddings.md). |
+| `models/` | No. | Local embedding model, about 87 MB. Files are checked against pinned checksums. They are downloaded again when missing at server startup. See [`local-embeddings.md`](local-embeddings.md). |
 | `.serve.lock` | No. | Lock file of the running server. |
 | `config.toml` | Yes, after checking it. | Useful to reproduce an install. Check it for inline secrets before pushing it anywhere; whether it can hold them is a confirmar. |
 | Credential files | **Never.** | Env files that hold provider keys, the OAuth token file `auth.json`, and certificate or private key files (`*.pem`, `*.key`, `*.crt`). |
@@ -336,7 +336,7 @@ This is stated in [`airgapped-install.md`](airgapped-install.md). In practice:
   copy-to-laptop idiom for container deployments.
 - [`airgapped-install.md`](airgapped-install.md): offline installs. It states that
   remote git sync is the operator's responsibility.
-- [`local-embeddings.md`](../docs-adiados/local-embeddings.md): how `models/` is fetched and pinned,
+- [`local-embeddings.md`](local-embeddings.md): how `models/` is fetched and pinned,
   which is why it does not need to be in the mirror.
 - [`overview.md`](overview.md): the system overview and invariants, including the
   atomic write rule that the per-file copy guarantee depends on.

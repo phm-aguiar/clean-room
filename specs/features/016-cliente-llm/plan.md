@@ -6,7 +6,7 @@
 - **Stack Tecnológico:** a da 002, sem dependência nova (`net/http`, `encoding/json`, `reflect`; UUIDv7 de `github.com/google/uuid`).
 - **Feature Fonte:** `specs/features/016-cliente-llm/spec.md`
 - **Escopo:** interfaces, erros, cabeçalhos, esforço, provedores por chave, contingência, saúde, `llm-test`.
-- **Fontes de contrato:** `docs-adiados/llm-client.md`, `llm-providers.md`, `llm-provider-fallback.md`.
+- **Fontes de contrato:** `docs/llm-client.md`, `llm-providers.md`, `llm-provider-fallback.md`.
 
 ## 2. Design de Contratos e Fronteiras
 - **Pacote `internal/llm`:** `Provider` (nome, modelo, `Complete`, `CompleteStructured`, estado de candidatos), `Typed[T]` (deriva o esquema e desserializa), `OperationID`, `Error` (categoria, classe, status, transitório).

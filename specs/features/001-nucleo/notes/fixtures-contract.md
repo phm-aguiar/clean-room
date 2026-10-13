@@ -105,7 +105,7 @@ LACUNA: o `docs/test-fixtures.md` §3 só recomenda um binário de integração 
 - Os fixtures `capture-policy`, `home_route_cases`, `remote_identity_cases` e `kiro-v3` não servem à busca RRF.
 
 **Sanitização de segredos** (spec: "Nenhum segredo cru persistido nas fixtures de sanitização"; INV-06; T013):
-- Fixtures próprios, ainda a criar: `internal/domain/sanitize/testdata/secrets.txt`. O spec, em "Débitos relevantes", registra que `docs-adiados/` está ausente e que os padrões serão reescritos a partir dos docs e de fixtures próprias.
+- Fixtures próprios, ainda a criar: `internal/domain/sanitize/testdata/secrets.txt`. O spec, em "Débitos relevantes", registra que `docs-adiados/` estava ausente (hoje em `docs/prompts-schemas-and-sanitizer.md` §11; alinhamento na 002/T093) e que os padrões serão reescritos a partir dos docs e de fixtures próprias.
 - Padrões previstos em P-07: chaves de API de provedores comuns, tokens Bearer, JWT, chaves privadas PEM, `password=`/`secret=`/`token=`, URLs com credenciais. Em RE2. O segredo é removido antes de limitar (título 80, corpo 16 KiB) e o corte é em fronteira de rune.
 - Dos fixtures existentes, nenhum contém segredo real; os `grep` por `sk-`, `Bearer`, `BEGIN`, `password`, `ghp_`, `AKIA` e `eyJ` só acharam ocorrências irrelevantes no texto (por exemplo "BEGIN IMMEDIATE" no `02`). O que mais se aproxima do tema:
   - `capture-policy.json` usa sentinelas de teste (`SENTINEL`, `secret/a`). `secret/**` são nomes de diretório, não credenciais, e servem à política de captura (`ignore_paths`), não ao sanitizador.

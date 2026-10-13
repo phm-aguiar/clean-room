@@ -205,7 +205,7 @@ pessoais. A garantia é de tipo, verificada na compilação:
 
 Cobertura: STRONG (estrutural). Há também um cenário de ponta a ponta, em que um segredo passado pela
 escrita não chega ao disco, e testes unitários da remoção. Ver
-[prompts-schemas-and-sanitizer.md](../docs-adiados/prompts-schemas-and-sanitizer.md).
+[prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md).
 
 ## Mensagens entre agentes
 

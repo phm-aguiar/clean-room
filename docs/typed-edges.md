@@ -187,5 +187,5 @@ this part runs whether or not the model-based passes are enabled.
 
 There is no relation-specific ranking weight, and no traversal of fix or cause
 chains beyond one hop in search. Both are deferred until an evaluation justifies
-them. See [design-hindsight-borrowings.md](../docs-adiados/design-hindsight-borrowings.md) for
+them. See [design-hindsight-borrowings.md](design-hindsight-borrowings.md) for
 the live contradiction count and the deferred items.

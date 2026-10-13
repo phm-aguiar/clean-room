@@ -265,7 +265,7 @@ max-rounds: 40
   - **Wiki-Keywords:** auto-scope, semente de startup, StartupSeed, reinício
 
 
-- [ ] **T093:** Alinhar o sanitizador da 001 ao contrato exato: os 27 padrões de `docs-adiados/prompts-schemas-and-sanitizer.md` §11.2 na ordem e com os limiares da tabela (inclui `auth_header` amplo com qualificador de autenticação, `env_secret` com a lista de variáveis de provedor e forma sem diferença de caixa, `telegram_token` nas duas formas, `jwt` com 16 ou mais por segmento, `aws_key` com borda de palavra); remoção de controle restrita à lista do §11.1; `[sanitize].allowlist` checada por ocorrência e `[sanitize].extra_patterns` com rótulo `custom`, expressão inválida impedindo o início (`docs/domain-vocabulary.md` §7.3, removendo o adiamento ADR-13 da 001); com teste por padrão (positivo, negativo e os casos de falso positivo do §11.4)
+- [ ] **T093:** Alinhar o sanitizador da 001 ao contrato exato: os 27 padrões de `docs/prompts-schemas-and-sanitizer.md` §11.2 na ordem e com os limiares da tabela (inclui `auth_header` amplo com qualificador de autenticação, `env_secret` com a lista de variáveis de provedor e forma sem diferença de caixa, `telegram_token` nas duas formas, `jwt` com 16 ou mais por segmento, `aws_key` com borda de palavra); remoção de controle restrita à lista do §11.1; `[sanitize].allowlist` checada por ocorrência e `[sanitize].extra_patterns` com rótulo `custom`, expressão inválida impedindo o início (`docs/domain-vocabulary.md` §7.3, removendo o adiamento ADR-13 da 001); com teste por padrão (positivo, negativo e os casos de falso positivo do §11.4)
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T010, T079

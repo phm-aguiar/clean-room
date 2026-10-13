@@ -12,4 +12,4 @@ Este projeto segue **Spec-Driven Development (SDD)**. Toda feature segue o fluxo
 - Leia `.github/memory/constitution.md` antes de qualquer alteração de código
 - Consulte `.github/memory/tech.md` antes de adicionar dependências
 - Valide a estrutura com `/sdd-validate` periodicamente
-- Nunca edite as documentacoes referencia em C:\Users\henri\OneDrive\Documentos\projetos\clean-room\docs
+- `docs/` é a referência do produto e tem prioridade sobre os artefatos SDD e o código; nunca modifique um doc para se ajustar a uma task (ajustes nos docs só a pedido do usuário)

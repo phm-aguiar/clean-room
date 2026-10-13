@@ -202,7 +202,7 @@ Fluxo:
   - `settled` (somente com `settled_first=true`): até **8** páginas, ordenadas por evidência e depois
     por recência.
 - **`memory_explore`:** digest em prosa feito pelo LLM, com o prompt de sistema do digest (ver
-  [prompts-schemas-and-sanitizer.md](../docs-adiados/prompts-schemas-and-sanitizer.md)). Orçamento base de
+  [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md)). Orçamento base de
   **16 000** tokens, escalado por `reasoning` da mesma forma que em 3.1.
   - Sem provedor de LLM: responde com `prose: null`, um motivo e o snapshot do briefing em JSON.
   - Registra incremento de acesso nas páginas que expôs (regras, slots, recentes, fixadas e

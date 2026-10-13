@@ -68,6 +68,14 @@ Referência do produto (`docs/`):
 - `docs/test-fixtures.md` e `docs/assets/fixtures`: fixtures dos testes de contrato.
 - `docs/architecture.md` e `docs/design-decisions.md`: arquitetura e decisões de design.
 
+Referência das features com LLM (016 a 022):
+
+- `docs/llm-client.md`, `llm-providers.md`, `llm-provider-fallback.md`, `architecture-llm.md`: cliente e provedores LLM.
+- `docs/local-embeddings.md`, `vector-backend-policy.md`: embeddings e busca vetorial.
+- `docs/consolidation-llm.md`, `prompts-schemas-and-sanitizer.md`: consolidação, prompts, esquemas e padrões do sanitizador.
+- `docs/auto-improvement-loop.md`, `auto-improve-eval-gates.md`, `experience.md`: auto-melhoria.
+- `docs/design-hindsight-borrowings.md`, `install.md`, `jev-reranker-adapter.md`: decisões de design, instalação e propostas.
+
 Specs, planos e decisões:
 
 - `specs/features/001-nucleo/spec.md`, `plan.md`, `tasks.md`.

@@ -94,14 +94,14 @@ depois:
 | `base_path` | vazio | Prefixo de todas as rotas. |
 | `allowed_hosts` | `localhost`, `127.0.0.1`, `::1` | Lista de `Host` aceitos; defesa contra *DNS rebinding*. |
 | `cors_allow_origins` | vazio | Origens CORS permitidas. |
-| `llm_provider`, `llm_model`, `llm_base_url` | a confirmar | Provedor e modelo do cliente LLM ([llm-providers.md](../docs-adiados/llm-providers.md)). |
+| `llm_provider`, `llm_model`, `llm_base_url` | a confirmar | Provedor e modelo do cliente LLM ([llm-providers.md](llm-providers.md)). |
 | `llm_compat_strict` | `true` | Modo estrito de compatibilidade do cliente LLM. |
 | `llm_timeout_secs` | `300` | Tempo máximo por requisição LLM. |
 | `llm_reasoning_effort` | a confirmar | Esforço de raciocínio do provedor. |
 | `llm_headers` | vazio | Cabeçalhos extras (validados na carga). |
 | `llm_fallbacks[]` | vazio | Provedores de contingência, cada um com provedor, modelo e, opcionalmente, URL base e variável de ambiente da chave. |
 | `reranker` | desligado | Único valor aceito: `llm` (sem diferenciar maiúsculas e minúsculas). Qualquer outro valor é erro. |
-| `embedding_provider`, `embedding_model`, `embedding_dim`, `embedding_base_url` | a confirmar | Configuração do embedding ([local-embeddings.md](../docs-adiados/local-embeddings.md)). |
+| `embedding_provider`, `embedding_model`, `embedding_dim`, `embedding_base_url` | a confirmar | Configuração do embedding ([local-embeddings.md](local-embeddings.md)). |
 | `consolidate_on_session_end` | `false` | Liga a consolidação ao fim de sessão (seção 4). |
 | `capture_assistant` | `false` | Captura também as respostas do assistente. |
 | `backfill_on_start` | `true` | Importa o histórico local no primeiro início de projeto vazio. Desligável por configuração ou por variável de ambiente. |

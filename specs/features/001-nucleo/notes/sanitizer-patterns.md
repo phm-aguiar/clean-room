@@ -4,7 +4,7 @@ Task T003, feature 001-nucleo. Esta nota é somente leitura e não reproduz segr
 
 ## 0. Fontes lidas e achado principal
 
-- `docs/security.md` e `docs/security-boundaries.md` (§7, "Fronteira do sanitizador") dão a garantia estrutural (tipo-fronteira) e as classes de token do próprio servidor. O §7 remete a `docs-adiados/prompts-schemas-and-sanitizer.md`, que **não existe** no repo.
+- `docs/security.md` e `docs/security-boundaries.md` (§7, "Fronteira do sanitizador") dão a garantia estrutural (tipo-fronteira) e as classes de token do próprio servidor. O §7 remete a `docs/prompts-schemas-and-sanitizer.md`, que **não existe** no repo.
 - A fonte detalhada dos padrões está em `docs/domain-vocabulary.md` §7 (pipeline, tabela de padrões, limites). Ela não estava na lista da tarefa, mas é a fonte principal.
 - `docs/test-fixtures.md` não lista fixtures de segredo. Em `docs/assets/fixtures` não há fixture de sanitização. Os resultados de `grep secret` em `capture-policy.json` são só caminhos `secret/**` de política de captura.
 - `docs/backup.md` L58-66, `docs/architecture.md` L220-223 e L546-548, `docs/admission-webhooks.md` §2.1, `docs/api-reference.md` L377 e `docs/design-backup-agent-assets.md` §5 complementam o quadro.
@@ -98,7 +98,7 @@ Decisões nossas adicionais:
 
 ## (d) Lacunas
 
-- **LACUNA 1:** `docs-adiados/prompts-schemas-and-sanitizer.md` (referenciado em security-boundaries L208) não existe. Os padrões exatos do original são desconhecidos. Só há descrições textuais em domain-vocabulary §7.2.
+- **LACUNA 1:** `docs/prompts-schemas-and-sanitizer.md` (referenciado em security-boundaries L208) não existe. Os padrões exatos do original são desconhecidos. Só há descrições textuais em domain-vocabulary §7.2.
 - **LACUNA 2:** não há fixtures de sanitização em `docs/assets/fixtures` nem em `docs/test-fixtures.md`. Os golden files de sanitização precisam ser criados por nós.
 - **LACUNA 3:** a lista de "variáveis conhecidas" da forma (a) de `env_secret` é citada só por exemplos (`OPENAI_API_KEY`, `GITHUB_TOKEN`, `HF_TOKEN`, `AWS_SECRET_ACCESS_KEY` e "outras"). A lista completa é desconhecida. A forma (b), por sufixo, cobre a maioria.
 - **LACUNA 4:** "80 caracteres exibidos" é ambíguo (runes ou grafemas). O doc não diz se as reticências ficam dentro dos 80. Há dois pontos abertos: o texto de reticências ("…" ou "...") e a regra de contagem. Precisa de ADR.

@@ -81,7 +81,7 @@ Módulo Go único com camadas em `internal/`, sem CGO. O domínio não faz I/O. 
 backpressure natural). A wiki usa o `git` do sistema e a escrita atômica de arquivo. Decisões em ADR-01,
 02, 03, 04, 07, 08 e 10 do discovery.
 
-Débitos relevantes: `docs-adiados/` ausente (os padrões de segredo do sanitizador serão reescritos a
+Débitos relevantes: `docs-adiados/` ausente na época (hoje em `docs/prompts-schemas-and-sanitizer.md` §11; alinhamento na 002/T093) (os padrões de segredo do sanitizador serão reescritos a
 partir dos docs e de fixtures próprias); pontos "a confirmar" decididos por nós via ADR; desempenho do
 FTS5 do modernc ainda não medido.
 

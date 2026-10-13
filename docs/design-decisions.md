@@ -133,7 +133,7 @@ Comportamento verificado:
   são **a confirmar**.
 - **Provedor local em processo.** Existe um provedor de embeddings local
   (modelo de 384 dimensões). O modelo não vem embutido no binário; é baixado
-  uma vez. Detalhes em [local-embeddings.md](../docs-adiados/local-embeddings.md).
+  uma vez. Detalhes em [local-embeddings.md](local-embeddings.md).
   *Comportamento verificado.* A localização do cache em `<data_dir>/models/`
   é **a confirmar**.
 - **Chave de vetor.** Cada vetor guardado registra `{provider, model, dim}`.
@@ -364,7 +364,7 @@ de retenção (não contra expiração por TTL). *Comportamento verificado.*
 
 O loop de aprendizado (propostas, patches, rejeições, agendador) é separado da
 consolidação normal de sessão. Detalhes em
-[auto-improvement-loop.md](../docs-adiados/auto-improvement-loop.md). Padrões verificados:
+[auto-improvement-loop.md](auto-improvement-loop.md). Padrões verificados:
 
 - O agendador revisa sessões recém-concluídas quando há provedor de LLM. Ele vem
   ligado por padrão, a cada 3600 segundos, com no máximo uma sessão por projeto

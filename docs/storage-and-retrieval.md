@@ -674,7 +674,7 @@ Limite de tentativas: **5** (`SESSION_CONSOLIDATION_MAX_ATTEMPTS`).
   (`AUTO_IMPROVE_CLAIM_MAX_ATTEMPTS`). Isso evita reprocessamento eterno. As claims tornam o revisor
   idempotente entre reinicializações.
 
-Ver [loop de auto-melhoria](../docs-adiados/auto-improvement-loop.md) e [gates de avaliação](../docs-adiados/auto-improve-eval-gates.md).
+Ver [loop de auto-melhoria](auto-improvement-loop.md) e [gates de avaliação](auto-improve-eval-gates.md).
 
 ---
 

@@ -112,7 +112,7 @@ Fonte: DV §6.1. O tipo se chama `Tier` e tem quatro valores em minúsculas.
 - Pipeline de sanitização (DV §7.1):
   1. Remoção de controle: escapes de terminal, C0 e C1 exceto tab, LF e CR, DEL, e marcadores bidi.
   2. Padrões em ordem, do mais específico ao mais geral. Cada trecho vira `[REDACTED:<rótulo>]`, salvo se contiver item da allowlist.
-- LACUNA: DV §7.2 lista só rótulos e descrições dos padrões, não as regexes. As regexes estão em `docs-adiados/prompts-schemas-and-sanitizer.md`, que está ausente (SPEC "Débitos"). A lista de padrões será reescrita a partir dos docs e de fixtures próprias.
+- LACUNA: DV §7.2 lista só rótulos e descrições dos padrões, não as regexes. As regexes estão em `docs/prompts-schemas-and-sanitizer.md`, que está ausente (SPEC "Débitos"). A lista de padrões será reescrita a partir dos docs e de fixtures próprias.
 - LACUNA: DV §7.4 diz que o teto de título é de "80 caracteres exibidos". O PLAN P-07 diz que trunca "em fronteira de rune". "Exibidos" (grafemas) e "rune" não são a mesma coisa. Esta ambiguidade precisa de decisão.
 - LACUNA: o PLAN menciona limites de entidade e as regras do DV §7, mas "Limits" em `sanitize.Text(raw, limits Limits)` não tem os campos definidos.
 
@@ -245,7 +245,7 @@ A validação ocorre na construção, então o armazenamento pode tratar o camin
 8. Detalhes de `SearchText` (colapso de espaços, trim) não especificados.
 9. Aliases PascalCase e snake_case de `ObservationKind` só têm 3 exemplos.
 10. "80 caracteres exibidos" (DV) contra "fronteira de rune" (PLAN).
-11. Regexes do sanitizador ausentes (`docs-adiados/` ausente). Campos de `Limits` não definidos.
+11. Regexes do sanitizador ausentes (`docs-adiados/` ausente na época; hoje em `docs/prompts-schemas-and-sanitizer.md` §11; alinhamento na 002/T093). Campos de `Limits` não definidos.
 12. Tipos de ID distintos (DV) contra um único `ID` (PLAN).
 13. Política de retenção por tier está em `storage-and-retrieval.md`, não lido.
 14. Mapeamento tier para tipo OKF não existe.

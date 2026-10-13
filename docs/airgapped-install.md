@@ -172,7 +172,7 @@ Cloud embedding providers cannot be used on an air-gapped host.
 
 - [Threat model and data handling](threat-model-and-data-handling.md): what
   leaves the host, and when.
-- [Local embeddings](../docs-adiados/local-embeddings.md): provider choices, including the
+- [Local embeddings](local-embeddings.md): provider choices, including the
   offline path in more detail.
 - [Deploy](deploy.md): container and homelab deployment.
 - [Security](security.md): loopback default and authentication.

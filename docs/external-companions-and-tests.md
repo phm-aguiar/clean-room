@@ -493,7 +493,7 @@ Eles **não fazem parte do produto distribuído**: não entram na imagem de cont
 
 Quando usar: depois de trocar de provedor ou de modelo, ou ao editar o prompt de consolidação. Os fixtures são sessões sintéticas curtas, que exercitam casos difíceis: extração de regra durável, separação de múltiplos tópicos, sessões em que o correto é não dizer nada, e distinção entre decisão e armadilha. Cada fixture tem nome, descrição e uma lista de observações, cada uma com tipo, título e corpo.
 
-Mínimo útil para um sinal de regressão de qualidade: uma pasta de fixtures de sessões sintéticas, o mesmo código de montagem de requisição usado em produção (ver [prompts-schemas-and-sanitizer.md](../docs-adiados/prompts-schemas-and-sanitizer.md)), e leitura humana lado a lado das saídas de dois provedores.
+Mínimo útil para um sinal de regressão de qualidade: uma pasta de fixtures de sessões sintéticas, o mesmo código de montagem de requisição usado em produção (ver [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md)), e leitura humana lado a lado das saídas de dois provedores.
 
 Relatórios de benchmark não fazem parte desta documentação.
 

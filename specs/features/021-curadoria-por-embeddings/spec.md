@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 021
-- **Status:** draft (revisada contra os docs em 2026-10-13, incluindo `docs-adiados/`; nova revisão prevista quando a 020 terminar)
+- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 020 terminar)
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 017 (vetores armazenados por tripla), 016 (provedor), 004 (varredura, conjunto frio, compactação, lint), 008 (admissão `consolidate`)
@@ -17,7 +17,7 @@ Com vetores armazenados, a manutenção pode juntar páginas frias quase duplica
 ## Escopo
 
 ### Dentro do escopo
-- **Deduplicação de clusters frios (A3)** (`docs/design-memory-aging.md` §7, `docs-adiados/consolidation-llm.md` §7.4): `[decay] dedup_cold_clusters` (falso), `dedup_min_pts` (0 = 2), `dedup_max_eps` (0 ou inválido = 0,15); conjunto elegível (frio sem `compacted_at`); distância cosseno limitada a [0, 2] (1,0 para tamanho divergente ou vetor zero); eps adaptativo pelo cotovelo; DBSCAN determinístico; sobrevivente de maior retenção reescrito pelo construtor de compactação da 004 sobre a união dos corpos, com linha de fusão, `merged_from` e `compacted: true`; stubs com `merged_into`; evidência `a3_merge:<id>`; um lote; cluster com leitura falha pulado; só na varredura agendada; `eps` no relatório.
+- **Deduplicação de clusters frios (A3)** (`docs/design-memory-aging.md` §7, `docs/consolidation-llm.md` §7.4): `[decay] dedup_cold_clusters` (falso), `dedup_min_pts` (0 = 2), `dedup_max_eps` (0 ou inválido = 0,15); conjunto elegível (frio sem `compacted_at`); distância cosseno limitada a [0, 2] (1,0 para tamanho divergente ou vetor zero); eps adaptativo pelo cotovelo; DBSCAN determinístico; sobrevivente de maior retenção reescrito pelo construtor de compactação da 004 sobre a união dos corpos, com linha de fusão, `merged_from` e `compacted: true`; stubs com `merged_into`; evidência `a3_merge:<id>`; um lote; cluster com leitura falha pulado; só na varredura agendada; `eps` no relatório.
 - **Filtro de entropia e boilerplate (A4)** (`design-memory-aging.md` §8, `consolidation-llm.md` §9): função pura `keep`/`skip(near_empty|low_entropy|repetitive)` com a configuração `[auto_improve.scheduler.experience_entropy_filter]` validada na carga mesmo desligada; consumida pela passada de experiência da 022.
 - **Banda de contradição** (`design-memory-aging.md` §9): `contradiction_band_min` (0,4) e `contradiction_band_max` (0,75) com variáveis de ambiente; 60 páginas `semantic`/`procedural` mais frias; pares em ordem de caminho; achado `contradiction` `info` com a mensagem do doc; até 25; nada editado nem aresta persistida.
 - **Dream pass (B2 a B4)** (`design-memory-aging.md` §10, `prompts-schemas-and-sanitizer.md` §7, `consolidation-llm.md` §8): configuração `[dream]` e a forma por ambiente; agendador só com `enabled`, provedor e embedder; relógio de atividade carimbado em cada chamada de ferramenta MCP (inicializado no boot); janela ociosa; observador de cerca de 2 s; cancelamento só entre clusters; erro de escopo registrado sem parar; algoritmo do §10.3 (conjunto frio, vetores frios e conhecimento existente, DBSCAN, surprisal, ordenação e corte, `dry_run` sem LLM, preflight de admissão `consolidate`, leitura, uma chamada estruturada com o prompt literal, corpo de cada membro até 6000 bytes com `[truncated]`, `max_tokens` 4000, temperatura 0,1, esquema `{title, body_markdown}` com extras rejeitados, lote do sobrevivente e dos stubs, evidência `b2_dream:`); sobrevivente não marcado `compacted`; relatório JSON do §10.4.
@@ -56,7 +56,7 @@ Com vetores armazenados, a manutenção pode juntar páginas frias quase duplica
 Funções puras (cosseno, eps, DBSCAN, surprisal, entropia) em `internal/domain/maintenance`, ao lado da retenção da 004; deduplicação, banda e dream na `wiki`, junto da varredura e do lint da 004; agendador do dream no `cli`; relógio de atividade no `mcp`.
 
 ## Dependências
-- 017, 016, 004, 008; `docs/design-memory-aging.md` §7 a §12; `docs-adiados/consolidation-llm.md` §7.4, §8 e §9; `prompts-schemas-and-sanitizer.md` §7.
+- 017, 016, 004, 008; `docs/design-memory-aging.md` §7 a §12; `docs/consolidation-llm.md` §7.4, §8 e §9; `prompts-schemas-and-sanitizer.md` §7.
 
 ## Checklist de Prontidão
 - [x] Propósito claro e sem ambiguidade

@@ -1,15 +1,16 @@
 # Constituição Arquitetural
 
 > Este arquivo define as regras incontornáveis do projeto.
-> **Os docs de origem (`docs/`) são a fonte da verdade e nunca são editados.** Esta constituição, como todo
-> artefato do SDD, é derivada deles: quando divergir de um doc, é ajustada para seguir o doc e a mudança é
+> **Os docs (`docs/`) são a referência do produto e têm prioridade sobre os artefatos do SDD e o código.**
+> Um doc nunca é modificado para se ajustar a uma task, a uma spec ou ao código; ajustes nos docs (organização,
+> links, correções) só por decisão explícita do dono do produto. O produto é tudo o que os docs descrevem, limitado
+> ao escopo das specs. Esta constituição, como todo artefato do SDD, é derivada deles: quando divergir de um doc, é ajustada para seguir o doc e a mudança é
 > registrada na feature que a motivou. Onde o doc é omisso, a regra é "decisão nossa", marcada como tal.
 >
 > Origem: invariantes de `docs/overview.md` §4 (numeração `INV-nn` é a do projeto de origem), regras de
 > fronteira, grafo de dependências (§9) e decisões do discovery `reports/001-ai-memory-go-clean-room-discovery.md`.
 > Itens marcados **(a confirmar)** não foram verificados no código de referência; a decisão tomada está em ADR.
-> Fonte complementar: os docs citados como `../docs-adiados/*.md` não estão neste repositório; ficam em
-> `~/OneDrive/Documentos/projetos/docks-de-planejamento/ai-memory/docs-adiados/` e valem como `docs/` (nunca editados).
+> Os antigos docs adiados (LLM, embeddings, auto-melhoria) foram incorporados a `docs/` em 2026-10-13.
 > Revisão de 2026-10-13: INV-01, INV-06, INV-09, INV-10, resolução de escopo e mutações da wiki alinhadas aos
 > docs; decisões D1 a D4 da auditoria da 001 incorporadas.
 

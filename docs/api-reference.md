@@ -195,10 +195,10 @@ usuário cadastrado ou quando há um proxy de identidade confiável configurado.
   `max_patchable_body_chars` (8 000); `max_edits_per_proposal` (5); `max_edit_content_chars` (4 000);
   `max_changed_chars_per_proposal` (12 000); `max_patch_edits_per_run` (8); `max_rejection_context`
   (50); `rejection_context_days` (180); `max_final_body_chars` (limite de proposta, ver
-  [auto-improvement-loop.md](../docs-adiados/auto-improvement-loop.md)); `max_rule_page_tokens` (2 000);
+  [auto-improvement-loop.md](auto-improvement-loop.md)); `max_rule_page_tokens` (2 000);
   `max_procedure_page_tokens` (2 000); `include_raw_fallback` (false); `proposal_actor` (`auto_improve`);
   `pending_path` (`_pending/auto-improve`); `eval?` (portão externo de avaliação, ver
-  [auto-improve-eval-gates.md](../docs-adiados/auto-improve-eval-gates.md)).
+  [auto-improve-eval-gates.md](auto-improve-eval-gates.md)).
 - Os campos `dry_run`, `stage` e `mode` foram removidos. Se enviados, a requisição falha fechada.
 - Resposta: `{run_id, approval_required, approval_policy, session_id, summary, warnings[],
   rejected_candidates_count, proposals[{id, sidecar_path, status, page_id?}], skipped[]}`.
