@@ -1,4 +1,4 @@
-## Fluxo SDD
+## SDD Workflow
 
 Este projeto segue **Spec-Driven Development (SDD)**. Toda feature segue o fluxo:
 
