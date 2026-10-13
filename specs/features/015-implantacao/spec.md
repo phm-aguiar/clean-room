@@ -1,49 +1,90 @@
-# Spec: Implantação (contêiner, instalação offline, HTTPS por proxy, Windows nativo)
+# Spec: Implantação (contêiner, releases, `upgrade`, proxy HTTPS, Windows nativo)
 
 ## Metadados
 - **ID:** 015
-- **Status:** draft (esqueleto gerado a partir dos docs em 2026-10-13; revisar contra os docs antes de aprovar)
+- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 014 terminar)
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
-- **Feature Anterior:** 007
+- **Feature Anterior:** 014 (normalizador de prefixo, interface web), 007 (autenticação, limite de login), 002 (servidor, hooks, backup pelo servidor)
 - **Roadmap:** `specs/features/roadmap.md`
 - **Aprovado:** false
 
 ## Propósito
-Levar o servidor para além da máquina local com segurança: contêiner, instalação sem rede, TLS por proxy reverso e os extras do Windows nativo.
+> Para quem, o quê e por quê.
+
+Operadores querem rodar o servidor fora da própria máquina com segurança: em contêiner num homelab, atrás de um proxy com HTTPS, sem rede (air-gapped) ou como serviço no Windows. Esta feature entrega os artefatos de distribuição (imagem, releases com checksum, unidades de serviço, wrappers), o comando `upgrade`, o prefixo de URL do servidor inteiro, o IP do cliente atrás de proxy confiável e os ajustes de Windows nativo que ainda faltam.
 
 ## Escopo
 
 ### Dentro do escopo
-- Implantação em contêiner e health check (`docs/deploy.md`).
-- Instalação offline (`docs/airgapped-install.md`).
-- HTTPS por proxy reverso e redes de proxy confiáveis (`docs/https-via-proxy.md`).
-- Windows nativo e extras (serviço, caminhos, antivírus) (`docs/windows.md`, `docs/windows-native-extras.md`).
-- Rotinas de backup externo e espelho git remoto (`docs/backup.md`).
-- Comandos `init`, `generate-auth-token` e `upgrade` (`docs/cli.md` §9).
+- **Imagem de contêiner** (`docs/hook-scripts-and-container-deploy.md` §4.1): build em estágio separado (toolchain Go), runtime Debian bookworm-slim só com certificados de autoridade, usuário `ai-memory` uid/gid 1000 com `/data`, variáveis `AI_MEMORY_DATA_DIR=/data`, `AI_MEMORY_ALLOWED_HOSTS=localhost,127.0.0.1,::1,host.docker.internal`, `AI_MEMORY_IN_CONTAINER=1`, porta 49374, healthcheck pelo `status` (30 s, timeout 5 s, início 5 s, 3 tentativas), entrypoint o binário com `serve --transport http --bind 0.0.0.0:49374 --enable-web`, scripts de hook em `/usr/local/share/ai-memory/hooks`; alvos de runtime pré-compilados amd64 e arm64.
+- **Composições de referência** (§4.2): desenvolvimento local (porta só em loopback), homelab na LAN, TLS com Caddy (três variantes), túnel de saída, harness de múltiplos operadores com proxy de identidade. Arquivo de ambiente sem aspas (§4.3).
+- **Releases** (`docs/airgapped-install.md`): arquivos `ai-memory-linux-x86_64.tar.gz`, `ai-memory-linux-aarch64.tar.gz`, `ai-memory-windows-x86_64.zip`, cada um com `.sha256` no formato da ferramenta padrão.
+- **Comando `upgrade` nativo** (`docs/airgapped-install.md` § Updates, `docs/windows.md` § Upgrade): host configurável (`release_base_url` / `AI_MEMORY_RELEASE_BASE_URL`), arquivo em `<base>/download/<tag>/<arquivo>` e checksum no mesmo caminho com `.sha256`, checksum verificado antes de extrair ou trocar o binário, versão fixável, última tag pela API do GitHub no host padrão ou por `latest/tag` em host próprio; troca do executável em execução (no Windows, renomeia o atual para o lado e remove a cópia antiga por melhor esforço); reexecuta `install-hooks --apply` para cada agente instalado; só nas plataformas com release.
+- **Wrappers** (`docs/hook-scripts-and-container-deploy.md` §5.4, `docs/windows-native-extras.md` §2): POSIX, PowerShell e cmd; montagens, variáveis repassadas, URL do servidor por subcomando, cliente nativo baixado e verificado por checksum para `run`, `show`, `continue`, `resume`, `workstreams`, `rename-workstream`, `mcp-bridge` e `install-hooks`; `upgrade` do wrapper (POSIX: seis passos; Windows: só o pull da imagem); checagem de versão no máximo uma vez por dia.
+- **Unidades de serviço Linux** (§5.1): unidade de sistema endurecida e unidade de usuário, sysusers e tmpfiles.
+- **Prefixo do servidor inteiro** (`docs/https-via-proxy.md` § Subcaminho): `AI_MEMORY_BASE_PATH` com o normalizador da 014; todas as rotas sob o prefixo; clientes usam o caminho da URL configurada como prefixo base.
+- **IP do cliente atrás de proxy** (§ `X-Forwarded-For`): honrado só em conexões de `[auth].trusted_proxy_cidrs`, usado só no limite de tentativas de login e recuperação da 007.
+- **Keepalive TCP** por conexão (`tcp_keepalive_secs`, 0 desliga; `docs/cli.md` §3.5).
+- **Windows nativo** (`docs/windows-native-extras.md`, `docs/windows.md`): erro de dono do repositório da wiki registrado em nível de erro na inicialização com a instrução de rodar como o dono; exemplo de serviço com WinSW e guia da conta de serviço.
+- **Rotinas externas** (`docs/backup.md`, `docs/deploy.md`): script de snapshot com espelho e push (exclusões do doc), unidades de timer, exemplo de compactação condicional (nunca `VACUUM` incondicional).
+- **Sem chamada de rede por padrão** (`docs/airgapped-install.md` § Runtime): teste que prova que, com a configuração padrão, só há conexão ao servidor configurado.
 
 ### Fora do escopo (explicitamente)
-- macOS (fora do escopo inicial, `.github/memory/tech.md`).
-
-## Fontes (docs)
-- `docs/deploy.md`, `docs/airgapped-install.md`, `docs/https-via-proxy.md`, `docs/windows.md`, `docs/windows-native-extras.md`, `docs/backup.md`, `docs/cli.md`.
-
-## Dependências
-- 007 (autenticação para exposição em rede), 002.
+- macOS (releases, launchd, wrapper de macOS): fora do escopo inicial (`.github/memory/tech.md`). Os docs publicam arquivos de macOS; aqui não.
+- Pacotes AUR, RPM e Nix (os testes de empacotamento Nix do doc ficam de fora junto).
+- Assinatura de código (o próprio doc a deixa para decisão do mantenedor).
+- Download do modelo de embeddings local (feature 017).
+- Migração de formato 2.0 (não se aplica: este produto nasce no OKF 0.2).
 
 ## Comportamento Esperado
-> A preencher na revisão contra os docs listados em "Fontes". Cenários Gherkin (sucesso, falha e borda) saem dos cenários de aceitação dos próprios docs, quando existirem.
+
+### Cenário Principal (Happy Path)
+1. O operador sobe a composição de homelab com `AI_MEMORY_AUTH_TOKEN` e a lista de hosts com o nome público; o healthcheck fica saudável; o proxy termina o TLS.
+2. Numa máquina sem rede, o operador confere o `.sha256`, extrai o arquivo, roda o servidor; nenhum tráfego sai do host.
+3. Mais tarde, `ai-memory upgrade` baixa a versão nova do espelho interno, confere o checksum, troca o binário e reinstala os hooks.
+
+### Cenários Alternativos
+- **Checksum diferente no `upgrade`:** recusa antes de extrair; binário intacto.
+- **`AI_MEMORY_BASE_PATH` com segmento inválido:** monta na raiz e registra o motivo.
+- **`X-Forwarded-For` de conexão não confiável ou com IP inválido:** vale o IP da conexão.
+- **Serviço Windows com outra conta que não a dona do diretório:** servidor sobe, commits da wiki falham, erro registrado na inicialização com a orientação.
+
+## Edge Cases
+- `X-Forwarded-For` com todos os IPs confiáveis: usa o primeiro da lista.
+- Wrapper sem o comando do Docker: código 127 citando `AI_MEMORY_DOCKER`.
+- `upgrade` do wrapper sem checksum publicado: recusa a autoatualização.
+- Prefixo `//wiki//` vira `/wiki`; `..` derruba para a raiz.
+
+## Constraints
+- **Segurança:** checksum antes de qualquer troca de binário; arquivo de ambiente sem segredo commitado; nenhuma telemetria.
+- **Tecnologia:** sem dependência nova no binário (HTTP, `archive/tar`, `archive/zip`, `compress/gzip`, `crypto/sha256` da stdlib).
 
 ## Critérios de Sucesso
-- [ ] A preencher na revisão: cada regra numérica e cada cenário de aceitação dos docs com teste correspondente
-- [ ] Testes de contrato das invariantes tocadas, com teste multi-sessão quando a constituição exigir
+- [ ] Imagem constrói e o healthcheck passa num smoke local
+- [ ] `upgrade` testado contra um servidor de releases falso (checksum certo, errado, ausente, versão fixada)
+- [ ] Normalizador de prefixo e `X-Forwarded-For` cobertos por teste de tabela
+- [ ] Teste de "nenhuma conexão de saída por padrão"
 - [ ] `scripts/check.sh` e o lint passam sem apontamentos
 
+## Abordagem Escolhida
+Artefatos de distribuição em `deploy/` e `contrib/` (fora do binário); `upgrade` e keepalive no `cli`; prefixo do servidor reaproveitando o normalizador da 014; IP do cliente como função pura chamada pelo limitador de login da 007.
+
+## Decisões tomadas
+- **Imagem com Go:** o doc descreve a receita da implementação de referência (toolchain própria); aqui o estágio de build usa a imagem oficial do Go na versão do `go.mod`, e o binário é estático (`CGO_ENABLED=0`). Runtime mantém o Debian bookworm-slim do doc.
+- **Fallback de Git no Windows (`docs/windows-native-extras.md` §6.2) não se aplica:** este produto já usa o programa `git` (não há biblioteca de Git embutida). Fica só o tratamento do erro de dono.
+- **Troca atômica com repetição no Windows (§6.1):** já existe na 001 (`internal/wiki/atomicfile.go`); a T001 só reconfere os números (5 tentativas, 10 a 50 ms).
+- **Regras de caminho (§8.2):** já existem na 001 (`internal/domain/pagepath.go`); a T001 reconfere.
+- **Ajustes feitos em outras features nesta revisão:** 002/T039 (regras 1, 4, 5 e 6 de exposição), 002/T040 (trava do sistema e `.serve.lock.holder`), 007/T028 (regras 2 e 3), 013/T016 (resolução de executável com PATHEXT).
+
+## Dependências
+- 014, 007, 002; `docs/deploy.md`, `docs/airgapped-install.md`, `docs/https-via-proxy.md`, `docs/windows.md`, `docs/windows-native-extras.md`, `docs/backup.md`, `docs/hook-scripts-and-container-deploy.md` §4 e §5, `docs/cli.md` §3.4 e §3.5.
+
 ## Checklist de Prontidão
-- [ ] Propósito claro e sem ambiguidade
-- [ ] Escopo delimitado (dentro/fora)
-- [ ] Cenários cobrem happy path e alternativos
-- [ ] Edge cases identificados com comportamento esperado
-- [ ] Constraints explícitas
-- [ ] Critérios de sucesso mensuráveis
-- [ ] Abordagem escolhida justificada
+- [x] Propósito claro e sem ambiguidade
+- [x] Escopo delimitado (dentro/fora)
+- [x] Cenários cobrem happy path e alternativos
+- [x] Edge cases identificados com comportamento esperado
+- [x] Constraints explícitas
+- [x] Critérios de sucesso mensuráveis
+- [x] Abordagem escolhida justificada

@@ -34,8 +34,8 @@ feature é **zero-LLM** e entrega o núcleo testável por contratos, sem hooks n
 ### Fora do escopo (explicitamente)
 - Hooks, `/hook`, spool, sessões e handoffs (**feature 002**).
 - Servidor MCP e CLI de usuário, exceto o mínimo para executar os testes (**feature 002**).
-- LLM, embeddings, reranker, consolidação, lint por LLM (F003).
-- Multiusuário, SSO, autorização por projeto, webhooks de admissão, perfil entre projetos (F003).
+- LLM, embeddings, reranker, consolidação, lint por LLM (features 016 a 022, ver `roadmap.md`).
+- Multiusuário, SSO, autorização por projeto, webhooks de admissão, perfil entre projetos (features 007, 008, 009 e 012, ver `roadmap.md`).
 - Navegador web, workstreams, macOS e demais agentes.
 
 ## Comportamento Esperado

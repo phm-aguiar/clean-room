@@ -1,4 +1,4 @@
-# Spec: Validade temporal (as_of) e arestas tipadas
+# Spec: Validade temporal (as_of), arestas tipadas e sinais de ranking opcionais
 
 ## Metadados
 - **ID:** 005
@@ -31,9 +31,17 @@ Responder "o que a memória considerava atual naquele instante?" para auditorias
   - campo `edge` no `explain` da busca para saltos de grafo cujo rótulo não é `references`;
   - contagem por relação dos links tipados vindos de versões atuais no status.
 
+- **Sinais de ranking opcionais** (`docs/storage-and-retrieval.md` §11.5 e §13, `docs/architecture.md` § `[retrieval]`, `docs/mcp-server.md` §3.2, `docs-adiados/design-hindsight-borrowings.md` P2 e P4; nenhum depende de LLM e todos ficam desligados por padrão):
+  - **confiança derivada na leitura**, nunca armazenada: amplitude por sessões distintas (`session` e `reconsolidation`) mais crédito de 0,2 por evidência residual com teto 1,0; suporte `1 − e^(−amplitude/3)`; recência `0,5 + 0,5·e^(−idade/30 dias)` (1,0 sem instante, idade negativa vira zero); penalidade `1/(1 + contradições vivas)`, contando só arestas `contradicts` para página atual; teto 0,95; sem evidência, 0;
+  - **peso de crença** `[retrieval].belief_authority_weight` (padrão 0,0): soma `peso × confiança` ao fator de autoridade dentro de `[0,55; 1,50]`; com peso 0 e sem `explain`, nenhuma consulta de evidência no caminho de busca; versões superseded nunca recebem o bônus;
+  - **roteamento de recall de sessão** `[retrieval].query_intent` (desligado) e `session_recall_bonus` (0,25): consulta com marcador léxico de recall de sessão devolve às páginas `session` a penalidade de tipo e de tier e soma o bônus; intenção `session_recall` no `explain`. Os marcadores são os exemplos do doc ("上次", "last time", "what did we", "sessão anterior", "decisão anterior", "onde paramos ontem"); a lista completa é **decisão nossa** a partir deles;
+  - `explain` com `evidence_count`, `confidence`, `belief_factor` (quando o peso está ativo) e a intenção; a confiança é calculada no `explain` mesmo com o peso desligado;
+  - **`settled_first`** no `memory_briefing` (padrão falso): lista `settled` com até 8 páginas atuais de regra ou decisão, não expiradas, por contagem de evidência e depois recência;
+  - `evidence_rows` (total de registros de evidência do projeto) no status.
+
 ### Fora do escopo (explicitamente)
 - Fase B, tempo do mundo (`true_from`, `true_until`): adiada pelo próprio doc.
-- Mudança de ranking no caminho padrão por frescor ou por `contradicts` (proposta no doc, não implementada).
+- Mudança de ranking no caminho padrão por frescor ou por `contradicts`, peso por tipo de aresta e travessia de cadeias `fixes`/`causes` (propostas nos docs, não implementadas).
 - Preenchimento de janelas e de vínculos de dados antigos na abertura do armazenamento: o esquema V01 já nasce com as colunas e toda escrita as preenche; não há loja antiga a migrar (decisão nossa).
 - Lint de `contradicts` e de `broken_link` (feature 004).
 

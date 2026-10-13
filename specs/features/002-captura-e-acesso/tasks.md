@@ -255,6 +255,24 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/write.go`, `internal/wiki/write_test.go`, `internal/wiki/derive.go`, `internal/wiki/derive_test.go`
   - **Wiki-Keywords:** okf proveniência, generated.by, sources, relations
 
+- [ ] **T092:** Criar a semente de leitura do ponteiro de projeto ativo no boot do transporte HTTP: projeto da observação mais recente dentro de `session_ttl_secs`, num slot próprio, só para leitura, aplicada só com o slot compartilhado vazio, descartada no primeiro evento de primeiro plano e nas invalidações administrativas; falha só registrada (`docs/auto-scope.md` § "Surviving a restart"); com teste
+  - **Papel:** executor
+  - **agent:** executor2
+  - **Dependências:** T019, T020
+  - **depends_on:** [T019, T020]
+  - **Paralelizável:** false
+  - **Arquivos:** `internal/storage/startup_seed.go`, `internal/storage/startup_seed_test.go`
+  - **Wiki-Keywords:** auto-scope, semente de startup, StartupSeed, reinício
+
+
+- [ ] **T093:** Alinhar o sanitizador da 001 ao contrato exato: os 27 padrões de `docs-adiados/prompts-schemas-and-sanitizer.md` §11.2 na ordem e com os limiares da tabela (inclui `auth_header` amplo com qualificador de autenticação, `env_secret` com a lista de variáveis de provedor e forma sem diferença de caixa, `telegram_token` nas duas formas, `jwt` com 16 ou mais por segmento, `aws_key` com borda de palavra); remoção de controle restrita à lista do §11.1; `[sanitize].allowlist` checada por ocorrência e `[sanitize].extra_patterns` com rótulo `custom`, expressão inválida impedindo o início (`docs/domain-vocabulary.md` §7.3, removendo o adiamento ADR-13 da 001); com teste por padrão (positivo, negativo e os casos de falso positivo do §11.4)
+  - **Papel:** executor
+  - **agent:** executor3
+  - **Dependências:** T010, T079
+  - **depends_on:** [T010, T079]
+  - **Paralelizável:** false
+  - **Arquivos:** `internal/domain/sanitize/patterns.go`, `internal/domain/sanitize/sanitize.go`, `internal/domain/sanitize/sanitize_test.go`, `internal/config/config.go`, `internal/config/config_test.go`
+  - **Wiki-Keywords:** sanitizador, INV-06, allowlist, extra_patterns, REDACTED
 
 ## Fase 2: Implementação
 
@@ -306,7 +324,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/handoff_claim.go`, `internal/storage/handoff_claim_test.go`
   - **Wiki-Keywords:** INV-16, reivindicação atômica, uso único, multi-sessão
 
-- [ ] **T019:** Criar o ponteiro de projeto ativo em memória (modos `per_actor`, `per_session` e `single`, TTL 1 h, teto 4096, marca de ponteiro ativo, `Lookup` e `Read`), com teste
+- [ ] **T019:** Criar o ponteiro de projeto ativo em memória (modos `per_actor`, `per_session` e `single`, TTL 1 h, teto 4096, marca de ponteiro ativo, `Lookup` e `Read`); `session_ttl_secs = 0` vira 1 h, `max_entries = 0` vira 1, modo inválido impede a subida e o modo efetivo vai para o log `active-project isolation mode` (`docs/auto-scope.md`), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T006
@@ -315,7 +333,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/activeproject.go`, `internal/storage/activeproject_test.go`
   - **Wiki-Keywords:** ponteiro de projeto ativo, ActiveProjectMode, Mismatch
 
-- [ ] **T020:** Ligar o ponteiro ao `ResolveScope`: leitura sem escopo degrada (ponteiro, semente, padrão) com a origem; escrita sem escopo e sem ponteiro recusa; escopo explícito inexistente falha fechado; origens alinhadas ao doc (`explicit`, `session`, `shared_slot`, `startup_seed`, `default`, `default_after_mismatch`), com a resolução por caminho de repositório saindo da leitura e indo para a resolução do hook (T027); com teste
+- [ ] **T020:** Ligar o ponteiro ao `ResolveScope`: leitura sem escopo degrada (ponteiro, semente, padrão) com a origem; escrita sem escopo e sem ponteiro recusa; escopo explícito inexistente falha fechado; origens alinhadas ao doc (`explicit`, `session`, `shared_slot`, `startup_seed`, `default`, `default_after_mismatch`), com a resolução por caminho de repositório saindo da leitura e indo para a resolução do hook (T027); argumentos explícitos como em `docs/auto-scope.md` (`project` em forma `workspace/project` só vira par se o nome exato não existir; `project` sozinho resolve no workspace ativo e depois no padrão; lista de escopos sem duplicata e com limite); com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T019
@@ -396,11 +414,11 @@ max-rounds: 40
 
 ### 2D Ingestão: orquestração e rotas
 
-- [ ] **T028:** Criar o processamento do evento: sessão, gate por (projeto, chave), observação sanitizada e chave na mesma transação, desfechos de admissão, avanço do ponteiro, linha no ledger e conclusão no fim, com teste
+- [ ] **T028:** Criar o processamento do evento: sessão, gate por (projeto, chave), observação sanitizada e chave na mesma transação, desfechos de admissão, avanço do ponteiro, linha no ledger e conclusão no fim; fim de sessão que nomeia outro escopo é descartado, salvo se vier do mesmo diretório da sessão (`docs/auto-scope.md`), com teste
   - **Papel:** executor
   - **agent:** executor1
-  - **Dependências:** T014, T015, T019, T021, T023, T027
-  - **depends_on:** [T014, T015, T019, T021, T023, T027]
+  - **Dependências:** T014, T015, T019, T021, T023, T027, T093
+  - **depends_on:** [T014, T015, T019, T021, T023, T027, T093]
   - **Paralelizável:** true
   - **Arquivos:** `internal/ingest/process.go`, `internal/ingest/process_test.go`
   - **Wiki-Keywords:** admissão, INV-03, idempotência, ponteiro ativo
@@ -501,7 +519,7 @@ max-rounds: 40
 
 ### 2F CLI e servidor
 
-- [ ] **T039:** Criar o servidor HTTP: filtro de `Host`, limite de corpo de 10 MiB, autenticação bearer em tempo constante, 401 com `WWW-Authenticate`, recusa de bind fora de loopback sem autenticação, `/healthz`, `/admin/status` e janela de encerramento de 5 s, com teste
+- [ ] **T039:** Criar o servidor HTTP: filtro de `Host`, limite de corpo de 10 MiB, autenticação bearer em tempo constante, 401 com `WWW-Authenticate`, regras de exposição sem autenticação humana (`docs/https-via-proxy.md` § Regras de inicialização, regras 1, 4, 5 e 6: loopback aceito; `--allow-insecure-no-auth` aceito com banner no stderr e alerta no log; contêiner por `AI_MEMORY_IN_CONTAINER` ou marcador do runtime aceito com aviso; fora disso recusa com orientação; regras 2 e 3 na 007/T028), `/healthz`, `/admin/status` e janela de encerramento de 5 s, com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T010, T031, T032, T038, T081
@@ -510,7 +528,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/httpserver.go`, `internal/cli/httpserver_test.go`
   - **Wiki-Keywords:** autenticação HTTP, allowed_hosts, bearer, rotas de máquina
 
-- [ ] **T040:** Criar a trava de instância única `.serve.lock` (criação exclusiva, PID e instante de início, remoção ao sair, `--force`), com teste
+- [ ] **T040:** Criar a trava de instância única: trava exclusiva do sistema operacional sobre `.serve.lock`, segura durante a vida do processo e liberada pelo sistema ao sair (servidor que caiu nunca trava ninguém); PID do detentor em `.serve.lock.holder` (informativo, melhor esforço) citado na recusa; falha transitória ao abrir ou travar repetida com espera de 25 ms até 5 tentativas no total (trava ocupada nunca é repetida); sistema de arquivos sem suporte a trava só gera aviso; `--force` sobe mesmo assim (`docs/windows.md` § Single instance, `docs/cli.md` §3.1), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T006
@@ -531,8 +549,8 @@ max-rounds: 40
 - [ ] **T042:** Criar o comando `serve` (ordem de boot, trava, abertura do armazenamento, escopo padrão, wiki, watcher, ponteiro, MCP e transporte `stdio` ou `http`), com teste
   - **Papel:** executor
   - **agent:** executor1
-  - **Dependências:** T039, T040, T029, T030, T034, T035, T036, T037, T085
-  - **depends_on:** [T039, T040, T029, T030, T034, T035, T036, T037, T085]
+  - **Dependências:** T039, T040, T029, T030, T034, T035, T036, T037, T085, T092
+  - **depends_on:** [T039, T040, T029, T030, T034, T035, T036, T037, T085, T092]
   - **Paralelizável:** false
   - **Arquivos:** `internal/cli/serve_cmd.go`, `internal/cli/serve_cmd_test.go`
   - **Wiki-Keywords:** serve, ordem de boot, transporte
@@ -591,7 +609,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/applyatomic.go`, `internal/cli/applyatomic_test.go`
   - **Wiki-Keywords:** apply_atomic, idempotente, backup do arquivo
 
-- [ ] **T049:** Criar o comando `install-hooks --agent claude-code` (imprime ou mescla os hooks em `~/.claude/settings.json`, preserva entradas de terceiros; com `--apply` e `--auth-token`, guarda dois arquivos só do dono no diretório de dados, um com o token puro e outro com o cabeçalho de autorização completo, e o token nunca vai para a linha de comando; `docs/users.md` § "Hooks and agent wiring"), com teste
+- [ ] **T049:** Criar o comando `install-hooks --agent claude-code` (imprime ou mescla em `~/.claude/settings.json` os 9 eventos `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SessionEnd`, `SubagentStart` e `SubagentStop`, preserva entradas de terceiros; `--capture-mode denylist|allowlist` gravado e reaproveitado num `--apply` posterior; `--no-capture-prompts`/`--capture-prompts`; `--project-strategy basename|repo-root` gravado no comando do hook, preservado num `--apply` posterior que o omite e removido com `basename` explícito, com o marcador vencendo o padrão da instalação e `AI_MEMORY_PROJECT_STRATEGY` valendo só com marcador (`docs/marker-file.md` § install-wide default); `docs/support-matrix.md`; com `--apply` e `--auth-token`, guarda dois arquivos só do dono no diretório de dados, um com o token puro e outro com o cabeçalho de autorização completo, e o token nunca vai para a linha de comando; `docs/users.md` § "Hooks and agent wiring"), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T048, T010
@@ -871,11 +889,13 @@ max-rounds: 40
   - **Wiki-Keywords:** INV, matriz, testes de contrato
 
 
+
+
 ## Coordination Graph
 
 G₀ (round 0):
 
-- **nodes:** T001, T002, T003, T004, T005, T006, T007, T008, T009, T010, T011, T012, T013, T079, T080, T081, T082, T083, T084, T085, T086, T087, T088, T089, T090, T091, T014, T015, T016, T017, T018, T019, T020, T021, T022, T023, T024, T025, T026, T027, T028, T029, T030, T031, T032, T033, T034, T035, T036, T037, T038, T039, T040, T041, T042, T043, T044, T045, T046, T047, T048, T049, T050, T051, T052, T053, T054, T055, T056, T057, T058, T059, T060, T061, T062, T063, T064, T065, T066, T067, T068, T069, T070, T071, T072, T073, T074, T075, T076, T077, T078
+- **nodes:** T001, T002, T003, T004, T005, T006, T007, T008, T009, T010, T011, T012, T013, T079, T080, T081, T082, T083, T084, T085, T086, T087, T088, T089, T090, T091, T092, T093, T014, T015, T016, T017, T018, T019, T020, T021, T022, T023, T024, T025, T026, T027, T028, T029, T030, T031, T032, T033, T034, T035, T036, T037, T038, T039, T040, T041, T042, T043, T044, T045, T046, T047, T048, T049, T050, T051, T052, T053, T054, T055, T056, T057, T058, T059, T060, T061, T062, T063, T064, T065, T066, T067, T068, T069, T070, T071, T072, T073, T074, T075, T076, T077, T078
 - **edges:**
   - T001 → T006
   - T002 → T006
@@ -912,6 +932,10 @@ G₀ (round 0):
   - T006 → T090
   - T089 → T091
   - T090 → T091
+  - T019 → T092
+  - T020 → T092
+  - T010 → T093
+  - T079 → T093
   - T008 → T014
   - T006 → T015
   - T014 → T016
@@ -940,6 +964,7 @@ G₀ (round 0):
   - T021 → T028
   - T023 → T028
   - T027 → T028
+  - T093 → T028
   - T016 → T029
   - T025 → T029
   - T026 → T029
@@ -982,6 +1007,7 @@ G₀ (round 0):
   - T036 → T042
   - T037 → T042
   - T085 → T042
+  - T092 → T042
   - T005 → T043
   - T011 → T043
   - T011 → T044
@@ -1106,6 +1132,8 @@ G₀ (round 0):
   - T089: executor3
   - T090: executor1
   - T091: executor1
+  - T092: executor2
+  - T093: executor3
   - T014: executor1
   - T015: executor2
   - T016: executor3
@@ -1173,4 +1201,4 @@ G₀ (round 0):
   - T078: executor2
 - **ready:** [T001, T002, T003, T004, T005]
 
-> Workers: Lead, researcher1..5, analyst1, executor1..3. Validado por script: 91 tasks, sem ciclo, sem dependência quebrada, sem arquivo compartilhado entre tasks sem ordem. Mínimo de 17 rounds. Caminho crítico (calculado): T001 → T006 → T008 → T014 → T016 → T017 → T018 → T032 → T039 → T042 → T052 → T069 → T071 → T072 → T073 → T074 → T077.
+> Workers: Lead, researcher1..5, analyst1, executor1..3. Validado por script: 93 tasks, sem ciclo, sem dependência quebrada, sem arquivo compartilhado entre tasks sem ordem. Mínimo de 17 rounds. Caminho crítico (calculado): T001 → T006 → T008 → T014 → T016 → T017 → T018 → T032 → T039 → T042 → T052 → T069 → T071 → T072 → T073 → T074 → T077.

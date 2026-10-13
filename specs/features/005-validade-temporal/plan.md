@@ -45,6 +45,9 @@ func SearchAsOf(ctx context.Context, r Reader, q SearchQuery, t time.Time) (Sear
   - **Justificativa:** `docs/typed-edges.md` § "How retrieval uses them".
   - **Alternativa Rejeitada:** novo fluxo por relação (o doc diz que o rótulo não muda o ranking).
 
+- **Decisão (V-08): sinais de ranking opcionais como funções puras.** A confiança derivada fica no `domain` (sem banco), testada pelas propriedades do doc; o `storage` só lê a evidência quando o peso de crença é positivo ou há `explain`. O roteamento de recall de sessão é um detector léxico puro com lista fechada de marcadores (decisão nossa a partir dos exemplos do doc). `settled_first` é uma leitura nova do `storage` usada pelo briefing. Tudo desligado por padrão: com a configuração padrão, o ranking fica idêntico ao da 001.
+  - **Justificativa:** `docs/storage-and-retrieval.md` §11.5 e §13; `docs-adiados/design-hindsight-borrowings.md` §4 e §6 (correção vence contagem; confiança nunca armazenada).
+  - **Alternativa Rejeitada:** guardar a confiança numa coluna (o doc decide pelo cálculo na leitura).
 - **Decisão (V-07): contratos de teste.** Cenários do `design-page-ingestion-windows.md` §8 aplicáveis a loja nova; exemplo postgres/sqlite; intervalo meio-aberto no instante da supersessão; ressurreição sem versão válida no intervalo; decaimento e exclusão; limites de `relations` um a um; aviso de relação desconhecida no arquivo.
   - **Justificativa:** o doc lista essas coberturas como critério de aceitação.
   - **Alternativa Rejeitada:** comparar a ordem exata dos resultados (o doc diz que a ordem não reproduz o passado).

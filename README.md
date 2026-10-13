@@ -17,7 +17,7 @@ Esta fase entrega o alicerce:
 - busca híbrida (FTS5, entidades e vizinhos de link, fundidos por RRF);
 - `reindex` a partir do markdown e `backup` online do SQLite.
 
-**Fora desta fase:** hooks de captura, servidor MCP e CLI de usuário mais ampla (feature 002); LLM, embeddings, reranker e consolidação (fase seguinte, F003). Esta fase é **zero-LLM**: o sistema funciona completo sem provedor.
+**Fora desta fase:** hooks de captura, servidor MCP e CLI de usuário mais ampla (feature 002); LLM, embeddings, reranker e consolidação (features 016 a 022, ver `specs/features/roadmap.md`). Esta fase é **zero-LLM**: o sistema funciona completo sem provedor.
 
 ## Pré-requisitos
 

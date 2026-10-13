@@ -8,6 +8,8 @@
 > Origem: invariantes de `docs/overview.md` §4 (numeração `INV-nn` é a do projeto de origem), regras de
 > fronteira, grafo de dependências (§9) e decisões do discovery `reports/001-ai-memory-go-clean-room-discovery.md`.
 > Itens marcados **(a confirmar)** não foram verificados no código de referência; a decisão tomada está em ADR.
+> Fonte complementar: os docs citados como `../docs-adiados/*.md` não estão neste repositório; ficam em
+> `~/OneDrive/Documentos/projetos/docks-de-planejamento/ai-memory/docs-adiados/` e valem como `docs/` (nunca editados).
 > Revisão de 2026-10-13: INV-01, INV-06, INV-09, INV-10, resolução de escopo e mutações da wiki alinhadas aos
 > docs; decisões D1 a D4 da auditoria da 001 incorporadas.
 
@@ -59,7 +61,7 @@
 - Se o upsert no banco falhar depois que o arquivo foi instalado, o arquivo é revertido e o erro é propagado ao cliente. O `reindex` reconcilia o resto.
 - Uma observação nunca chega ao armazenamento sem passar pelo sanitizador.
 - Tombamento de páginas removidas do disco é opcional e desligado por padrão; remoção física exige comando explícito.
-- Escopo do produto em fases: F001 Núcleo e F002 Captura/acesso são zero-LLM; LLM, embeddings, multiusuário, SSO e outros agentes só entram na F003. As invariantes de LLM (INV-07: saídas estruturadas por JSON Schema; INV-08: `{provider, model, dim}` junto de todo embedding; INV-14: autenticação do provedor resolvida antes do cliente) passam a valer quando a F003 começar.
+- Escopo do produto em fases, na ordem de `specs/features/roadmap.md`: 001 a 015 são zero-LLM; LLM e embeddings só entram de 016 a 022. As invariantes de LLM (INV-07: saídas estruturadas por JSON Schema; INV-08: `{provider, model, dim}` junto de todo embedding; INV-14: autenticação do provedor resolvida antes do cliente) passam a valer a partir da 016. O binário continua `CGO_ENABLED=0` também nessas features (o embedding local da 017 é inferência em Go puro).
 
 ## Preferências de Bibliotecas
 <!-- Libs e frameworks homologados para o projeto -->

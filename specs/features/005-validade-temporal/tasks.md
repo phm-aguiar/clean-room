@@ -6,7 +6,7 @@ max-rounds: 40
 
 # tasks.md: Validade temporal e arestas tipadas
 
-> Feature `005-validade-temporal` · Spec: `spec.md` (draft) · Plano: `plan.md` (V-01 a V-07)
+> Feature `005-validade-temporal` · Spec: `spec.md` (draft) · Plano: `plan.md` (V-01 a V-08)
 >
 > **Provisório:** gerado em 2026-10-13, antes da execução das features anteriores. A T001 reconfere tudo contra o código entregue antes de qualquer execução. Regras: uma ação por task; implementação e `_test.go` contam como um grupo. `internal/mcp/tools_read.go` é editado em sequência por T010 e T012; `internal/storage/links.go` por T009 e T022.
 
@@ -84,14 +84,51 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/search.go`, `internal/storage/search_test.go`
   - **Wiki-Keywords:** edge, rótulo do salto, explain
 
-- [ ] **T008:** Criar a contagem por relação dos links tipados de versões atuais, com teste
+- [ ] **T008:** Criar a contagem por relação dos links tipados de versões atuais e a contagem `evidence_rows` do projeto, com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T001
   - **depends_on:** [T001]
   - **Paralelizável:** true
   - **Arquivos:** `internal/storage/status_relations.go`, `internal/storage/status_relations_test.go`
-  - **Wiki-Keywords:** contagem por relação, status
+  - **Wiki-Keywords:** contagem por relação, evidence_rows, status
+
+
+- [ ] **T023:** Criar a confiança derivada como função pura (`docs/storage-and-retrieval.md` §13: amplitude por sessões distintas, suporte, recência com piso 0,5, penalidade por contradição viva, teto 0,95), com testes das propriedades do doc
+  - **Papel:** executor
+  - **agent:** executor2
+  - **Dependências:** T001
+  - **depends_on:** [T001]
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/domain/belief.go`, `internal/domain/belief_test.go`
+  - **Wiki-Keywords:** confiança derivada, sessões distintas, 0.95
+
+- [ ] **T024:** Acrescentar à configuração a seção `[retrieval]` (`query_intent`, `session_recall_bonus` 0,25, `belief_authority_weight` 0,0), com validação e teste
+  - **Papel:** executor
+  - **agent:** executor3
+  - **Dependências:** T001
+  - **depends_on:** [T001]
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/config/config.go`, `internal/config/config_test.go`
+  - **Wiki-Keywords:** retrieval, query_intent, session_recall_bonus, belief_authority_weight
+
+- [ ] **T025:** Ligar à autoridade o peso de crença (sem consulta de evidência com peso 0 e sem `explain`; versões superseded sem bônus) e o roteamento de recall de sessão (marcadores léxicos em chinês, inglês e português, intenção `session_recall`), e expor no `explain` `evidence_count`, `confidence`, `belief_factor` e a intenção, com teste
+  - **Papel:** executor
+  - **agent:** executor1
+  - **Dependências:** T007, T023, T024
+  - **depends_on:** [T007, T023, T024]
+  - **Paralelizável:** false
+  - **Arquivos:** `internal/storage/rank.go`, `internal/storage/rank_test.go`, `internal/storage/search.go`, `internal/storage/search_test.go`
+  - **Wiki-Keywords:** peso de crença, recall de sessão, explain, intent
+
+- [ ] **T026:** Criar `settled_first` no `memory_briefing` (até 8 páginas atuais de regra ou decisão não expiradas, por contagem de evidência e depois recência), com teste
+  - **Papel:** executor
+  - **agent:** executor2
+  - **Dependências:** T023
+  - **depends_on:** [T023]
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/settled.go`, `internal/storage/settled_test.go`, `internal/mcp/tools_session.go`, `internal/mcp/tools_session_test.go`
+  - **Wiki-Keywords:** settled_first, briefing, 8 páginas
 
 
 ### 2B Wiki
@@ -135,14 +172,14 @@ max-rounds: 40
   - **Arquivos:** `internal/mcp/tools_write.go`, `internal/mcp/tools_write_test.go`
   - **Wiki-Keywords:** memory_write_page, relations, rejeição
 
-- [ ] **T012:** Incluir a contagem por relação no `memory_status`
+- [ ] **T012:** Incluir a contagem por relação e `evidence_rows` no `memory_status`
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T008, T010
   - **depends_on:** [T008, T010]
   - **Paralelizável:** false
   - **Arquivos:** `internal/mcp/tools_read.go`
-  - **Wiki-Keywords:** memory_status, contagem por relação
+  - **Wiki-Keywords:** memory_status, contagem por relação, evidence_rows
 
 
 ### 2D Cenários Gherkin
@@ -192,14 +229,23 @@ max-rounds: 40
   - **Arquivos:** `test/acceptance/typed_edges_test.go`
   - **Wiki-Keywords:** edge, explain, relação desconhecida
 
+- [ ] **T027:** Implementar Scenario: peso de crença e recall de sessão mudando a ordem só quando ligados, e `settled_first` no briefing
+  - **Papel:** executor
+  - **agent:** executor3
+  - **Dependências:** T025, T026, T002
+  - **depends_on:** [T025, T026, T002]
+  - **Paralelizável:** true
+  - **Arquivos:** `test/acceptance/belief_ranking_test.go`
+  - **Wiki-Keywords:** crença, recall de sessão, settled
+
 
 ## Fase 3: Validação
 
 - [ ] **T018:** Rodar os portões e registrar o resultado com a saída
   - **Papel:** executor
   - **agent:** executor2
-  - **Dependências:** T012, T013, T014, T015, T016, T017, T022
-  - **depends_on:** [T012, T013, T014, T015, T016, T017, T022]
+  - **Dependências:** T012, T013, T014, T015, T016, T017, T022, T027
+  - **depends_on:** [T012, T013, T014, T015, T016, T017, T022, T027]
   - **Paralelizável:** false
   - **Arquivos:** `specs/features/005-validade-temporal/notes/gates-run.md`
   - **Wiki-Keywords:** check.sh, race, golangci-lint
@@ -240,7 +286,7 @@ max-rounds: 40
 
 G₀ (round 0):
 
-- **nodes:** T001, T002, T003, T004, T005, T006, T007, T008, T009, T022, T010, T011, T012, T013, T014, T015, T016, T017, T018, T019, T020, T021
+- **nodes:** T001, T002, T003, T004, T005, T006, T007, T008, T023, T024, T025, T026, T009, T022, T010, T011, T012, T013, T014, T015, T016, T017, T027, T018, T019, T020, T021
 - **edges:**
   - T001 → T002
   - T001 → T003
@@ -250,6 +296,12 @@ G₀ (round 0):
   - T005 → T006
   - T001 → T007
   - T001 → T008
+  - T001 → T023
+  - T001 → T024
+  - T007 → T025
+  - T023 → T025
+  - T024 → T025
+  - T023 → T026
   - T001 → T009
   - T009 → T022
   - T006 → T010
@@ -268,6 +320,9 @@ G₀ (round 0):
   - T009 → T017
   - T007 → T017
   - T002 → T017
+  - T025 → T027
+  - T026 → T027
+  - T002 → T027
   - T012 → T018
   - T013 → T018
   - T014 → T018
@@ -275,6 +330,7 @@ G₀ (round 0):
   - T016 → T018
   - T017 → T018
   - T022 → T018
+  - T027 → T018
   - T018 → T019
   - T019 → T020
   - T020 → T021
@@ -287,6 +343,10 @@ G₀ (round 0):
   - T006: executor2
   - T007: executor3
   - T008: executor1
+  - T023: executor2
+  - T024: executor3
+  - T025: executor1
+  - T026: executor2
   - T009: executor2
   - T022: executor3
   - T010: executor3
@@ -297,10 +357,11 @@ G₀ (round 0):
   - T015: executor2
   - T016: executor3
   - T017: executor1
+  - T027: executor3
   - T018: executor2
   - T019: analyst1
   - T020: executor3
   - T021: executor1
 - **ready:** [T001]
 
-> Workers: Lead, analyst1, executor1..3. Validado por script: 22 tasks, sem ciclo, sem dependência quebrada, sem arquivo compartilhado entre tasks sem ordem. Mínimo de 9 rounds. Caminho crítico (calculado): T001 → T003 → T006 → T010 → T012 → T018 → T019 → T020 → T021.
+> Workers: Lead, analyst1, executor1..3. Validado por script: 27 tasks, sem ciclo, sem dependência quebrada, sem arquivo compartilhado entre tasks sem ordem. Mínimo de 9 rounds. Caminho crítico (calculado): T001 → T003 → T006 → T010 → T012 → T018 → T019 → T020 → T021.

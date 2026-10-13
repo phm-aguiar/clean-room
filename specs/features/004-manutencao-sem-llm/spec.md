@@ -35,9 +35,9 @@ Esta feature também é a produtora da lápide de decaimento que a ressurreiçã
 - **`reclaim-ledger-versions`** (`POST /admin/reclaim-ledger-versions`, CLI; `docs/api-reference.md` §3.4, `docs/complementary-contracts.md` §4): remove versões substituídas de ledgers, usando a mesma regra de reconhecimento de ledger da 002.
 
 ### Fora do escopo (explicitamente)
-- Deduplicação de clusters frios e banda de contradição (precisam de embeddings armazenados; feature 016).
-- *Dream pass*, passada de contradição por LLM no lint e pré-filtro de entropia (usado pela passada de experiência por LLM) (feature 016).
-- Modo `stage` do curador, que cria propostas de auto-melhoria (feature 016).
+- Deduplicação de clusters frios e banda de contradição (precisam de embeddings armazenados; feature 021).
+- *Dream pass*, passada de contradição por LLM no lint e pré-filtro de entropia (usado pela passada de experiência por LLM) (dream e entropia na 021; contradição por LLM no lint na 020).
+- Modo `stage` do curador, que cria propostas de auto-melhoria (feature 022).
 - Influência da retenção no ranking da busca (o doc lista como não implementado).
 
 ## Comportamento Esperado

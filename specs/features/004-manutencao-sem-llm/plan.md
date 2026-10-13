@@ -76,7 +76,7 @@ internal/mcp/                  ← + memory_forget_sweep, memory_lint, memory_fe
   - **Alternativa Rejeitada:** só teste de integração da varredura inteira.
 
 ### O que não construir nesta feature
-Deduplicação, banda de contradição, *dream pass*, contradição por LLM no lint, pré-filtro de entropia e `stage` do curador (016); influência da retenção na busca (não implementada no doc).
+Deduplicação, banda de contradição, *dream pass*, contradição por LLM no lint, pré-filtro de entropia e `stage` do curador (021, 020 e 022); influência da retenção na busca (não implementada no doc).
 
 ## 4. Auditoria de Constituição
 

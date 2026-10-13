@@ -3,7 +3,7 @@
 ## 1. Metadados do Plano
 - **Stack Tecnológico:** Go 1.26 (toolchain local 1.26.5), `modernc.org/sqlite` (WAL, FTS5), `git` do sistema 2.56 via `os/exec`, `log/slog`, `regexp` (RE2), `google/uuid` (UUIDv7), `gopkg.in/yaml.v3` para frontmatter, `fsnotify` para o watcher, `koanf` (TOML + env) e `cobra` só para o mínimo de CLI de teste. `CGO_ENABLED=0`, alvos `windows/amd64` e `linux/amd64`. Itens novos (`yaml.v3`, `fsnotify`) precisam entrar em `tech.md` antes do primeiro uso (portão da constituição).
 - **Feature Fonte:** `specs/features/001-nucleo/spec.md`
-- **Escopo:** domínio sem I/O, configuração, SQLite com escritor único e busca RRF, wiki com escrita atômica, supersessão e git, watcher/reindex. Sem hooks, MCP, LLM, embeddings ou multiusuário (features 002 e F003).
+- **Escopo:** domínio sem I/O, configuração, SQLite com escritor único e busca RRF, wiki com escrita atômica, supersessão e git, watcher/reindex. Sem hooks, MCP, LLM, embeddings ou multiusuário (feature 002 e seguintes, ver `roadmap.md`).
 
 ### Layout de pacotes e regra de imports
 
@@ -63,7 +63,7 @@ type Reader interface {
 ### 2.3 Esquema SQL `V01__init.sql` (estado final completo)
 `V01__init.sql` materializa o **estado final completo** de `docs/database-schema.md` (todas as tabelas, índices, triggers de FTS e de pareamento), mais `schema_migrations`. As tabelas são criadas já nesta migração por fidelidade, mas **só são usadas conforme cada feature precisar**:
 - **Usadas na 001:** `workspaces`, `projects`, `pages` + `pages_fts`, `links`, `entities`, `entity_page_links`, `page_access`, `page_evidence`, `audit_log`, `sessions`, `observations` + `observations_fts` (fallback `raw_hits`).
-- **Criadas e ainda sem código (features seguintes):** `ingest_keys`, `session_consolidation_jobs`, `handoffs`, `agent_messages` (002); embeddings, `page_feedback`, `users`, `api_credentials`, `web_sessions`, `project_grants`, auto-melhoria, workstreams, perfil e demais (F003).
+- **Criadas e ainda sem código (features seguintes):** `ingest_keys`, `session_consolidation_jobs`, `handoffs`, `agent_messages` (002); embeddings, `page_feedback`, `users`, `api_credentials`, `web_sessions`, `project_grants`, auto-melhoria, workstreams, perfil e demais (features 003 a 016, ver `roadmap.md`).
 - Tabelas sem uso não têm repositório, handler nem teste de comportamento; só o teste `TestSchemaV01` confere que o esquema aplica e é idempotente. Isso não infringe "sem código morto" da constituição, porque é DDL e não código Go.
 - **Desvio deliberado mantido:** `sessions.agent_kind` **sem** `CHECK` fechado (validação na aplicação), conforme a dica do próprio doc.
 - Colunas `author_id` e `embedding_*` existem no esquema, mas a 001 não as lê nem as escreve (leitura nunca filtra por autoria, INV-16).
