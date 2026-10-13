@@ -591,7 +591,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/applyatomic.go`, `internal/cli/applyatomic_test.go`
   - **Wiki-Keywords:** apply_atomic, idempotente, backup do arquivo
 
-- [ ] **T049:** Criar o comando `install-hooks --agent claude-code` (imprime ou mescla os hooks em `~/.claude/settings.json`, preserva entradas de terceiros, token em arquivo `0600`), com teste
+- [ ] **T049:** Criar o comando `install-hooks --agent claude-code` (imprime ou mescla os hooks em `~/.claude/settings.json`, preserva entradas de terceiros; com `--apply` e `--auth-token`, guarda dois arquivos só do dono no diretório de dados, um com o token puro e outro com o cabeçalho de autorização completo, e o token nunca vai para a linha de comando; `docs/users.md` § "Hooks and agent wiring"), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T048, T010
