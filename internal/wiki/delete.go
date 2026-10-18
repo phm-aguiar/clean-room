@@ -13,9 +13,10 @@ import (
 )
 
 // DeleteResult é o resultado de DeletePage. Deleted é false quando não havia versão corrente
-// (remoção idempotente, sem commit). Path é relativo à raiz da wiki (`<ws>/<proj>/<path>`).
-// Checkpoint é o hash do commit, ou vazio quando não houve commit. Avisos traz as falhas tratadas
-// como aviso (log, índice de projeto, commit).
+// (remoção idempotente, sem registro para commit). Path é relativo à raiz da wiki (`<ws>/<proj>/<path>`).
+// Checkpoint é sempre vazio: DeletePage não faz commit (T080). Os caminhos afetados ficam registrados
+// no Repo para o commit feito por quem chama (CommitTracked). Avisos traz as falhas tratadas como
+// aviso (registro para commit).
 type DeleteResult struct {
 	Deleted    bool
 	Path       string
@@ -40,20 +41,21 @@ func (r writerReader) Read(ctx context.Context, fn func(*sql.Tx) error) error {
 //  2. Trava por página, mantida até o fim.
 //  3. Leitura da versão corrente. Sem versão corrente, devolve Deleted = false, sem erro e sem commit.
 //  4. Remoção do arquivo, guardando o conteúdo anterior. Arquivo já ausente segue em frente.
-//  5. storage.DeletePath com expectedVersion. Se falhar (inclusive ErrVersionMismatch), o arquivo
-//     é recriado com o conteúdo guardado. Se essa restauração falhar, o erro carrega
-//     ErrInconsistentState.
-//  6. Linha `page-delete` no log.md, antes do commit (ADR-22). Falha vira aviso.
-//  7. Índice de projeto (EnsureProjectIndex). Falha vira aviso.
-//  8. Commit com a remoção e o log.md, mensagem `page-delete: <ws>/<proj>/<path>`. Falha vira aviso.
+//  5. storage.DeletePath com expectedVersion. Se falhar, ou se não removeu nada (versão corrente
+//     diferente da esperada, sem erro), o arquivo é recriado com o conteúdo guardado e não há
+//     remoção (Deleted = false). Se essa restauração falhar, o erro carrega ErrInconsistentState.
+//  6. Registro com Repo.Track da remoção. Falha vira aviso. Não há log.md nem index.md: a remoção
+//     não escreve nesses arquivos (docs/wiki-files-layer.md §5.2).
+//     Não há commit aqui: quem chama faz CommitTracked com a mensagem `page-delete: <ws>/<proj>/<path>`
+//     no ponto definido pelo doc (§7). Checkpoint fica vazio.
 //
-// Não remove diretórios vazios nem apaga versões anteriores: versões superseded continuam no banco
-// (INV-16). Erros de entrada e de índice voltam com %w.
+// Não remove diretórios vazios. A remoção do banco apaga todas as versões do caminho (docs/
+// storage-and-retrieval.md §5.2); o arquivo é removido só se o banco confirmar. Erros de entrada e de
+// índice voltam com %w.
 func (s *Store) DeletePage(ctx context.Context, scope domain.Scope, path domain.PagePath, expectedVersion domain.PageID) (DeleteResult, error) {
 	if s == nil || s.Writer == nil || s.Repo == nil || s.Locks == nil {
 		return DeleteResult{}, errors.New("wiki: remoção de página exige Writer, Repo e Locks")
 	}
-	now := s.now()
 
 	// 1. Confinamento. Nada é tocado antes desta checagem.
 	abs, err := pathFor(s.Root, scope, path)
@@ -71,7 +73,7 @@ func (s *Store) DeletePage(ctx context.Context, scope domain.Scope, path domain.
 	defer unlock()
 
 	// 3. Versão corrente. Sem ela, a remoção é idempotente: nada no disco, nada no banco, sem commit.
-	page, err := storage.ReadPage(ctx, writerReader{w: s.Writer}, ref)
+	_, err = storage.ReadPage(ctx, writerReader{w: s.Writer}, ref)
 	if errors.Is(err, storage.ErrPageNotFound) {
 		return DeleteResult{Path: rel}, nil
 	}
@@ -96,7 +98,7 @@ func (s *Store) DeletePage(ctx context.Context, scope domain.Scope, path domain.
 		if existed {
 			if rbErr := restoreFile(abs, prev, existed); rbErr != nil {
 				if err == nil {
-					err = errors.New("versão corrente desapareceu antes da remoção")
+					err = errors.New("versão corrente diferente da esperada ou ausente; nada removido")
 				}
 				return DeleteResult{}, fmt.Errorf("%w: restaurar %s: %w; erro original: %w",
 					ErrInconsistentState, abs, rbErr, err)
@@ -105,38 +107,21 @@ func (s *Store) DeletePage(ctx context.Context, scope domain.Scope, path domain.
 		if err != nil {
 			return DeleteResult{}, fmt.Errorf("wiki: remoção de página: %w", err)
 		}
-		// Sem erro e sem linha removida: a versão sumiu entre a leitura e a remoção. Nada mudou no banco.
+		// Sem erro e sem linha removida: versão diferente da esperada ou ausente. Nada mudou no banco.
 		return DeleteResult{Path: rel}, nil
 	}
 
-	// 6. Linha do log antes do commit (ADR-22). Falha vira aviso.
+	// 6. Registro para commit. DeletePage não faz commit: quem chama commita com CommitTracked.
+	// Falha de registro vira aviso. Checkpoint fica vazio.
 	var avisos []string
-	paths := []string{rel}
-	if err := AppendLogLine(s.Root, scope, eventPageDelete, page.Title, now); err != nil {
-		avisos = append(avisos, fmt.Sprintf("log.md não atualizado: %v", err))
-	} else {
-		paths = append(paths, scopeRelPath(scope, logFileName))
-	}
-
-	// 7. Índice de projeto. Falha vira aviso.
-	projIndex, err := EnsureProjectIndex(s.Root, scope)
-	if err != nil {
-		avisos = append(avisos, fmt.Sprintf("index.md do projeto não atualizado: %v", err))
-	} else {
-		paths = append(paths, projIndex...)
-	}
-
-	// 8. Commit. Falha vira aviso e checkpoint vazio.
-	checkpoint, err := s.Repo.Commit(ctx, paths, "page-delete: "+rel)
-	if err != nil {
-		avisos = append(avisos, fmt.Sprintf("commit não realizado: %v", err))
-		checkpoint = ""
+	if err := s.Repo.Track(rel); err != nil {
+		avisos = append(avisos, fmt.Sprintf("registro para commit não feito: %v", err))
 	}
 
 	return DeleteResult{
 		Deleted:    true,
 		Path:       rel,
-		Checkpoint: checkpoint,
+		Checkpoint: "",
 		Avisos:     avisos,
 	}, nil
 }

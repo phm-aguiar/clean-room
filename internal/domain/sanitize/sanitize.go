@@ -1,18 +1,20 @@
 // Package sanitize é a fronteira de privacidade do texto que entra no armazenamento (DV §7,
-// INV-06). Nada chega ao disco sem passar por aqui.
+// prompts §11, INV-06). Nada chega ao disco sem passar por aqui.
 //
-// Pipeline, nesta ordem (DV §7.1, ADR-10, ADR-11):
-//  1. remoção de sequências de escape de terminal e de caracteres de controle (C0 e C1 exceto
-//     \t \n \r), DEL, marcadores bidirecionais e bytes UTF-8 inválidos;
-//  2. padrões de segredo (rules), cada trecho casado vira `[REDACTED:<rótulo>]`;
+// Pipeline, nesta ordem (prompts §11.1, DV §7.1, ADR-10, ADR-11):
+//  1. remoção de sequências de escape de terminal e de caracteres de controle da lista do §11.1
+//     (C0 exceto \t \n \r, DEL, C1 e sobrescritas bidirecionais), além de bytes UTF-8 inválidos;
+//  2. padrões de segredo (§11.2, na ordem da tabela) seguidos dos extras do operador (rótulo
+//     `custom`); cada trecho casado vira `[REDACTED:<rótulo>]`, exceto se contiver uma entrada da
+//     allowlist (§11.3);
 //  3. limite de tamanho (título em runes, corpo em bytes com cabeça e cauda).
 //
 // A redação roda ANTES do limite: um segredo cortado ao meio não casaria com padrão algum e
 // iria para o armazenamento. O limite só corta depois que o segredo já virou marcador.
 //
-// Tipo-fronteira: `Sanitized` tem campo privado. Só as funções deste pacote (Title e Body)
-// criam um valor com conteúdo. A escrita de observação (T035) só aceita `Sanitized`, então
-// não existe caminho do texto bruto até o disco. Observação: o zero value `Sanitized{}` é
+// Tipo-fronteira: `Sanitized` tem campo privado. Só as funções deste pacote (Title e Body, de
+// Sanitizer ou pacote) criam um valor com conteúdo. A escrita de observação só aceita `Sanitized`,
+// então não existe caminho do texto bruto até o disco. Observação: o zero value `Sanitized{}` é
 // texto vazio, que não contém segredo.
 package sanitize
 
@@ -24,7 +26,6 @@ import (
 )
 
 // Limits são os tetos de tamanho de uma observação (ADR-10). Zero significa sem teto.
-// Não há campos de allowlist nem de extra_patterns (ADR-13, adiados).
 type Limits struct {
 	// TitleMaxRunes é o teto do título em runes, reticências `…` (U+2026) incluídas.
 	TitleMaxRunes int
@@ -49,19 +50,69 @@ func (s Sanitized) Text() string {
 	return s.text
 }
 
+// Sanitizer aplica os padrões de segredo e a allowlist do operador (prompts §11.3, DV §7.3).
+// É construído uma vez por New e pode ser copiado livremente. O zero value usa só os padrões
+// embutidos, sem allowlist (decisão nossa: o doc não define o zero value).
+type Sanitizer struct {
+	rules []rule
+	allow []string
+}
+
+// New monta o sanitizador com os padrões embutidos, seguidos dos extras do operador (rótulo
+// `custom`, no fim da ordem), e com a allowlist. Expressão extra inválida, extra vazia ou entrada
+// vazia na allowlist devolvem erro: quem chama deve impedir o início do serviço (DV §7.3).
+func New(extra, allow []string) (Sanitizer, error) {
+	rules := make([]rule, len(builtinRules), len(builtinRules)+len(extra))
+	copy(rules, builtinRules)
+	for i, p := range extra {
+		if p == "" {
+			return Sanitizer{}, fmt.Errorf("sanitize: extra_patterns[%d] vazio", i)
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return Sanitizer{}, fmt.Errorf("sanitize: extra_patterns[%d]: %w", i, err)
+		}
+		rules = append(rules, rule{label: "custom", re: re})
+	}
+	for i, a := range allow {
+		if a == "" {
+			return Sanitizer{}, fmt.Errorf("sanitize: allowlist[%d] vazia liberaria todo o texto", i)
+		}
+	}
+	return Sanitizer{rules: rules, allow: append([]string(nil), allow...)}, nil
+}
+
+// patterns devolve os padrões em uso. O zero value usa os embutidos.
+func (s Sanitizer) patterns() []rule {
+	if s.rules == nil {
+		return builtinRules
+	}
+	return s.rules
+}
+
 // Title sanitiza um título e aplica o teto em runes. Título cortado termina em `…`, que conta
 // dentro do teto.
-func Title(raw string, lim Limits) Sanitized {
-	return Sanitized{text: process(raw, func(s string) string {
-		return truncateTitle(s, lim.TitleMaxRunes)
+func (s Sanitizer) Title(raw string, lim Limits) Sanitized {
+	return Sanitized{text: s.process(raw, func(t string) string {
+		return truncateTitle(t, lim.TitleMaxRunes)
 	})}
 }
 
 // Body sanitiza um corpo e aplica o teto em bytes com cabeça e cauda (ADR-11).
-func Body(raw string, lim Limits) Sanitized {
-	return Sanitized{text: process(raw, func(s string) string {
-		return truncateBody(s, lim.BodyMaxBytes)
+func (s Sanitizer) Body(raw string, lim Limits) Sanitized {
+	return Sanitized{text: s.process(raw, func(t string) string {
+		return truncateBody(t, lim.BodyMaxBytes)
 	})}
+}
+
+// Title sanitiza um título com os padrões embutidos, sem allowlist. Ver Sanitizer.Title.
+func Title(raw string, lim Limits) Sanitized {
+	return Sanitizer{}.Title(raw, lim)
+}
+
+// Body sanitiza um corpo com os padrões embutidos, sem allowlist. Ver Sanitizer.Body.
+func Body(raw string, lim Limits) Sanitized {
+	return Sanitizer{}.Body(raw, lim)
 }
 
 // maxPasses limita as passagens de convergência de process. A saída de uma passagem é a
@@ -71,27 +122,53 @@ const maxPasses = 8
 
 // process aplica remoção de controle uma vez e depois, até convergir, redação seguida de limite.
 // Cada saída passa pelo limite, então o resultado sempre respeita o teto.
-func process(raw string, limit func(string) string) string {
-	s := stripControl(raw)
+func (s Sanitizer) process(raw string, limit func(string) string) string {
+	t := stripControl(raw)
 	for i := 0; i < maxPasses; i++ {
-		next := limit(redact(s))
-		if next == s {
+		next := limit(s.redact(t))
+		if next == t {
 			break
 		}
-		s = next
+		t = next
 	}
-	return s
+	return t
 }
 
-// escapeSeq casa sequências de escape de terminal: CSI (ESC [ ou o C1 U+009B), OSC terminado
-// em BEL ou ST, e ESC seguido de um caractere final. O resto de um escape que não casar cai
-// na filtragem de runes.
+// redact aplica os padrões na ordem. Cada trecho casado vira `[REDACTED:<rótulo>]`, salvo se
+// contiver uma entrada da allowlist. Casamento de tamanho zero é ignorado, para que um padrão
+// vazio não insira marcadores entre os caracteres.
+func (s Sanitizer) redact(text string) string {
+	for _, r := range s.patterns() {
+		text = r.re.ReplaceAllStringFunc(text, func(m string) string {
+			if m == "" || s.allowed(m) {
+				return m
+			}
+			return "[REDACTED:" + r.label + "]"
+		})
+	}
+	return text
+}
+
+// allowed diz se o trecho casado contém alguma entrada da allowlist (prompts §11.3: checagem
+// por ocorrência, não pelo texto inteiro).
+func (s Sanitizer) allowed(m string) bool {
+	for _, a := range s.allow {
+		if strings.Contains(m, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// escapeSeq casa as sequências de escape do §11.1, passo 1: CSI (ESC `[` com parâmetros e
+// caractere final), OSC (ESC `]` até BEL ou ESC `\`) e ESC seguido de um caractere de `@` a `_`.
+// São removidas inteiras.
 var escapeSeq = regexp.MustCompile(
-	`\x1b\[[0-?]*[ -/]*[@-~]|\x{9b}[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]`,
+	`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]`,
 )
 
-// stripControl remove escapes de terminal, controles, marcadores bidirecionais e bytes UTF-8
-// inválidos. Preserva \t \n \r e qualquer rune válido que não esteja na lista.
+// stripControl remove as sequências de escape, os controles da lista do §11.1 e os bytes UTF-8
+// inválidos. Preserva \t \n \r e qualquer outro rune válido.
 func stripControl(s string) string {
 	s = escapeSeq.ReplaceAllString(s, "")
 	var b strings.Builder
@@ -99,6 +176,8 @@ func stripControl(s string) string {
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		i += size
+		// Bytes inválidos não são controle (§11.1), mas o corte da etapa 5 precisa de UTF-8
+		// válido. Decisão nossa, registrada: o doc não define o tratamento deles.
 		if r == utf8.RuneError && size == 1 {
 			continue
 		}
@@ -110,7 +189,7 @@ func stripControl(s string) string {
 	return b.String()
 }
 
-// isStrippedRune diz se uma rune válida deve sair do texto (DV §7.1, etapa 1).
+// isStrippedRune diz se uma rune válida sai do texto (prompts §11.1, passo 2).
 func isStrippedRune(r rune) bool {
 	switch {
 	case r == '\t' || r == '\n' || r == '\r':
@@ -121,13 +200,9 @@ func isStrippedRune(r rune) bool {
 		return true
 	case r >= 0x80 && r <= 0x9f: // C1
 		return true
-	case r >= 0x200b && r <= 0x200f: // marcas de espaço e direção
+	case r >= 0x202a && r <= 0x202e: // sobrescritas bidirecionais
 		return true
-	case r >= 0x202a && r <= 0x202e: // embeddings e overrides bidirecionais
-		return true
-	case r >= 0x2060 && r <= 0x2069: // isolates e joiners
-		return true
-	case r == 0xfeff: // BOM / ZWNBSP
+	case r >= 0x2066 && r <= 0x2069: // isolates bidirecionais
 		return true
 	}
 	return false

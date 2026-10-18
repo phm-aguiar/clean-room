@@ -1,71 +1,72 @@
 // Guarda de processo vivo (INV-09): reset, restore, reindex e uninstall --purge-data
-// checam, antes de agir sobre o data_dir, se outro processo ai-memory está vivo.
+// checam, antes de agir sobre o data_dir, se há outro processo ai-memory em execução.
 //
-// Mecanismo: o processo servidor grava o próprio PID em <data_dir>/ai-memory.pid.
-// A guarda lê esse arquivo e verifica se o processo existe. A checagem por SO fica
-// em liveguard_windows.go e liveguard_other.go (ADR-33: só stdlib, sem x/sys).
+// Mecanismo: enumeração dos processos do sistema operacional. Linux e demais sistemas
+// POSIX leem /proc (liveguard_other.go); Windows usa CreateToolhelp32Snapshot
+// (liveguard_windows.go). Ambos usam só a stdlib (ADR-33). Um processo é ai-memory
+// quando o nome do executável é "ai-memory" (com ou sem ".exe"). O próprio processo
+// é descartado, porque o comando que chama a guarda também é ai-memory.
 //
-// Limitação conhecida: PIDs podem ser reutilizados pelo SO. Um PID antigo que
-// foi reaproveitado por outro processo faz a guarda recusar a operação. Isso é
-// conservador (falha fechada) e a mensagem de erro traz o PID para diagnóstico.
+// A enumeração não sabe qual data_dir cada processo usa. Por isso a guarda vale para
+// o sistema inteiro: qualquer outro ai-memory em execução recusa a operação.
+//
+// Falha fechada: se a enumeração falhar (por exemplo, /proc ausente), a operação é
+// recusada com o erro encadeado.
 package cli
 
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 )
 
-// PIDFileName é o marcador de PID do processo servidor dentro do data_dir.
-const PIDFileName = "ai-memory.pid"
+// aiMemoryProcessName é o nome do executável do ai-memory, sem extensão.
+const aiMemoryProcessName = "ai-memory"
 
-// ErrProcessLive indica que há um processo ai-memory vivo usando o data_dir.
+// ErrProcessLive indica que há outro processo ai-memory em execução.
 var ErrProcessLive = errors.New("processo ai-memory vivo")
 
-// ErrPIDFileFormat indica que o marcador de PID existe mas não contém um PID válido.
-var ErrPIDFileFormat = errors.New("arquivo de PID inválido")
+// procInfo é um processo do sistema: PID e nome do executável, sem caminho.
+type procInfo struct {
+	pid  int
+	name string
+}
 
-// CheckNoLiveProcess devolve nil quando é seguro agir sobre dataDir: o marcador
-// não existe ou o PID nele não está vivo. Devolve erro com %w de ErrProcessLive
-// quando o processo está vivo, e de ErrPIDFileFormat quando o marcador está
-// corrompido. Outros erros (leitura ou consulta ao SO) são propagados com %w.
+// listProcesses enumera os processos do sistema. Os testes a trocam por uma lista
+// fixa. A implementação real fica em liveguard_other.go e liveguard_windows.go.
+var listProcesses = enumerateProcesses
+
+// CheckNoLiveProcess devolve nil quando nenhum outro processo ai-memory está em
+// execução. Devolve erro com %w de ErrProcessLive quando há algum, e erro encadeado
+// quando a enumeração falha. dataDir só aparece na mensagem de diagnóstico.
 func CheckNoLiveProcess(dataDir string) error {
-	path := filepath.Join(dataDir, PIDFileName)
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
+	procs, err := listProcesses()
 	if err != nil {
-		return fmt.Errorf("ler marcador de PID %s: %w", path, err)
+		return fmt.Errorf("enumerar processos do sistema: %w", err)
 	}
-	pid, err := parsePID(raw)
-	if err != nil {
-		return fmt.Errorf("marcador de PID %s: %w", path, err)
-	}
-	alive, err := processAlive(pid)
-	if err != nil {
-		return fmt.Errorf("verificar processo %d: %w", pid, err)
-	}
-	if alive {
-		return fmt.Errorf("%w: pid %d usa o data_dir %s", ErrProcessLive, pid, dataDir)
+	if pid, ok := findOtherAIMemory(procs, os.Getpid()); ok {
+		return fmt.Errorf("%w: pid %d é outro processo ai-memory; data_dir %s", ErrProcessLive, pid, dataDir)
 	}
 	return nil
 }
 
-// parsePID aceita apenas inteiros positivos de 32 bits. PID 0 e negativos são
-// rejeitados: kill(0, 0) no Unix atinge o grupo do processo, não um PID.
-func parsePID(raw []byte) (int, error) {
-	s := strings.TrimSpace(string(raw))
-	n, err := strconv.ParseInt(s, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("%w: conteúdo %q não é um inteiro de 32 bits", ErrPIDFileFormat, s)
+// findOtherAIMemory devolve o PID do primeiro processo ai-memory diferente de self.
+func findOtherAIMemory(procs []procInfo, self int) (int, bool) {
+	for _, p := range procs {
+		if p.pid == self {
+			continue
+		}
+		if isAIMemoryName(p.name) {
+			return p.pid, true
+		}
 	}
-	if n <= 0 {
-		return 0, fmt.Errorf("%w: PID %d não é positivo", ErrPIDFileFormat, n)
-	}
-	return int(n), nil
+	return 0, false
+}
+
+// isAIMemoryName aceita o nome do executável com ou sem ".exe", sem diferenciar
+// maiúsculas.
+func isAIMemoryName(name string) bool {
+	return strings.EqualFold(name, aiMemoryProcessName) ||
+		strings.EqualFold(name, aiMemoryProcessName+".exe")
 }

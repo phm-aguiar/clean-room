@@ -213,12 +213,13 @@ func (w *Watcher) flush(ctx context.Context, pending map[string]time.Time, now t
 }
 
 // process decide o que fazer com um caminho pendente, olhando o disco no momento do flush:
-//   - sumiu: só registra a remoção (não apaga página nem mexe no banco);
+//   - sumiu: registra a remoção no Git para o próximo commit (não apaga página nem mexe no banco);
 //   - diretório de projeto: reindexa o projeto inteiro (criação de diretório);
 //   - `.md` regular: IndexFile, o mesmo caminho do reindex.
 func (w *Watcher) process(ctx context.Context, abs string) {
 	fi, err := os.Lstat(abs)
 	if errors.Is(err, fs.ErrNotExist) {
+		w.registerRemoval(abs)
 		w.removals.Add(1)
 		w.log.Info("watcher_remocao_registrada", "path", w.relPath(abs))
 		return
@@ -247,6 +248,15 @@ func (w *Watcher) process(ctx context.Context, abs string) {
 	if !fi.Mode().IsRegular() || !pageFile(parts) {
 		return
 	}
+	// Ledger de eventos: a decisão depende do conteúdo, então é tomada aqui, no disco, no flush.
+	led, err := isLedgerFile(abs)
+	if err != nil {
+		w.log.Warn("watcher_ledger_verificar_falhou", "path", w.relPath(abs), "err", err)
+		return
+	}
+	if led {
+		return
+	}
 	pagePath, err := domain.ParsePagePath(strings.Join(parts[2:], "/"))
 	if err != nil {
 		w.log.Warn("watcher_caminho_invalido", "path", w.relPath(abs), "err", err)
@@ -258,6 +268,25 @@ func (w *Watcher) process(ctx context.Context, abs string) {
 			return
 		}
 		w.log.Warn("watcher_indexar_falhou", "page", ref.String(), "err", err)
+	}
+}
+
+// registerRemoval põe no registro de Track o caminho de uma página removida, para o próximo
+// CommitTracked de quem chama incluir a remoção (docs/wiki-files-layer.md §7 e §8.1). Não faz commit,
+// não mexe no índice nem no disco. Ledger não é registrado: o arquivo já sumiu, então o conteúdo não
+// pode ser conferido e o ledger é ignorado pelo watcher (§8.1). Falha de Track vira aviso.
+func (w *Watcher) registerRemoval(abs string) {
+	_, parts, ok := w.locate(abs)
+	if !ok || !pageFile(parts) || ledgerName(parts[len(parts)-1]) {
+		return
+	}
+	rel := w.relPath(abs)
+	if w.store.Repo == nil {
+		w.log.Warn("watcher_remocao_sem_repo", "path", rel)
+		return
+	}
+	if err := w.store.Repo.Track(rel); err != nil {
+		w.log.Warn("watcher_remocao_rastreio_falhou", "path", rel, "err", err)
 	}
 }
 
@@ -305,7 +334,8 @@ func (w *Watcher) relPath(abs string) string {
 }
 
 // pageFile diz se os componentes (a partir da raiz) são uma página: dentro de um projeto, `.md` e fora
-// dos controles da wiki (ADR-27).
+// dos controles da wiki (ADR-27). Pelo nome só, um ledger ainda é candidato: process confere o
+// conteúdo (isLedgerFile) antes de indexar.
 func pageFile(parts []string) bool {
 	if len(parts) < 3 {
 		return false

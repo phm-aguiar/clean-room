@@ -63,7 +63,7 @@ func TestDeletePath_ApagaVersaoCorrenteQuandoIDBate(t *testing.T) {
 	}
 }
 
-func TestDeletePath_IDEsperadoDiferenteDevolveMismatchESemMudanca(t *testing.T) {
+func TestDeletePath_IDEsperadoDiferenteNaoRemoveNemFalha(t *testing.T) {
 	db, w, _, ref := delEnv(t, "notas/rota.md")
 	r1 := upMustUpsert(t, w, upIn(t, ref, "corpo v1", "sess-1", upT0))
 	r2 := upMustUpsert(t, w, upIn(t, ref, "corpo v2", "sess-2", upT0.Add(time.Minute)))
@@ -71,21 +71,24 @@ func TestDeletePath_IDEsperadoDiferenteDevolveMismatchESemMudanca(t *testing.T) 
 	auditAntes := delAuditCount(t, db)
 
 	deleted, err := DeletePath(context.Background(), w, ref, r1.Version)
-	if !errors.Is(err, ErrVersionMismatch) {
-		t.Fatalf("erro = %v, esperado ErrVersionMismatch", err)
+	if err != nil {
+		t.Fatalf("erro = %v, esperado nil (versão divergente não é erro)", err)
 	}
 	if deleted {
-		t.Fatalf("deleted = true, esperado false")
+		t.Fatalf("deleted = true, esperado false (nada foi removido)")
 	}
 
 	if depois := upTake(t, db); depois != antes {
-		t.Errorf("mismatch alterou o banco: antes %+v, depois %+v", antes, depois)
+		t.Errorf("versão divergente alterou o banco: antes %+v, depois %+v", antes, depois)
 	}
 	if n := delAuditCount(t, db); n != auditAntes {
-		t.Errorf("mismatch gravou auditoria page-delete: antes %d, depois %d", auditAntes, n)
+		t.Errorf("versão divergente gravou auditoria page-delete: antes %d, depois %d", auditAntes, n)
 	}
 	if f := upReadPage(t, db, r2.Version); f.isLatest != 1 {
-		t.Errorf("versão corrente r2 perdeu is_latest após mismatch: %d", f.isLatest)
+		t.Errorf("versão corrente r2 perdeu is_latest após versão divergente: %d", f.isLatest)
+	}
+	if f := upReadPage(t, db, r1.Version); f.body != "corpo v1" {
+		t.Errorf("versão superseded r1 foi alterada: %q", f.body)
 	}
 }
 
@@ -121,27 +124,36 @@ func TestDeletePath_SemVersaoCorrenteEIdempotente(t *testing.T) {
 	}
 }
 
-func TestDeletePath_VersoesSupersededPermanecem(t *testing.T) {
-	db, w, _, ref := delEnv(t, "notas/rota.md")
+func TestDeletePath_RemoveTodasAsVersoesDoCaminho(t *testing.T) {
+	db, w, scope, ref := delEnv(t, "notas/rota.md")
 	r1 := upMustUpsert(t, w, upIn(t, ref, "corpo v1", "sess-1", upT0))
 	r2 := upMustUpsert(t, w, upIn(t, ref, "corpo v2", "sess-2", upT0.Add(time.Minute)))
+	r3 := upMustUpsert(t, w, upIn(t, ref, "corpo v3", "sess-3", upT0.Add(2*time.Minute)))
 
-	if !delMustDelete(t, w, ref, r2.Version) {
+	// Outro caminho no mesmo escopo: não pode ser tocado.
+	refOutro := domain.NewPageRef(scope, upPath(t, "notas/outro.md"))
+	upMustUpsert(t, w, upIn(t, refOutro, "corpo outro", "sess-4", upT0))
+
+	if !delMustDelete(t, w, ref, r3.Version) {
 		t.Fatalf("deleted = false, esperado true")
 	}
 
-	v1 := upReadPage(t, db, r1.Version)
-	if v1.body != "corpo v1" {
-		t.Errorf("corpo da versão superseded mudou: %q", v1.body)
+	for _, id := range []domain.PageID{r1.Version, r2.Version, r3.Version} {
+		if n := upCount(t, db, `SELECT COUNT(*) FROM pages WHERE id = ?`, id.Bytes()); n != 0 {
+			t.Errorf("versão %s do caminho sobreviveu à remoção (%d linhas)", id.String(), n)
+		}
+		if n := upCount(t, db, `SELECT COUNT(*) FROM page_evidence WHERE page_id = ?`, id.Bytes()); n != 0 {
+			t.Errorf("evidência de %s sobreviveu (%d linhas)", id.String(), n)
+		}
 	}
-	if v1.isLatest != 0 {
-		t.Errorf("versão superseded voltou a ser corrente: is_latest = %d", v1.isLatest)
+	if n := upCount(t, db, `SELECT COUNT(*) FROM pages WHERE path = ?`, "notas/rota.md"); n != 0 {
+		t.Errorf("caminho ainda tem %d versões, esperado 0", n)
 	}
-	if !v1.validTo.Valid {
-		t.Errorf("janela da versão superseded foi alterada: valid_to NULL")
+	if n := upCount(t, db, `SELECT COUNT(*) FROM pages WHERE path = ?`, "notas/outro.md"); n != 1 {
+		t.Errorf("outro caminho do escopo foi afetado: %d linhas, esperada 1", n)
 	}
-	if n := upCount(t, db, `SELECT COUNT(*) FROM pages WHERE path = ? AND is_latest = 1`, "notas/rota.md"); n != 0 {
-		t.Errorf("DeletePath reativou uma versão (%d correntes), esperado 0", n)
+	if n := delAuditCount(t, db); n != 1 {
+		t.Errorf("auditoria page-delete: %d linhas, esperada 1 (uma por remoção)", n)
 	}
 }
 

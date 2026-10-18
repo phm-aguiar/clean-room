@@ -4,8 +4,8 @@
 > Reexecute para atualizar. Versões e comandos vêm de `go.mod`, `.golangci.yml`, `.github/workflows/ci.yml`,
 > `scripts/check.sh`, `scripts/check.ps1` e `internal/config/config.go`.
 > Entradas marcadas **(em uso)** são importadas pelo código. Entradas **(detectado)** estão no `go.mod` ou
-> foram confirmadas nas ferramentas da máquina. A única entrada ainda não implementada é `github.com/mark3labs/mcp-go`,
-> que não está no `go.mod` e não é usada nesta feature.
+> foram confirmadas nas ferramentas da máquina. A entrada `github.com/mark3labs/mcp-go` está fixada no `go.mod`
+> (T007 da feature 002) mas ainda não é importada pelo código; o primeiro import entra com T033.
 
 ## Linguagens
 | Linguagem | Versão | Detecção |
@@ -16,7 +16,11 @@
 | Nome | Versão | Propósito |
 |---|---|---|
 | `modernc.org/sqlite` | v1.60.1 | (em uso, ADR-01) SQLite pure Go, FTS5, WAL, backup online |
-| `github.com/mark3labs/mcp-go` | — | (planejado, ADR-05; não usado nesta feature) Servidor MCP stdio + HTTP streamable, atrás de interface própria |
+| `github.com/mark3labs/mcp-go` | v1.2.1 | (fixado em T007 da 002, ADR-05; ainda sem import no código, o primeiro entra com T033) Servidor MCP atrás da interface própria do pacote `mcp`. Motivo: protocolo MCP, HTTP streamable sem estado (`WithStateLess`, `WithDisableStreaming`) e stdio (`ServeStdio`). A lib não fixa o protocolo em 2024-11-05 (negocia e ecoa a versão do cliente): o pino é feito por wrapper no adaptador, com ADR a criar em T033. Go mínimo da lib: 1.25.5 |
+| `github.com/google/jsonschema-go` | v0.4.2 | (transitiva de `mcp-go` v1.2.1; sem import direto) Dependência de `mcp-go` |
+| `github.com/santhosh-tekuri/jsonschema/v6` | v6.0.2 | (transitiva de `mcp-go` v1.2.1; sem import direto) Dependência de `mcp-go` |
+| `github.com/spf13/cast` | v1.7.1 | (transitiva de `mcp-go` v1.2.1; sem import direto) Dependência de `mcp-go` |
+| `github.com/yosida95/uritemplate/v3` | v3.0.2 | (transitiva de `mcp-go` v1.2.1; sem import direto) Dependência de `mcp-go` |
 | `github.com/spf13/cobra` | v1.10.2 | (em uso, ADR-06) Subcomandos da CLI |
 | `github.com/knadh/koanf` | v1.5.0 | (em uso, ADR-06) Config TOML + env `AI_MEMORY_*` com separador `__` |
 | `github.com/knadh/koanf` providers/parsers (`providers/file`, `providers/env`, `providers/confmap`, `parsers/toml`, `parsers/dotenv`) | v1.5.0 (mesmo módulo, conforme `go.mod`) | (em uso, ADR-06 e P-11 da 001) Camadas: padrões (`confmap`) < TOML < `.env` local não versionado < env do processo |
@@ -76,4 +80,4 @@ golangci-lint e staticcheck não estão instalados localmente nesta máquina (n�
 | `windows/amd64`, `linux/amd64` | (detectado em `scripts/check.sh`, `scripts/check.ps1` e `ci.yml`) Binário único `ai-memory`, `CGO_ENABLED=0` no build; macOS fora do escopo inicial |
 
 ## Atualizado em
-2026-10-12
+2026-10-13 (T007 da feature 002: `mcp-go` v1.2.1 fixado; build cruzado e vet verificados em windows/amd64 e linux/amd64)

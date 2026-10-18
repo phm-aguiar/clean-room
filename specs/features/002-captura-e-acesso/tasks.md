@@ -13,7 +13,7 @@ max-rounds: 40
 
 ## Fase 0: Descoberta
 
-- [ ] **T001:** Extrair o contrato do evento de hook do Claude Code (campos por evento, `session_id`, `cwd`, `tool_name`, `tool_use_id`, `tool_input`, `tool_response`) e listar as fixtures de payload a versionar
+- [x] **T001:** Extrair o contrato do evento de hook do Claude Code (campos por evento, `session_id`, `cwd`, `tool_name`, `tool_use_id`, `tool_input`, `tool_response`) e listar as fixtures de payload a versionar
   - **Papel:** researcher
   - **agent:** researcher1
   - **Dependências:** Nenhuma
@@ -22,7 +22,7 @@ max-rounds: 40
   - **Arquivos:** `specs/features/002-captura-e-acesso/notes/hook-contract.md`
   - **Wiki-Keywords:** lifecycle-event-ingestion, harness, Claude Code, evento normalizado
 
-- [ ] **T002:** Extrair o contrato de handoff: seleção, reivindicação, nota de oferta, expiração e textos do handoff automático e da página de sessão
+- [x] **T002:** Extrair o contrato de handoff: seleção, reivindicação, nota de oferta, expiração e textos do handoff automático e da página de sessão
   - **Papel:** researcher
   - **agent:** researcher2
   - **Dependências:** Nenhuma
@@ -31,7 +31,7 @@ max-rounds: 40
   - **Arquivos:** `specs/features/002-captura-e-acesso/notes/handoff-contract.md`
   - **Wiki-Keywords:** design-handoff-offer-not-claim, handoff automático, sessão viva, página de sessão
 
-- [ ] **T003:** Extrair o contrato das 12 tools MCP (argumentos, aliases, limites, respostas, erros) e da resolução de escopo das tools
+- [x] **T003:** Extrair o contrato das 12 tools MCP (argumentos, aliases, limites, respostas, erros) e da resolução de escopo das tools
   - **Papel:** researcher
   - **agent:** researcher3
   - **Dependências:** Nenhuma
@@ -40,7 +40,7 @@ max-rounds: 40
   - **Arquivos:** `specs/features/002-captura-e-acesso/notes/mcp-contract.md`
   - **Wiki-Keywords:** mcp-server, ferramentas MCP, ScopeSource, chave do ator
 
-- [ ] **T004:** Avaliar o `mark3labs/mcp-go`: versão que compila com Go 1.26 e `CGO_ENABLED=0`, fixação do protocolo 2024-11-05, HTTP streamable sem estado com resposta JSON, stdio e acesso ao contexto da requisição
+- [x] **T004:** Avaliar o `mark3labs/mcp-go`: versão que compila com Go 1.26 e `CGO_ENABLED=0`, fixação do protocolo 2024-11-05, HTTP streamable sem estado com resposta JSON, stdio e acesso ao contexto da requisição
   - **Papel:** researcher
   - **agent:** researcher4
   - **Dependências:** Nenhuma
@@ -49,7 +49,7 @@ max-rounds: 40
   - **Arquivos:** `specs/features/002-captura-e-acesso/notes/mcp-go-evaluation.md`
   - **Wiki-Keywords:** mcp-go, protocolo MCP, streamable HTTP, ADR-05
 
-- [ ] **T005:** Extrair o contrato do marcador `.ai-memory.toml` e da política de captura (caminhada, leitura por linha, `[capture]` estrito, padrões, limites, decisões e corpo substituto)
+- [x] **T005:** Extrair o contrato do marcador `.ai-memory.toml` e da política de captura (caminhada, leitura por linha, `[capture]` estrito, padrões, limites, decisões e corpo substituto)
   - **Papel:** researcher
   - **agent:** researcher5
   - **Dependências:** Nenhuma
@@ -58,7 +58,7 @@ max-rounds: 40
   - **Arquivos:** `specs/features/002-captura-e-acesso/notes/capture-contract.md`
   - **Wiki-Keywords:** marker-file, capture exclusions, ignore_paths, MetadataOnly
 
-- [ ] **T006:** Consolidar as 5 notas, apontar lacunas, registrar "decisão nossa" onde o doc for omisso e listar divergências spec x doc encontradas
+- [x] **T006:** Consolidar as 5 notas, apontar lacunas, registrar "decisão nossa" onde o doc for omisso e listar divergências spec x doc encontradas
   - **Papel:** analyst
   - **agent:** analyst1
   - **Dependências:** T001, T002, T003, T004, T005
@@ -70,7 +70,7 @@ max-rounds: 40
 
 ## Fase 1: Fundação
 
-- [ ] **T007:** Adicionar `github.com/mark3labs/mcp-go` ao `go.mod` na versão escolhida em T004 e fixar a versão em `tech.md`
+- [x] **T007:** Adicionar `github.com/mark3labs/mcp-go` ao `go.mod` na versão escolhida em T004 e fixar a versão em `tech.md`
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T004, T006
@@ -79,7 +79,7 @@ max-rounds: 40
   - **Arquivos:** `go.mod`, `go.sum`, `.github/memory/tech.md`
   - **Wiki-Keywords:** tech.md, mcp-go, dependências
 
-- [ ] **T008:** Criar o evento canônico de hook no domínio: vocabulário e aliases, tipo de observação, importância por evento e limite de corpo por evento, com teste
+- [x] **T008:** Criar o evento canônico de hook no domínio: vocabulário e aliases, tipo de observação, importância por evento e limite de corpo por evento, com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T001, T006
@@ -88,7 +88,7 @@ max-rounds: 40
   - **Arquivos:** `internal/domain/hookevent.go`, `internal/domain/hookevent_test.go`
   - **Wiki-Keywords:** vocabulário de eventos, importância, limites de corpo, domain-vocabulary
 
-- [ ] **T009:** Criar a conversão de identificador de sessão: UUID nativo mantido, string qualquer vira UUID v5 no namespace OID, com teste
+- [x] **T009:** Criar a conversão de identificador de sessão: UUID nativo mantido, string qualquer vira UUID v5 no namespace OID, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T006
@@ -97,7 +97,7 @@ max-rounds: 40
   - **Arquivos:** `internal/domain/sessionid.go`, `internal/domain/sessionid_test.go`
   - **Wiki-Keywords:** UUID v5, session_id, idempotente
 
-- [ ] **T010:** Acrescentar à configuração `bind`, `server_url`, `allowed_hosts`, `[auth] token`, `[handoff]`, `[routing] mid_session`, `[auto_scope] mode`, e o diretório pessoal e o `CLAUDE_CONFIG_DIR` capturados uma vez, com validação e teste
+- [x] **T010:** Acrescentar à configuração `bind`, `server_url`, `allowed_hosts`, `[auth] token`, `[handoff]`, `[routing] mid_session`, `[auto_scope] mode`, e o diretório pessoal e o `CLAUDE_CONFIG_DIR` capturados uma vez, com validação e teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T006, T079
@@ -106,7 +106,7 @@ max-rounds: 40
   - **Arquivos:** `internal/config/config.go`, `internal/config/config_test.go`
   - **Wiki-Keywords:** koanf, INV-01, cli.md configuração, auto_scope
 
-- [ ] **T011:** Criar `config.LoadHook`, o carregador mínimo do caminho rápido (data_dir, server_url, arquivo do token e `AI_MEMORY_HOOK_*` em minutos até 60), com teste
+- [x] **T011:** Criar `config.LoadHook`, o carregador mínimo do caminho rápido (data_dir, server_url, arquivo do token e `AI_MEMORY_HOOK_*` em minutos até 60), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T010
@@ -115,7 +115,7 @@ max-rounds: 40
   - **Arquivos:** `internal/config/hook.go`, `internal/config/hook_test.go`
   - **Wiki-Keywords:** caminho rápido, INV-01, variáveis de tempo do hook
 
-- [ ] **T012:** Atualizar o teste de grafo de imports com `ingest` e `mcp` (`mcp` nunca importa `ingest` em produção)
+- [x] **T012:** Atualizar o teste de grafo de imports com `ingest` e `mcp` (`mcp` nunca importa `ingest` em produção)
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T006
@@ -124,7 +124,7 @@ max-rounds: 40
   - **Arquivos:** `internal/archtest/archtest_test.go`
   - **Wiki-Keywords:** grafo de imports, constitution, mcp, ingest
 
-- [ ] **T013:** Criar o arquivo .feature da 002 com os cenários da spec (1 principal, 5 alternativos, 7 de borda)
+- [x] **T013:** Criar o arquivo .feature da 002 com os cenários da spec (1 principal, 5 alternativos, 7 de borda)
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T006
@@ -138,7 +138,7 @@ max-rounds: 40
 
 > Divergências do código da 001 com os docs, encontradas na validação de 2026-10-13 antes de executar este DAG. Cada uma afeta algo que a 002 usa. IDs a partir de T079 para não renumerar as tasks já geradas.
 
-- [ ] **T079:** Corrigir o diretório de dados da configuração: padrão no diretório de dados local do usuário com a subpasta `ai-memory`, flag global `--data-dir`, precedência `--data-dir` > `AI_MEMORY_DATA_DIR` > arquivo, e `config.toml` lido do diretório de dados quando `--config` falta, com teste
+- [x] **T079:** Corrigir o diretório de dados da configuração: padrão no diretório de dados local do usuário com a subpasta `ai-memory`, flag global `--data-dir`, precedência `--data-dir` > `AI_MEMORY_DATA_DIR` > arquivo, e `config.toml` lido do diretório de dados quando `--config` falta, com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T006
@@ -147,7 +147,7 @@ max-rounds: 40
   - **Arquivos:** `internal/config/config.go`, `internal/config/config_test.go`, `internal/cli/root.go`
   - **Wiki-Keywords:** design-decisions diretório de dados, cli.md fluxo de execução, AI_MEMORY_DATA_DIR, INV-11
 
-- [ ] **T080:** Criar as escritas rastreadas no adaptador git (registro de caminhos e commit dos registrados) e tirar o commit do `WritePage` e do `DeletePage`: quem chama faz o commit no ponto definido pelo doc (`memory_write_page`, fim de sessão, checkpoints), com teste
+- [x] **T080:** Criar as escritas rastreadas no adaptador git (registro de caminhos e commit dos registrados) e tirar o commit do `WritePage` e do `DeletePage`: quem chama faz o commit no ponto definido pelo doc (`memory_write_page`, fim de sessão, checkpoints), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T006
@@ -156,7 +156,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/gitrepo.go`, `internal/wiki/gitrepo_test.go`, `internal/wiki/write.go`, `internal/wiki/write_test.go`
   - **Wiki-Keywords:** wiki-files-layer histórico Git, escritas rastreadas, commits automáticos
 
-- [ ] **T081:** Criar a rota `POST /admin/backup` (valida a árvore da wiki, snapshot online do banco, tarball gzip com `wiki/`, `db/memory.sqlite` e `config.toml` se existir, `application/gzip`, 500 com erro JSON), com teste
+- [x] **T081:** Criar a rota `POST /admin/backup` (valida a árvore da wiki, snapshot online do banco, tarball gzip com `wiki/`, `db/memory.sqlite` e `config.toml` se existir, `application/gzip`, 500 com erro JSON), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T006
@@ -165,7 +165,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_backup.go`, `internal/cli/admin_backup_test.go`
   - **Wiki-Keywords:** lifecycle-ops backup, tarball, snapshot online, INV-09
 
-- [ ] **T082:** Trocar o comando `backup --to` (atalho `-o`) para pedir o tarball ao servidor e gravar o corpo no arquivo, e ajustar o smoke test da 001, com teste
+- [x] **T082:** Trocar o comando `backup --to` (atalho `-o`) para pedir o tarball ao servidor e gravar o corpo no arquivo, e ajustar o smoke test da 001, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T081, T010
@@ -174,7 +174,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/backup_cmd.go`, `internal/cli/backup_cmd_test.go`, `test/smoke/smoke_test.go`
   - **Wiki-Keywords:** backup, cli.md backup não é direto, cliente HTTP
 
-- [ ] **T083:** Fazer o reindex tratar `_meta.md` ausente ou inválido como erro com o caminho exato, em vez de reconstruir o nome pelo id, com teste
+- [x] **T083:** Fazer o reindex tratar `_meta.md` ausente ou inválido como erro com o caminho exato, em vez de reconstruir o nome pelo id, com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T022
@@ -183,7 +183,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/reindex.go`, `internal/wiki/reindex_test.go`
   - **Wiki-Keywords:** lifecycle-ops reindex, manifesto, _meta.md
 
-- [ ] **T084:** Criar a checagem de banco limpo do comando `reindex` (recusa e nomeia as contagens não zero de workspaces, projects, pages, links, page_embeddings, sessions, observations, handoffs, users e audit_log), com teste
+- [x] **T084:** Criar a checagem de banco limpo do comando `reindex` (recusa e nomeia as contagens não zero de workspaces, projects, pages, links, page_embeddings, sessions, observations, handoffs, users e audit_log), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T041, T079
@@ -192,7 +192,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/rowcounts.go`, `internal/storage/rowcounts_test.go`, `internal/cli/reindex_cmd.go`, `internal/cli/reindex_cmd_test.go`
   - **Wiki-Keywords:** clean-target check, reindex, estado só do banco
 
-- [ ] **T085:** Criar o preenchimento idempotente de `_meta.md` para escopos sem manifesto, chamado no boot do `serve`, com teste
+- [x] **T085:** Criar o preenchimento idempotente de `_meta.md` para escopos sem manifesto, chamado no boot do `serve`, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T006
@@ -201,7 +201,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/meta_backfill.go`, `internal/wiki/meta_backfill_test.go`
   - **Wiki-Keywords:** backfill de manifestos, _meta.md, ordem de boot
 
-- [ ] **T086:** Fazer o watcher registrar no adaptador git o caminho removido, para que o próximo commit inclua a remoção, sem mexer no índice, com teste
+- [x] **T086:** Fazer o watcher registrar no adaptador git o caminho removido, para que o próximo commit inclua a remoção, sem mexer no índice, com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T022, T080
@@ -210,7 +210,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/watcher.go`, `internal/wiki/watcher_test.go`
   - **Wiki-Keywords:** watcher, remoção, escritas rastreadas
 
-- [ ] **T087:** Fazer a exclusão por caminho remover fisicamente todas as versões do caminho e, na variante condicional com versão diferente da esperada, não fazer nada e informar que não removeu (sem erro); `wiki.DeletePage` restaura o arquivo nesse caso; com teste
+- [x] **T087:** Fazer a exclusão por caminho remover fisicamente todas as versões do caminho e, na variante condicional com versão diferente da esperada, não fazer nada e informar que não removeu (sem erro); `wiki.DeletePage` restaura o arquivo nesse caso; com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T006
@@ -219,7 +219,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/delete.go`, `internal/storage/delete_test.go`, `internal/wiki/delete.go`, `internal/wiki/delete_test.go`
   - **Wiki-Keywords:** storage-and-retrieval exclusão de página, versão esperada, rollback
 
-- [ ] **T088:** Corrigir a ressurreição de lápide: a nova versão encadeia na lápide, o `superseded_at` da lápide é limpo e o `valid_to` original é mantido, com auditoria, e com teste
+- [x] **T088:** Corrigir a ressurreição de lápide: a nova versão encadeia na lápide, o `superseded_at` da lápide é limpo e o `valid_to` original é mantido, com auditoria, e com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T006
@@ -228,7 +228,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/upsert.go`, `internal/storage/upsert_test.go`
   - **Wiki-Keywords:** ressurreição de tombstone, superseded_at, caso C
 
-- [ ] **T089:** Alinhar a escrita e a exclusão de página ao fluxo de `docs/wiki-files-layer.md` §5.2: sem linha em `log.md` (o ledger é só de eventos de hook e o `okf.md` diz que o ai-memory não adota `log.md`), sem escrever `index.md` (só a migração OKF da 006 o cria), páginas sob `_slots/` marcadas como fixadas; remover o código que fica sem uso e ajustar os testes da 001 que esperavam essas linhas
+- [x] **T089:** Alinhar a escrita e a exclusão de página ao fluxo de `docs/wiki-files-layer.md` §5.2: sem linha em `log.md` (o ledger é só de eventos de hook e o `okf.md` diz que o ai-memory não adota `log.md`), sem escrever `index.md` (só a migração OKF da 006 o cria), páginas sob `_slots/` marcadas como fixadas; remover o código que fica sem uso e ajustar os testes da 001 que esperavam essas linhas
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T080, T083, T086, T087
@@ -237,7 +237,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/write.go`, `internal/wiki/write_test.go`, `internal/wiki/delete.go`, `internal/wiki/delete_test.go`, `internal/wiki/ledger.go`, `internal/wiki/meta.go`, `internal/wiki/meta_ledger_test.go`, `internal/wiki/reindex_test.go`, `internal/wiki/watcher_test.go`, `test/acceptance/write_page_test.go`
   - **Wiki-Keywords:** wiki-files-layer escrita de página, okf log.md, index.md, _slots
 
-- [ ] **T090:** Fazer o frontmatter representar mapeamentos aninhados e listas de mapeamentos, preservando a ordem das chaves na leitura e na emissão, para `generated: {by, at}`, `sources` e `relations: {causes|fixes|contradicts: [...]}` (`docs/okf.md`, `docs/typed-edges.md`); nulo e alias continuam recusados, exceto onde o doc aceita nulo (`entities`); com teste
+- [x] **T090:** Fazer o frontmatter representar mapeamentos aninhados e listas de mapeamentos, preservando a ordem das chaves na leitura e na emissão, para `generated: {by, at}`, `sources` e `relations: {causes|fixes|contradicts: [...]}` (`docs/okf.md`, `docs/typed-edges.md`); nulo e alias continuam recusados, exceto onde o doc aceita nulo (`entities`); com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T006
@@ -246,7 +246,7 @@ max-rounds: 40
   - **Arquivos:** `internal/domain/page.go`, `internal/domain/page_test.go`, `internal/wiki/markdown.go`, `internal/wiki/markdown_test.go`
   - **Wiki-Keywords:** frontmatter, mapeamento aninhado, okf generated, sources, relations
 
-- [ ] **T091:** Alinhar a conformidade OKF da escrita: `generated` como mapeamento `{by, at}` em vez de chaves planas `generated.by`/`generated.at`, `generated.by` igual a `generated_by_model` ou `process:ai-memory/<versão do build>`, `sources` derivado de `session_id` e `agent`, e `relations` lido como mapeamento por relação; com teste
+- [x] **T091:** Alinhar a conformidade OKF da escrita: `generated` como mapeamento `{by, at}` em vez de chaves planas `generated.by`/`generated.at`, `generated.by` igual a `generated_by_model` ou `process:ai-memory/<versão do build>`, `sources` derivado de `session_id` e `agent`, e `relations` lido como mapeamento por relação; com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T089, T090
@@ -255,7 +255,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/write.go`, `internal/wiki/write_test.go`, `internal/wiki/derive.go`, `internal/wiki/derive_test.go`
   - **Wiki-Keywords:** okf proveniência, generated.by, sources, relations
 
-- [ ] **T092:** Criar a semente de leitura do ponteiro de projeto ativo no boot do transporte HTTP: projeto da observação mais recente dentro de `session_ttl_secs`, num slot próprio, só para leitura, aplicada só com o slot compartilhado vazio, descartada no primeiro evento de primeiro plano e nas invalidações administrativas; falha só registrada (`docs/auto-scope.md` § "Surviving a restart"); com teste
+- [x] **T092:** Criar a semente de leitura do ponteiro de projeto ativo no boot do transporte HTTP: projeto da observação mais recente dentro de `session_ttl_secs`, num slot próprio, só para leitura, aplicada só com o slot compartilhado vazio, descartada no primeiro evento de primeiro plano e nas invalidações administrativas; falha só registrada (`docs/auto-scope.md` § "Surviving a restart"); com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T019, T020
@@ -265,7 +265,7 @@ max-rounds: 40
   - **Wiki-Keywords:** auto-scope, semente de startup, StartupSeed, reinício
 
 
-- [ ] **T093:** Alinhar o sanitizador da 001 ao contrato exato: os 27 padrões de `docs/prompts-schemas-and-sanitizer.md` §11.2 na ordem e com os limiares da tabela (inclui `auth_header` amplo com qualificador de autenticação, `env_secret` com a lista de variáveis de provedor e forma sem diferença de caixa, `telegram_token` nas duas formas, `jwt` com 16 ou mais por segmento, `aws_key` com borda de palavra); remoção de controle restrita à lista do §11.1; `[sanitize].allowlist` checada por ocorrência e `[sanitize].extra_patterns` com rótulo `custom`, expressão inválida impedindo o início (`docs/domain-vocabulary.md` §7.3, removendo o adiamento ADR-13 da 001); com teste por padrão (positivo, negativo e os casos de falso positivo do §11.4)
+- [x] **T093:** Alinhar o sanitizador da 001 ao contrato exato: os 27 padrões de `docs/prompts-schemas-and-sanitizer.md` §11.2 na ordem e com os limiares da tabela (inclui `auth_header` amplo com qualificador de autenticação, `env_secret` com a lista de variáveis de provedor e forma sem diferença de caixa, `telegram_token` nas duas formas, `jwt` com 16 ou mais por segmento, `aws_key` com borda de palavra); remoção de controle restrita à lista do §11.1; `[sanitize].allowlist` checada por ocorrência e `[sanitize].extra_patterns` com rótulo `custom`, expressão inválida impedindo o início (`docs/domain-vocabulary.md` §7.3, removendo o adiamento ADR-13 da 001); com teste por padrão (positivo, negativo e os casos de falso positivo do §11.4)
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T010, T079
@@ -279,7 +279,7 @@ max-rounds: 40
 
 ### 2A Storage
 
-- [ ] **T014:** Criar sessões: abrir ou tocar, encerrar e a definição única de sessão efêmera, com teste
+- [x] **T014:** Criar sessões: abrir ou tocar, encerrar e a definição única de sessão efêmera, com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T008
@@ -288,7 +288,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/sessions.go`, `internal/storage/sessions_test.go`
   - **Wiki-Keywords:** sessão efêmera, sessions, encerramento
 
-- [ ] **T015:** Criar a chave de ingestão: reivindicar (`new`, `pending`, `completed`), concluir e reter por 30 dias, com teste
+- [x] **T015:** Criar a chave de ingestão: reivindicar (`new`, `pending`, `completed`), concluir e reter por 30 dias, com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T006
@@ -297,7 +297,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/ingestkeys.go`, `internal/storage/ingestkeys_test.go`
   - **Wiki-Keywords:** ingest_keys, idempotência, pelo menos uma vez
 
-- [ ] **T016:** Criar a gravação de handoff: inserir com expiração prévia dos automáticos do mesmo `cwd` exato e mesmo dono, e cancelar por id, com teste
+- [x] **T016:** Criar a gravação de handoff: inserir com expiração prévia dos automáticos do mesmo `cwd` exato e mesmo dono, e cancelar por id, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T014, T002
@@ -306,7 +306,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/handoffs.go`, `internal/storage/handoffs_test.go`
   - **Wiki-Keywords:** handoffs, expiração, supersessão de handoff
 
-- [ ] **T017:** Criar a seleção de handoff (dono, aberto, manual antes de automático, `cwd` ancestral por componente, sessão viva de 10 min, desempate) e a listagem, com teste
+- [x] **T017:** Criar a seleção de handoff (dono, aberto, manual antes de automático, `cwd` ancestral por componente, sessão viva de 10 min, desempate) e a listagem, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T016
@@ -315,7 +315,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/handoff_select.go`, `internal/storage/handoff_select_test.go`
   - **Wiki-Keywords:** seleção de handoff, busy_since, fronteira de caminho
 
-- [ ] **T018:** Criar a reivindicação atômica de handoff com duas guardas de `open`, sessão viva reavaliada, idempotência do receptor e varredura pós-reivindicação, com teste multi-sessão
+- [x] **T018:** Criar a reivindicação atômica de handoff com duas guardas de `open`, sessão viva reavaliada, idempotência do receptor e varredura pós-reivindicação, com teste multi-sessão
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T017
@@ -324,7 +324,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/handoff_claim.go`, `internal/storage/handoff_claim_test.go`
   - **Wiki-Keywords:** INV-16, reivindicação atômica, uso único, multi-sessão
 
-- [ ] **T019:** Criar o ponteiro de projeto ativo em memória (modos `per_actor`, `per_session` e `single`, TTL 1 h, teto 4096, marca de ponteiro ativo, `Lookup` e `Read`); `session_ttl_secs = 0` vira 1 h, `max_entries = 0` vira 1, modo inválido impede a subida e o modo efetivo vai para o log `active-project isolation mode` (`docs/auto-scope.md`), com teste
+- [x] **T019:** Criar o ponteiro de projeto ativo em memória (modos `per_actor`, `per_session` e `single`, TTL 1 h, teto 4096, marca de ponteiro ativo, `Lookup` e `Read`); `session_ttl_secs = 0` vira 1 h, `max_entries = 0` vira 1, modo inválido impede a subida e o modo efetivo vai para o log `active-project isolation mode` (`docs/auto-scope.md`), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T006
@@ -333,7 +333,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/activeproject.go`, `internal/storage/activeproject_test.go`
   - **Wiki-Keywords:** ponteiro de projeto ativo, ActiveProjectMode, Mismatch
 
-- [ ] **T020:** Ligar o ponteiro ao `ResolveScope`: leitura sem escopo degrada (ponteiro, semente, padrão) com a origem; escrita sem escopo e sem ponteiro recusa; escopo explícito inexistente falha fechado; origens alinhadas ao doc (`explicit`, `session`, `shared_slot`, `startup_seed`, `default`, `default_after_mismatch`), com a resolução por caminho de repositório saindo da leitura e indo para a resolução do hook (T027); argumentos explícitos como em `docs/auto-scope.md` (`project` em forma `workspace/project` só vira par se o nome exato não existir; `project` sozinho resolve no workspace ativo e depois no padrão; lista de escopos sem duplicata e com limite); com teste
+- [x] **T020:** Ligar o ponteiro ao `ResolveScope`: leitura sem escopo degrada (ponteiro, semente, padrão) com a origem; escrita sem escopo e sem ponteiro recusa; escopo explícito inexistente falha fechado; origens alinhadas ao doc (`explicit`, `session`, `shared_slot`, `startup_seed`, `default`, `default_after_mismatch`), com a resolução por caminho de repositório saindo da leitura e indo para a resolução do hook (T027); argumentos explícitos como em `docs/auto-scope.md` (`project` em forma `workspace/project` só vira par se o nome exato não existir; `project` sozinho resolve no workspace ativo e depois no padrão; lista de escopos sem duplicata e com limite); com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T019
@@ -345,7 +345,7 @@ max-rounds: 40
 
 ### 2B Wiki
 
-- [ ] **T021:** Criar o ledger mensal de eventos de hook (`log-AAAA-MM.md`, linha `## [ts] evento | título`, título até 120 caracteres), com teste
+- [x] **T021:** Criar o ledger mensal de eventos de hook (`log-AAAA-MM.md`, linha `## [ts] evento | título`, título até 120 caracteres), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T008
@@ -354,7 +354,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/hooklog.go`, `internal/wiki/hooklog_test.go`
   - **Wiki-Keywords:** ledger, log do projeto, somente acréscimo
 
-- [ ] **T022:** Ajustar o reconhecimento de ledger para a regra de nome e conteúdo (`log.md` ou `log-AAAA-MM.md` exatos e conteúdo que abre com entrada, lendo até 8 KiB; frontmatter sem fechamento em até 64 linhas ou linha vazia no início decidem contra; `docs/complementary-contracts.md` §4), usado pelo reindex e pelo watcher, com teste
+- [x] **T022:** Ajustar o reconhecimento de ledger para a regra de nome e conteúdo (`log.md` ou `log-AAAA-MM.md` exatos e conteúdo que abre com entrada, lendo até 8 KiB; frontmatter sem fechamento em até 64 linhas ou linha vazia no início decidem contra; `docs/complementary-contracts.md` §4), usado pelo reindex e pelo watcher, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T006
@@ -366,7 +366,7 @@ max-rounds: 40
 
 ### 2C Ingestão: núcleo puro
 
-- [ ] **T023:** Criar a normalização tolerante do evento (agente, sessão, `cwd` do corpo, título e corpo por evento, esquema fechado do Claude Code, `occurred_at`, `ingest_key`, subagente, remoção incondicional de `last_assistant_message`), com teste por fixtures
+- [x] **T023:** Criar a normalização tolerante do evento (agente, sessão, `cwd` do corpo, título e corpo por evento, esquema fechado do Claude Code, `occurred_at`, `ingest_key`, subagente, remoção incondicional de `last_assistant_message`), com teste por fixtures
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T001, T008, T009
@@ -375,7 +375,7 @@ max-rounds: 40
   - **Arquivos:** `internal/ingest/normalize.go`, `internal/ingest/normalize_test.go`, `internal/ingest/testdata/claude-code/`
   - **Wiki-Keywords:** extração tolerante, occurred_at, esquema fechado, Claude Code
 
-- [ ] **T024:** Criar a política de captura pura (estados do marcador, padrões, limites, orçamento de comparações, decisões `Keep`/`Drop`/`MetadataOnly` e corpo substituto), com teste
+- [x] **T024:** Criar a política de captura pura (estados do marcador, padrões, limites, orçamento de comparações, decisões `Keep`/`Drop`/`MetadataOnly` e corpo substituto), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T005, T006
@@ -384,7 +384,7 @@ max-rounds: 40
   - **Arquivos:** `internal/ingest/capture/policy.go`, `internal/ingest/capture/policy_test.go`
   - **Wiki-Keywords:** política de captura, denylist, MetadataOnly, fail-safe
 
-- [ ] **T025:** Criar a síntese da página de sessão sem LLM (título, resumo de uma linha, corpo e frontmatter), com teste
+- [x] **T025:** Criar a síntese da página de sessão sem LLM (título, resumo de uma linha, corpo e frontmatter), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T002, T008, T090
@@ -393,7 +393,7 @@ max-rounds: 40
   - **Arquivos:** `internal/ingest/synth/session_page.go`, `internal/ingest/synth/session_page_test.go`
   - **Wiki-Keywords:** página de sessão, zero-LLM, raw observations
 
-- [ ] **T026:** Criar a síntese do handoff automático sem LLM (resumo, próximos passos, perguntas em aberto e prompts de confirmação), com teste
+- [x] **T026:** Criar a síntese do handoff automático sem LLM (resumo, próximos passos, perguntas em aberto e prompts de confirmação), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T002, T008
@@ -402,7 +402,7 @@ max-rounds: 40
   - **Arquivos:** `internal/ingest/synth/handoff.go`, `internal/ingest/synth/handoff_test.go`
   - **Wiki-Keywords:** handoff automático, próximos passos, perguntas em aberto
 
-- [ ] **T027:** Criar a resolução de projeto do hook (ordem do §7.1, raiz git real, recusa de `_global`, prefixo mais longo, criação de escopo) e a sessão pegajosa (`mid_session`), com cache de 4096 e teste
+- [x] **T027:** Criar a resolução de projeto do hook (ordem do §7.1, raiz git real, recusa de `_global`, prefixo mais longo, criação de escopo) e a sessão pegajosa (`mid_session`), com cache de 4096 e teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T020, T010
@@ -417,11 +417,30 @@ max-rounds: 40
 - [ ] **T028:** Criar o processamento do evento: sessão, gate por (projeto, chave), observação sanitizada e chave na mesma transação, desfechos de admissão, avanço do ponteiro, linha no ledger e conclusão no fim; fim de sessão que nomeia outro escopo é descartado, salvo se vier do mesmo diretório da sessão (`docs/auto-scope.md`), com teste
   - **Papel:** executor
   - **agent:** executor1
-  - **Dependências:** T014, T015, T019, T021, T023, T027, T093
-  - **depends_on:** [T014, T015, T019, T021, T023, T027, T093]
+  - **Dependências:** T014, T015, T019, T021, T023, T027, T093, T028.a, T028.b
+  - **depends_on:** [T014, T015, T019, T021, T023, T027, T093, T028.a, T028.b]
   - **Paralelizável:** true
   - **Arquivos:** `internal/ingest/process.go`, `internal/ingest/process_test.go`
   - **Wiki-Keywords:** admissão, INV-03, idempotência, ponteiro ativo
+  - **Revisão (2026-10-18):** as pendências (a) estado da chave e (b) cwd da sessão saíram para T028.a e T028.b. O item de outro escopo já está pronto (gravado no projeto nomeado, sessão não movida, `docs/storage-and-retrieval.md:209-210`). T028 só fecha quando T028.a e T028.b fecharem e o processo usar as novas funções.
+
+- [x] **T028.a:** Expor o estado da chave de ingestão (reivindicada com efeitos a jusante pendentes ou concluída) em `storage/ingestkeys.go`, com teste (`docs/database-schema.md:283`, `docs/complementary-contracts.md:69`)
+  - **Papel:** executor
+  - **agent:** executor3
+  - **Dependências:** T015
+  - **depends_on:** [T015]
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/ingestkeys.go`, `internal/storage/ingestkeys_test.go`
+  - **Wiki-Keywords:** ingest_keys, completed_at, replay pendente
+
+- [x] **T028.b:** Gravar e ler o `cwd` de trabalho armazenado da sessão em `storage/sessions.go`, com teste, para a exceção do fim de sessão no mesmo diretório (`docs/storage-and-retrieval.md:211`, `docs/desktop/capture-and-dedup.md:108`)
+  - **Papel:** executor
+  - **agent:** executor3
+  - **Dependências:** T014
+  - **depends_on:** [T014]
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/sessions.go`, `internal/storage/sessions_test.go`
+  - **Wiki-Keywords:** sessão, cwd armazenado, fim de sessão, escopo
 
 - [ ] **T029:** Criar o fim de sessão: efêmera sem página, substantiva com página por `WritePage` e transação que encerra a sessão e grava o handoff, e commit com o título do doc, com teste
   - **Papel:** executor
@@ -450,7 +469,7 @@ max-rounds: 40
   - **Arquivos:** `internal/ingest/router.go`, `internal/ingest/router_test.go`
   - **Wiki-Keywords:** INV-05, 202 ou 429, lote, reconhecimento
 
-- [ ] **T032:** Criar a rota `GET /handoff` (ordem de operações, publicação do ponteiro, seleção, renderização, oferta ou reivindicação depois de renderizar, delimitadores de histórico não confiável, 403), com teste
+- [x] **T032:** Criar a rota `GET /handoff` (ordem de operações, publicação do ponteiro, seleção, renderização, oferta ou reivindicação depois de renderizar, delimitadores de histórico não confiável, 403), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T018, T027
@@ -462,16 +481,16 @@ max-rounds: 40
 
 ### 2E MCP
 
-- [ ] **T033:** Criar a interface do servidor MCP e o adaptador `mcp-go` (nome, capacidade `tools`, protocolo 2024-11-05, identidade só do contexto, chave do ator), com teste
+- [x] **T033:** Criar a interface do servidor MCP e o adaptador `mcp-go` (nome, capacidade `tools`, protocolo 2024-11-05, identidade só do contexto, chave do ator), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T007, T003
   - **depends_on:** [T007, T003]
   - **Paralelizável:** true
-  - **Arquivos:** `internal/mcp/server.go`, `internal/mcp/adapter_mcpgo.go`, `internal/mcp/server_test.go`
+  - **Arquivos:** `internal/mcp/server.go`, `internal/mcp/adapter_mcpgo.go`, `internal/mcp/server_test.go`, `specs/features/002-captura-e-acesso/notes/adr-protocolo-mcp.md` (ADR do pino de protocolo por wrapper, P1 da fase 0)
   - **Wiki-Keywords:** mcp-go, interface, chave do ator, protocolo
 
-- [ ] **T034:** Criar as tools de leitura `memory_query`, `memory_recent`, `memory_read_page` e `memory_status`, com teste
+- [x] **T034:** Criar as tools de leitura `memory_query`, `memory_recent`, `memory_read_page` e `memory_status`, com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T033, T020
@@ -480,7 +499,7 @@ max-rounds: 40
   - **Arquivos:** `internal/mcp/tools_read.go`, `internal/mcp/tools_read_test.go`
   - **Wiki-Keywords:** memory_query, global_scope_hits, raw_hits, include_related
 
-- [ ] **T035:** Criar as tools `memory_read_session_observations` e `memory_briefing`, com teste
+- [x] **T035:** Criar as tools `memory_read_session_observations` e `memory_briefing`, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T033, T014
@@ -489,7 +508,7 @@ max-rounds: 40
   - **Arquivos:** `internal/mcp/tools_session.go`, `internal/mcp/tools_session_test.go`
   - **Wiki-Keywords:** observações brutas, briefing, paginação
 
-- [ ] **T036:** Criar as tools de escrita `memory_write_page` e `memory_delete_page` (tier padrão, `scope: "global"`, frontmatter aceito, checkpoint), com teste
+- [x] **T036:** Criar as tools de escrita `memory_write_page` e `memory_delete_page` (tier padrão, `scope: "global"`, frontmatter aceito, checkpoint), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T033, T020, T087, T089, T091
@@ -498,7 +517,7 @@ max-rounds: 40
   - **Arquivos:** `internal/mcp/tools_write.go`, `internal/mcp/tools_write_test.go`
   - **Wiki-Keywords:** memory_write_page, escopo global, checkpoint
 
-- [ ] **T037:** Criar as tools `memory_handoff_begin`, `memory_handoff_accept`, `memory_handoff_list` e `memory_handoff_cancel`, com teste
+- [x] **T037:** Criar as tools `memory_handoff_begin`, `memory_handoff_accept`, `memory_handoff_list` e `memory_handoff_cancel`, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T033, T018
@@ -507,7 +526,7 @@ max-rounds: 40
   - **Arquivos:** `internal/mcp/tools_handoff.go`, `internal/mcp/tools_handoff_test.go`
   - **Wiki-Keywords:** memory_handoff_accept, shared, limites de handoff
 
-- [ ] **T038:** Criar os transportes MCP: stdio e HTTP streamable sem estado com resposta JSON, com teste
+- [x] **T038:** Criar os transportes MCP: stdio e HTTP streamable sem estado com resposta JSON, com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T033
@@ -528,7 +547,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/httpserver.go`, `internal/cli/httpserver_test.go`
   - **Wiki-Keywords:** autenticação HTTP, allowed_hosts, bearer, rotas de máquina
 
-- [ ] **T040:** Criar a trava de instância única: trava exclusiva do sistema operacional sobre `.serve.lock`, segura durante a vida do processo e liberada pelo sistema ao sair (servidor que caiu nunca trava ninguém); PID do detentor em `.serve.lock.holder` (informativo, melhor esforço) citado na recusa; falha transitória ao abrir ou travar repetida com espera de 25 ms até 5 tentativas no total (trava ocupada nunca é repetida); sistema de arquivos sem suporte a trava só gera aviso; `--force` sobe mesmo assim (`docs/windows.md` § Single instance, `docs/cli.md` §3.1), com teste
+- [x] **T040:** Criar a trava de instância única: trava exclusiva do sistema operacional sobre `.serve.lock`, segura durante a vida do processo e liberada pelo sistema ao sair (servidor que caiu nunca trava ninguém); PID do detentor em `.serve.lock.holder` (informativo, melhor esforço) citado na recusa; falha transitória ao abrir ou travar repetida com espera de 25 ms até 5 tentativas no total (trava ocupada nunca é repetida); sistema de arquivos sem suporte a trava só gera aviso; `--force` sobe mesmo assim (`docs/windows.md` § Single instance, `docs/cli.md` §3.1), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T006
@@ -537,7 +556,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/servelock.go`, `internal/cli/servelock_test.go`
   - **Wiki-Keywords:** .serve.lock, instância única, cli.md boot
 
-- [ ] **T041:** Trocar a guarda de processo vivo pela enumeração de processos do sistema (Linux por `/proc`, Windows por `CreateToolhelp32Snapshot`), removendo o `ai-memory.pid`, e ajustar os testes da guarda e do `reindex`
+- [x] **T041:** Trocar a guarda de processo vivo pela enumeração de processos do sistema (Linux por `/proc`, Windows por `CreateToolhelp32Snapshot`), removendo o `ai-memory.pid`, e ajustar os testes da guarda e do `reindex`
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T006
@@ -555,7 +574,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/serve_cmd.go`, `internal/cli/serve_cmd_test.go`
   - **Wiki-Keywords:** serve, ordem de boot, transporte
 
-- [ ] **T043:** Criar a leitura do marcador `.ai-memory.toml` no cliente (caminhada com fronteiras, caminhada de escopo e de captura, leitura por linha, valores verdadeiros e falsos, `[capture]` estrito até 64 KiB), com teste
+- [x] **T043:** Criar a leitura do marcador `.ai-memory.toml` no cliente (caminhada com fronteiras, caminhada de escopo e de captura, leitura por linha, valores verdadeiros e falsos, `[capture]` estrito até 64 KiB), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T005, T011
@@ -564,7 +583,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/marker.go`, `internal/cli/marker_test.go`
   - **Wiki-Keywords:** marker-file, caminhada, leitura por linha
 
-- [ ] **T044:** Criar o spool local (itens `0600` com chave de ingestão, 8 tentativas, 7 dias, 10 000 arquivos, lotes de 256 itens e 8 MiB, trava exclusiva com PID e retomada de trava morta), com teste
+- [x] **T044:** Criar o spool local (itens `0600` com chave de ingestão, 8 tentativas, 7 dias, 10 000 arquivos, lotes de 256 itens e 8 MiB, trava exclusiva com PID e retomada de trava morta), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T011, T041
@@ -573,20 +592,30 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/spool.go`, `internal/cli/spool_test.go`
   - **Wiki-Keywords:** spool, hook-spool, trava de arquivo
 
-- [ ] **T045:** Criar a drenagem do spool por `POST /hook/batch` (confirmação por índice, um retry em 401, 429 sem gastar tentativa, reapontamento para o `server_url` atual), com teste
+- [x] **T044.a:** Gravar `auth_mode` (`static` ou `none`) e o token em texto quando `static` em cada item do spool: campo em `spoolItem` e parâmetro em `Enqueue`, com teste de permissão `0600` e de leitura dos dois modos (`docs/hook-scripts-and-container-deploy.md:159`). Modo OIDC fica fora desta task
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T044
   - **depends_on:** [T044]
   - **Paralelizável:** false
+  - **Arquivos:** `internal/cli/spool.go`, `internal/cli/spool_test.go`
+  - **Wiki-Keywords:** spool, auth_mode, token estático, permissões
+
+- [ ] **T045:** Criar a drenagem do spool por `POST /hook/batch` (confirmação por índice, um retry em 401, 429 sem gastar tentativa, reapontamento para o `server_url` atual), com teste
+  - **Papel:** executor
+  - **agent:** executor2
+  - **Dependências:** T044.a
+  - **depends_on:** [T044.a]
+  - **Paralelizável:** false
   - **Arquivos:** `internal/cli/drain.go`, `internal/cli/drain_test.go`
   - **Wiki-Keywords:** drenagem, reconhecimento de lote, cliente HTTP
+  - **Decisões registradas (2026-10-18):** o retry do 401 usa o token atual do config e não o token guardado no item, porque o doc diz "cobre token rotacionado após a captura" (`docs/cli.md:339-340`). Timeout do POST do lote: 2 s, conforme INV-05 da constituição, marcado "a confirmar" no doc (`docs/cli.md:363`). Modo OIDC fica fora desta task.
 
 - [ ] **T046:** Criar o comando `hook` (parse com BOM, remoção do campo do assistente, política, spool, drenagem incremental, início de sessão com `GET /handoff`, fronteiras com `hook-drain` destacado, `--check-capture`, sempre sucesso), com teste
   - **Papel:** executor
   - **agent:** executor2
-  - **Dependências:** T024, T043, T045
-  - **depends_on:** [T024, T043, T045]
+  - **Dependências:** T024, T043, T044.a, T045
+  - **depends_on:** [T024, T043, T044.a, T045]
   - **Paralelizável:** false
   - **Arquivos:** `internal/cli/hook_cmd.go`, `internal/cli/hook_cmd_test.go`
   - **Wiki-Keywords:** cliente de hooks, caminho rápido, nunca bloquear
@@ -600,7 +629,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/hookdrain_cmd.go`, `internal/cli/hookdrain_cmd_test.go`
   - **Wiki-Keywords:** hook-drain, fronteira, orçamento
 
-- [ ] **T048:** Criar a escrita idempotente de arquivo de agente (resolve links simbólicos, não toca o disco se igual, `.bak-<unix>` e escrita atômica), com teste
+- [x] **T048:** Criar a escrita idempotente de arquivo de agente (resolve links simbólicos, não toca o disco se igual, `.bak-<unix>` e escrita atômica), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T006
@@ -609,7 +638,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/applyatomic.go`, `internal/cli/applyatomic_test.go`
   - **Wiki-Keywords:** apply_atomic, idempotente, backup do arquivo
 
-- [ ] **T049:** Criar o comando `install-hooks --agent claude-code` (imprime ou mescla em `~/.claude/settings.json` os 9 eventos `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SessionEnd`, `SubagentStart` e `SubagentStop`, preserva entradas de terceiros; `--capture-mode denylist|allowlist` gravado e reaproveitado num `--apply` posterior; `--no-capture-prompts`/`--capture-prompts`; `--project-strategy basename|repo-root` gravado no comando do hook, preservado num `--apply` posterior que o omite e removido com `basename` explícito, com o marcador vencendo o padrão da instalação e `AI_MEMORY_PROJECT_STRATEGY` valendo só com marcador (`docs/marker-file.md` § install-wide default); `docs/support-matrix.md`; com `--apply` e `--auth-token`, guarda dois arquivos só do dono no diretório de dados, um com o token puro e outro com o cabeçalho de autorização completo, e o token nunca vai para a linha de comando; `docs/users.md` § "Hooks and agent wiring"), com teste
+- [x] **T049:** Criar o comando `install-hooks --agent claude-code` (imprime ou mescla em `~/.claude/settings.json` os 9 eventos `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SessionEnd`, `SubagentStart` e `SubagentStop`, preserva entradas de terceiros; `--capture-mode denylist|allowlist` gravado e reaproveitado num `--apply` posterior; `--no-capture-prompts`/`--capture-prompts`; `--project-strategy basename|repo-root` gravado no comando do hook, preservado num `--apply` posterior que o omite e removido com `basename` explícito, com o marcador vencendo o padrão da instalação e `AI_MEMORY_PROJECT_STRATEGY` valendo só com marcador (`docs/marker-file.md` § install-wide default); `docs/support-matrix.md`; com `--apply` e `--auth-token`, guarda dois arquivos só do dono no diretório de dados, um com o token puro e outro com o cabeçalho de autorização completo, e o token nunca vai para a linha de comando; `docs/users.md` § "Hooks and agent wiring"), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T048, T010
@@ -618,7 +647,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/install_hooks.go`, `internal/cli/install_hooks_test.go`
   - **Wiki-Keywords:** install-hooks, settings.json, Claude Code
 
-- [ ] **T050:** Criar o comando `install-mcp --client claude-code` (imprime ou mescla `mcpServers.ai-memory` em `~/.claude.json` ou `$CLAUDE_CONFIG_DIR/.claude.json`, cabeçalho só com token), com teste
+- [x] **T050:** Criar o comando `install-mcp --client claude-code` (imprime ou mescla `mcpServers.ai-memory` em `~/.claude.json` ou `$CLAUDE_CONFIG_DIR/.claude.json`, cabeçalho só com token), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T048, T010

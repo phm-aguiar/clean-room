@@ -1,0 +1,13 @@
+{
+  "description": "Corpo sem session_id: usa o parâmetro de consulta, convertido para UUID v5 (LEI §3.3).",
+  "input": {"agent": "claude-code", "event": "stop", "cwd": "", "session_id": "sess-query"},
+  "body": {
+    "cwd": "/work/project-a"
+  },
+  "expect": {
+    "hook": "stop",
+    "has_session": true,
+    "session_id": "1c46dc36-58e9-5810-b4f7-77505986a0f3",
+    "occurred_at": "now"
+  }
+}

@@ -24,6 +24,7 @@ import (
 )
 
 const (
+	flagDataDir = "data-dir"
 	flagConfig  = "config"
 	flagEnvFile = "env-file"
 	wikiDirName = "wiki"
@@ -44,7 +45,8 @@ func NewRootCommand() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	root.PersistentFlags().String(flagConfig, "", "caminho do arquivo de configuração TOML")
+	root.PersistentFlags().String(flagDataDir, "", "diretório de dados (padrão: diretório de dados local do usuário, pasta ai-memory)")
+	root.PersistentFlags().String(flagConfig, "", "caminho do arquivo de configuração TOML (padrão: config.toml no diretório de dados)")
 	root.PersistentFlags().String(flagEnvFile, "", "caminho do arquivo .env (padrão: AI_MEMORY_ENV_FILE ou ./.env)")
 	root.AddCommand(NewReindexCommand())
 	root.AddCommand(NewBackupCommand())
@@ -54,6 +56,10 @@ func NewRootCommand() *cobra.Command {
 // ConfigOptions lê as flags globais de cmd e devolve as opções de config.Load.
 // Chame-a dentro de um subcomando, depois do parse, e passe o resultado a Compose.
 func ConfigOptions(cmd *cobra.Command) (config.Options, error) {
+	dataDir, err := cmd.Flags().GetString(flagDataDir)
+	if err != nil {
+		return config.Options{}, fmt.Errorf("cli: flag --%s: %w", flagDataDir, err)
+	}
 	cfgFile, err := cmd.Flags().GetString(flagConfig)
 	if err != nil {
 		return config.Options{}, fmt.Errorf("cli: flag --%s: %w", flagConfig, err)
@@ -62,7 +68,7 @@ func ConfigOptions(cmd *cobra.Command) (config.Options, error) {
 	if err != nil {
 		return config.Options{}, fmt.Errorf("cli: flag --%s: %w", flagEnvFile, err)
 	}
-	return config.Options{ConfigFile: cfgFile, EnvFile: envFile}, nil
+	return config.Options{DataDir: dataDir, ConfigFile: cfgFile, EnvFile: envFile}, nil
 }
 
 // App agrupa os componentes montados por Compose. O chamador deve chamar Close.

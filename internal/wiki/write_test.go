@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -121,12 +122,40 @@ func wpRef(t *testing.T, env *wpEnv, path string) domain.PageRef {
 // wpCommits conta os commits do repositório da wiki. Sem commit ainda devolve 0.
 func wpCommits(t *testing.T, env *wpEnv) int {
 	t.Helper()
+	probe := exec.Command("git", "rev-parse", "--verify", "-q", "HEAD")
+	probe.Dir = env.root
+	if err := probe.Run(); err != nil {
+		return 0 // sem HEAD: nenhum commit ainda
+	}
 	cmd := gitInDir(t, env.root, "rev-list", "--count", "HEAD")
 	n, err := strconv.Atoi(strings.TrimSpace(cmd))
 	if err != nil {
 		t.Fatalf("rev-list --count: %v (%q)", err, cmd)
 	}
 	return n
+}
+
+// wpCommitTracked faz o commit dos caminhos registrados, como quem chama WritePage deve fazer, e
+// devolve o hash. Falha de commit encerra o teste.
+func wpCommitTracked(t *testing.T, env *wpEnv, msg string) string {
+	t.Helper()
+	cp, err := env.repo.CommitTracked(env.ctx, msg)
+	if err != nil {
+		t.Fatalf("CommitTracked: %v", err)
+	}
+	return cp
+}
+
+// wpSemLedgerNemIndice confere o que a escrita de página não toca: log.md e index.md do projeto
+// (docs/wiki-files-layer.md §5.2). O ledger é só de eventos de hook, e o index.md da raiz é criado
+// só pela migração OKF.
+func wpSemLedgerNemIndice(t *testing.T, env *wpEnv) {
+	t.Helper()
+	for _, nome := range []string{"log.md", "index.md"} {
+		if _, err := os.Stat(wpAbs(env, nome)); !os.IsNotExist(err) {
+			t.Fatalf("%s existe após a escrita de página (err=%v); a operação normal não o escreve", nome, err)
+		}
+	}
 }
 
 // wpMustWrite chama WritePage e falha o teste se der erro.
@@ -156,8 +185,11 @@ func TestWritePage_CaminhoFeliz(t *testing.T) {
 	if res.Path != rel {
 		t.Fatalf("Path = %q, quer %q", res.Path, rel)
 	}
-	if res.Checkpoint == "" {
-		t.Fatal("Checkpoint vazio: deveria ter commit")
+	if res.Checkpoint != "" {
+		t.Fatalf("Checkpoint = %q: WritePage não deveria commitar", res.Checkpoint)
+	}
+	if n := wpCommits(t, env); n != 0 {
+		t.Fatalf("WritePage criou %d commit(s), quer 0", n)
 	}
 	if len(res.Avisos) != 0 {
 		t.Fatalf("Avisos inesperados: %v", res.Avisos)
@@ -169,11 +201,23 @@ func TestWritePage_CaminhoFeliz(t *testing.T) {
 	fmRead, bodyRead := mustRead(t, []byte(data))
 	for k, want := range map[string]string{
 		"tier": "semantic", "type": "Note", "description": "resumo curto",
-		"generated.at": "2026-03-01T10:00:00Z", "generated.by": generatedBy,
 	} {
 		if got := wpGet(fmRead, k); got != want {
 			t.Fatalf("frontmatter %s = %q, quer %q\n%s", k, got, want, data)
 		}
+	}
+	gen := wpGenerated(t, fmRead)
+	if got := wpGet(gen, "at"); got != "2026-03-01T10:00:00Z" {
+		t.Fatalf("generated.at = %q, quer 2026-03-01T10:00:00Z\n%s", got, data)
+	}
+	if got := wpGet(gen, "by"); got != generatedByPrefix+buildVersion() {
+		t.Fatalf("generated.by = %q, quer %q", got, generatedByPrefix+buildVersion())
+	}
+	if !reflect.DeepEqual(gen.Keys(), []string{"by", "at"}) {
+		t.Fatalf("chaves de generated = %v, quer [by at]", gen.Keys())
+	}
+	if _, ok := fmRead.Get("generated.at"); ok {
+		t.Fatal("chave plana generated.at no frontmatter; quer mapeamento generated")
 	}
 	if bodyRead != "# Rota\n\nCorpo da rota.\n" {
 		t.Fatalf("corpo no arquivo: %q", bodyRead)
@@ -191,34 +235,35 @@ func TestWritePage_CaminhoFeliz(t *testing.T) {
 		t.Fatalf("Version do banco %s, do resultado %s", page.Version.String(), res.Version.String())
 	}
 
-	// Commit com a mensagem exata e o arquivo da página.
+	// O chamador commita os caminhos registrados pela escrita: mensagem exata e arquivos da página.
+	cp := wpCommitTracked(t, env, "page-write: "+rel)
 	if subj := strings.TrimSpace(gitInDir(t, env.root, "log", "-1", "--format=%s")); subj != "page-write: "+rel {
 		t.Fatalf("mensagem do commit = %q, quer %q", subj, "page-write: "+rel)
 	}
-	if hash := strings.TrimSpace(gitInDir(t, env.root, "rev-parse", "HEAD")); hash != res.Checkpoint {
-		t.Fatalf("Checkpoint %q, HEAD %q", res.Checkpoint, hash)
+	if hash := strings.TrimSpace(gitInDir(t, env.root, "rev-parse", "HEAD")); hash != cp {
+		t.Fatalf("checkpoint do commit %q, HEAD %q", cp, hash)
+	}
+	if again, err := env.repo.CommitTracked(env.ctx, "page-write: "+rel); err != nil || again != "" {
+		t.Fatalf("segundo CommitTracked = %q, %v; quer vazio e nil (registro esvaziado)", again, err)
 	}
 	files := gitInDir(t, env.root, "show", "--name-only", "--format=", "HEAD")
 	for _, want := range []string{
 		rel,
 		env.scope.WorkspaceID.String() + "/_meta.md",
 		env.scope.WorkspaceID.String() + "/" + env.scope.ProjectID.String() + "/_meta.md",
-		env.scope.WorkspaceID.String() + "/" + env.scope.ProjectID.String() + "/index.md",
-		env.scope.WorkspaceID.String() + "/" + env.scope.ProjectID.String() + "/log.md",
 	} {
 		if !strings.Contains(files, want) {
 			t.Fatalf("commit sem %q; arquivos:\n%s", want, files)
 		}
 	}
-
-	// Linha no log.md, antes do commit (ADR-22).
-	logLine := "## [2026-03-01T10:00:00Z] page-write | Rota\n"
-	logData := readFile(t, wpAbs(env, "log.md"))
-	if logData != logLine {
-		t.Fatalf("log.md = %q, quer %q", logData, logLine)
+	for _, nao := range []string{"/log.md", "/index.md"} {
+		if strings.Contains(files, nao) {
+			t.Fatalf("commit com %q: a escrita de página não deveria tocar esse arquivo:\n%s", nao, files)
+		}
 	}
+	wpSemLedgerNemIndice(t, env)
 
-	// Manifestos e index.md.
+	// Manifestos.
 	manifest := readFile(t, filepath.Join(env.root, env.scope.WorkspaceID.String(), "_meta.md"))
 	if !strings.Contains(manifest, "name: ws-teste") {
 		t.Fatalf("manifesto do workspace sem nome:\n%s", manifest)
@@ -226,9 +271,6 @@ func TestWritePage_CaminhoFeliz(t *testing.T) {
 	projManifest := readFile(t, wpAbs(env, "_meta.md"))
 	if !strings.Contains(projManifest, "name: proj-teste") {
 		t.Fatalf("manifesto do projeto sem nome:\n%s", projManifest)
-	}
-	if idx := readFile(t, wpAbs(env, "index.md")); !strings.Contains(idx, "# Índice") {
-		t.Fatalf("index.md sem título:\n%s", idx)
 	}
 }
 
@@ -253,8 +295,8 @@ func TestWritePage_IdenticaNaoReescreveNemVersionaNemCommita(t *testing.T) {
 	env := wpNewEnv(t)
 	in := wpInput(t, env, "notas/igual.md", "# Igual\n\ncorpo\n")
 	first := wpMustWrite(t, env, in)
+	wpCommitTracked(t, env, "page-write: notas/igual.md")
 	commits := wpCommits(t, env)
-	logBefore := readFile(t, wpAbs(env, "log.md"))
 
 	// Data antiga no arquivo: se for reescrito, a data muda.
 	old := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -289,18 +331,24 @@ func TestWritePage_IdenticaNaoReescreveNemVersionaNemCommita(t *testing.T) {
 	if n := wpCommits(t, env); n != commits {
 		t.Fatalf("commits %d -> %d: escrita idêntica não deveria commitar", commits, n)
 	}
-	if readFile(t, wpAbs(env, "log.md")) != logBefore {
-		t.Fatal("escrita idêntica acrescentou linha ao log")
+	if cp := wpCommitTracked(t, env, "page-write: notas/igual.md"); cp != "" {
+		t.Fatalf("escrita idêntica registrou caminho para commit: checkpoint %q", cp)
 	}
+	wpSemLedgerNemIndice(t, env)
 }
 
 func TestWritePage_SupersedeTrocaArquivoECriaVersao(t *testing.T) {
 	env := wpNewEnv(t)
 	first := wpMustWrite(t, env, wpInput(t, env, "notas/mud.md", "# Mud\n\nversão um\n"))
+	wpCommitTracked(t, env, "page-write: notas/mud.md")
 	commits := wpCommits(t, env)
 
 	*env.clock = env.clock.Add(time.Minute)
 	second := wpMustWrite(t, env, wpInput(t, env, "notas/mud.md", "# Mud\n\nversão dois\n"))
+	if second.Checkpoint != "" {
+		t.Fatalf("supersessão devolveu checkpoint %q", second.Checkpoint)
+	}
+	wpCommitTracked(t, env, "page-write: notas/mud.md")
 
 	if second.Outcome != storage.UpsertSuperseded {
 		t.Fatalf("Outcome = %q, quer superseded", second.Outcome)
@@ -328,9 +376,7 @@ func TestWritePage_SupersedeTrocaArquivoECriaVersao(t *testing.T) {
 	if n := wpCommits(t, env); n != commits+1 {
 		t.Fatalf("commits %d -> %d, quer +1", commits, n)
 	}
-	if logData := readFile(t, wpAbs(env, "log.md")); strings.Count(logData, "page-write") != 2 {
-		t.Fatalf("log.md deveria ter duas linhas page-write:\n%s", logData)
-	}
+	wpSemLedgerNemIndice(t, env)
 }
 
 // TestWritePage_DuasSessoesSupersedeSemDestruir cobre a supersessão multi-sessão (INV-16): duas
@@ -400,7 +446,6 @@ func TestWritePage_FalhaDoBancoDepoisDeInstalarReverteArquivo(t *testing.T) {
 	first := wpMustWrite(t, env, wpInput(t, env, "notas/falha.md", "# Falha\n\nconteúdo anterior\n"))
 	prev := readFile(t, wpAbs(env, "notas/falha.md"))
 	commits := wpCommits(t, env)
-	logBefore := readFile(t, wpAbs(env, "log.md"))
 
 	failing := *env.store
 	failing.Writer = &wpFailingWriter{Writer: env.writer, failOn: 2}
@@ -419,9 +464,7 @@ func TestWritePage_FalhaDoBancoDepoisDeInstalarReverteArquivo(t *testing.T) {
 	if n := wpCommits(t, env); n != commits {
 		t.Fatalf("commits %d -> %d: falha não deveria commitar", commits, n)
 	}
-	if readFile(t, wpAbs(env, "log.md")) != logBefore {
-		t.Fatal("log.md alterado numa falha")
-	}
+	wpSemLedgerNemIndice(t, env)
 	page, err := storage.ReadPage(env.ctx, env.reader, wpRef(t, env, "notas/falha.md"))
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
@@ -543,9 +586,12 @@ func wpGet(fm domain.Frontmatter, key string) string {
 	return s
 }
 
-func TestWritePage_FalhaDeCommitViraAviso(t *testing.T) {
+// TestWritePage_FalhaDeCommitNaoAfetaEscrita: WritePage não commita, então uma trava do git não
+// impede a escrita. Quem commita recebe o erro (o chamador o trata como aviso, plan P-03) e o
+// registro fica pendente: o commit seguinte, com a trava liberada, inclui a página.
+func TestWritePage_FalhaDeCommitNaoAfetaEscrita(t *testing.T) {
 	env := wpNewEnv(t)
-	// Trava do índice do git: `git add` falha e o commit não acontece.
+	// Trava do índice do git: `git add` falha quando o commit é tentado.
 	lock := filepath.Join(env.root, ".git", "index.lock")
 	if err := os.WriteFile(lock, nil, 0o644); err != nil {
 		t.Fatalf("WriteFile(index.lock): %v", err)
@@ -554,22 +600,32 @@ func TestWritePage_FalhaDeCommitViraAviso(t *testing.T) {
 
 	res, err := env.store.WritePage(env.ctx, wpInput(t, env, "notas/commit.md", "# Commit\n"))
 	if err != nil {
-		t.Fatalf("falha de commit não deveria ser erro: %v", err)
+		t.Fatalf("WritePage com trava do git: %v", err)
 	}
 	if res.Checkpoint != "" {
 		t.Fatalf("Checkpoint = %q, quer vazio", res.Checkpoint)
 	}
-	found := false
-	for _, a := range res.Avisos {
-		if strings.Contains(a, "commit não realizado") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("aviso de commit ausente: %v", res.Avisos)
+	if len(res.Avisos) != 0 {
+		t.Fatalf("WritePage sem commit não deveria ter aviso de commit: %v", res.Avisos)
 	}
 	if _, err := storage.ReadPage(env.ctx, env.reader, wpRef(t, env, "notas/commit.md")); err != nil {
 		t.Fatalf("página não foi gravada no índice: %v", err)
+	}
+
+	if cp, err := env.repo.CommitTracked(env.ctx, "page-write: notas/commit.md"); err == nil {
+		t.Fatalf("CommitTracked com trava do git deveria falhar, deu checkpoint %q", cp)
+	}
+
+	if err := os.Remove(lock); err != nil {
+		t.Fatalf("Remove(index.lock): %v", err)
+	}
+	cp := wpCommitTracked(t, env, "page-write: notas/commit.md")
+	if cp == "" {
+		t.Fatal("registro perdido: o commit seguinte não criou commit")
+	}
+	files := gitInDir(t, env.root, "show", "--name-only", "--format=", "HEAD")
+	if !strings.Contains(files, "notas/commit.md") {
+		t.Fatalf("commit seguinte sem a página registrada:\n%s", files)
 	}
 }
 
@@ -630,5 +686,209 @@ func TestWritePage_PinnedPersisteQuandoAusenteEFalseDesafixa(t *testing.T) {
 	wpMustWrite(t, env, v3)
 	if pinned() != 0 {
 		t.Errorf("pinned após pinned: false = %d, quer 0", pinned())
+	}
+}
+
+// TestWritePage_CaminhoDeSlotEFixado: página sob `_slots/` é fixada pelo caminho, sem a chave
+// `pinned` (docs/wiki-files-layer.md §5.2, passo 3). Página comum fora de `_slots/` não é fixada.
+func TestWritePage_CaminhoDeSlotEFixado(t *testing.T) {
+	env := wpNewEnv(t)
+	pinned := func(path string) int {
+		return wcCount(t, env.db, `SELECT pinned FROM pages WHERE path = ? AND is_latest = 1`, path)
+	}
+
+	res := wpMustWrite(t, env, wpInput(t, env, "_slots/current-focus.md", "Foco atual.\n"))
+	if pinned("_slots/current-focus.md") != 1 {
+		t.Fatalf("slot sem chave pinned: pinned = %d, quer 1", pinned("_slots/current-focus.md"))
+	}
+	fmRead, _ := mustRead(t, []byte(readFile(t, wpAbs(env, "_slots/current-focus.md"))))
+	if got := wpGet(fmRead, "pinned"); got != "true" {
+		t.Fatalf("frontmatter pinned do slot = %q, quer true", got)
+	}
+	if res.Path == "" {
+		t.Fatal("Path vazio")
+	}
+
+	wpMustWrite(t, env, wpInput(t, env, "notas/comum.md", "Corpo comum.\n"))
+	if pinned("notas/comum.md") != 0 {
+		t.Fatalf("página fora de _slots/ fixada sem pedido: pinned = %d", pinned("notas/comum.md"))
+	}
+}
+
+// wpGenerated lê o mapeamento generated de um frontmatter lido do arquivo.
+func wpGenerated(t *testing.T, fm domain.Frontmatter) domain.Frontmatter {
+	t.Helper()
+	v, ok := fm.Get("generated")
+	if !ok {
+		t.Fatal("frontmatter sem generated")
+	}
+	g, ok := v.(domain.Frontmatter)
+	if !ok {
+		t.Fatalf("generated = %T, quer mapeamento", v)
+	}
+	return g
+}
+
+// wpSources lê a lista de mapeamentos sources de um frontmatter lido do arquivo.
+func wpSources(t *testing.T, fm domain.Frontmatter) []domain.Frontmatter {
+	t.Helper()
+	v, ok := fm.Get("sources")
+	if !ok {
+		return nil
+	}
+	items, ok := v.([]domain.Frontmatter)
+	if !ok {
+		t.Fatalf("sources = %T, quer lista de mapeamentos", v)
+	}
+	return items
+}
+
+// wpFileFM lê de volta o frontmatter do arquivo da página, sem depender do banco.
+func wpFileFM(t *testing.T, env *wpEnv, rel string) domain.Frontmatter {
+	t.Helper()
+	fm, _ := mustRead(t, []byte(readFile(t, wpAbs(env, rel))))
+	return fm
+}
+
+// TestBuildVersion_NuncaVaziaNemDevel: sem versão de módulo (build de desenvolvimento), a versão
+// do generated.by é "dev", nunca vazia nem "(devel)".
+func TestBuildVersion_NuncaVaziaNemDevel(t *testing.T) {
+	if v := buildVersion(); v == "" || v == "(devel)" {
+		t.Fatalf("buildVersion() = %q, quer versão não vazia e diferente de (devel)", v)
+	}
+}
+
+// TestWritePage_GeneratedByDeModeloEDaEntrada: generated.by vale generated_by_model quando a página
+// o traz; um generated.by já presente na entrada não é sobrescrito (docs/okf.md).
+func TestWritePage_GeneratedByDeModeloEDaEntrada(t *testing.T) {
+	env := wpNewEnv(t)
+
+	modelo := wpInput(t, env, "notas/modelo.md", "Corpo.\n")
+	modelo.Frontmatter = mustFM(t, "generated_by_model", "modelo-x")
+	wpMustWrite(t, env, modelo)
+	fmModelo := wpFileFM(t, env, "notas/modelo.md")
+	if got := wpGet(wpGenerated(t, fmModelo), "by"); got != "modelo-x" {
+		t.Fatalf("generated.by com generated_by_model = %q, quer modelo-x", got)
+	}
+	if got := wpGet(fmModelo, "generated_by_model"); got != "modelo-x" {
+		t.Fatalf("generated_by_model (chave de extensão) = %q, quer preservada", got)
+	}
+
+	entrada := wpInput(t, env, "notas/entrada.md", "Corpo.\n")
+	gen := domain.Frontmatter{}
+	if err := gen.Set("by", "humano:revisor"); err != nil {
+		t.Fatal(err)
+	}
+	entrada.Frontmatter = mustFM(t)
+	if err := entrada.Frontmatter.Set("generated", gen); err != nil {
+		t.Fatal(err)
+	}
+	wpMustWrite(t, env, entrada)
+	if got := wpGet(wpGenerated(t, wpFileFM(t, env, "notas/entrada.md")), "by"); got != "humano:revisor" {
+		t.Fatalf("generated.by da entrada = %q, quer humano:revisor (não sobrescrito)", got)
+	}
+}
+
+// TestWritePage_GeneratedAtPreservadoQuandoConteudoIgual: reescrever com o mesmo conteúdo mantém
+// generated.at; mudar o conteúdo carimba o instante da escrita (docs/okf.md, Determinismo).
+func TestWritePage_GeneratedAtPreservadoQuandoConteudoIgual(t *testing.T) {
+	env := wpNewEnv(t)
+	wpMustWrite(t, env, wpInput(t, env, "notas/det.md", "Corpo.\n"))
+
+	*env.clock = env.clock.Add(time.Hour)
+	wpMustWrite(t, env, wpInput(t, env, "notas/det.md", "Corpo.\n"))
+	if got := wpGet(wpGenerated(t, wpFileFM(t, env, "notas/det.md")), "at"); got != "2026-03-01T10:00:00Z" {
+		t.Fatalf("generated.at após reescrita igual = %q, quer o original 2026-03-01T10:00:00Z", got)
+	}
+
+	*env.clock = env.clock.Add(time.Hour)
+	wpMustWrite(t, env, wpInput(t, env, "notas/det.md", "Corpo v2.\n"))
+	if got := wpGet(wpGenerated(t, wpFileFM(t, env, "notas/det.md")), "at"); got != "2026-03-01T12:00:00Z" {
+		t.Fatalf("generated.at após mudança de conteúdo = %q, quer 2026-03-01T12:00:00Z", got)
+	}
+}
+
+// TestWritePage_SourcesDeSessaoEAgente: sources nasce de session_id (resource ai-memory://session/<id>)
+// e, com agent, ganha author process:<agent>. Sem session_id não nasce; sources da entrada não muda.
+func TestWritePage_SourcesDeSessaoEAgente(t *testing.T) {
+	env := wpNewEnv(t)
+
+	com := wpInput(t, env, "notas/com-agente.md", "Corpo.\n")
+	com.Frontmatter = mustFM(t, "session_id", "sess-9", "agent", "reviewer")
+	wpMustWrite(t, env, com)
+	itens := wpSources(t, wpFileFM(t, env, "notas/com-agente.md"))
+	if len(itens) != 1 {
+		t.Fatalf("sources com agente: %d itens, quer 1", len(itens))
+	}
+	if got := wpGet(itens[0], "resource"); got != "ai-memory://session/sess-9" {
+		t.Fatalf("sources.resource = %q, quer ai-memory://session/sess-9", got)
+	}
+	if got := wpGet(itens[0], "author"); got != "process:reviewer" {
+		t.Fatalf("sources.author = %q, quer process:reviewer", got)
+	}
+
+	sem := wpInput(t, env, "notas/sem-agente.md", "Corpo.\n")
+	sem.Frontmatter = mustFM(t, "session_id", "sess-9")
+	wpMustWrite(t, env, sem)
+	itens = wpSources(t, wpFileFM(t, env, "notas/sem-agente.md"))
+	if len(itens) != 1 || wpGet(itens[0], "resource") != "ai-memory://session/sess-9" {
+		t.Fatalf("sources sem agente = %v, quer um item com resource da sessão", itens)
+	}
+	if _, ok := itens[0].Get("author"); ok {
+		t.Fatal("sources sem agent não devia ter author")
+	}
+
+	nada := wpInput(t, env, "notas/sem-sessao.md", "Corpo.\n")
+	wpMustWrite(t, env, nada)
+	if itens := wpSources(t, wpFileFM(t, env, "notas/sem-sessao.md")); len(itens) != 0 {
+		t.Fatalf("sources sem session_id = %v, quer nenhum", itens)
+	}
+
+	explicito := wpInput(t, env, "notas/explicito.md", "Corpo.\n")
+	var fonte domain.Frontmatter
+	if err := fonte.Set("resource", "https://exemplo.test/fonte"); err != nil {
+		t.Fatal(err)
+	}
+	explicito.Frontmatter = mustFM(t, "session_id", "sess-9")
+	if err := explicito.Frontmatter.Set("sources", []domain.Frontmatter{fonte}); err != nil {
+		t.Fatal(err)
+	}
+	wpMustWrite(t, env, explicito)
+	itens = wpSources(t, wpFileFM(t, env, "notas/explicito.md"))
+	if len(itens) != 1 || wpGet(itens[0], "resource") != "https://exemplo.test/fonte" {
+		t.Fatalf("sources da entrada foi alterado: %v", itens)
+	}
+}
+
+// TestWritePage_RelationsComoMapeamentoPreservado: relations chega como mapeamento por relação e
+// sobrevive à escrita (cleanCopy não o achata nem o perde).
+func TestWritePage_RelationsComoMapeamentoPreservado(t *testing.T) {
+	env := wpNewEnv(t)
+	var rels domain.Frontmatter
+	if err := rels.Set("fixes", []string{"gotchas/linker-oom.md"}); err != nil {
+		t.Fatal(err)
+	}
+	in := wpInput(t, env, "notas/correcao.md", "# Correção\n\nCorpo.\n")
+	in.Frontmatter = mustFM(t)
+	if err := in.Frontmatter.Set("relations", rels); err != nil {
+		t.Fatal(err)
+	}
+	wpMustWrite(t, env, in)
+
+	fm := wpFileFM(t, env, "notas/correcao.md")
+	v, ok := fm.Get("relations")
+	if !ok {
+		t.Fatal("relations sumiu do frontmatter")
+	}
+	lido, ok := v.(domain.Frontmatter)
+	if !ok {
+		t.Fatalf("relations = %T, quer mapeamento", v)
+	}
+	if !reflect.DeepEqual(lido.Keys(), []string{"fixes"}) {
+		t.Fatalf("chaves de relations = %v, quer [fixes]", lido.Keys())
+	}
+	alvos, _ := lido.Get("fixes")
+	if !reflect.DeepEqual(alvos, []string{"gotchas/linker-oom.md"}) {
+		t.Fatalf("alvos de fixes = %v", alvos)
 	}
 }

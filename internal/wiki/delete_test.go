@@ -41,6 +41,8 @@ func delNewVersion(t *testing.T) domain.PageID {
 func TestDeletePage_CaminhoFeliz(t *testing.T) {
 	env := wpNewEnv(t)
 	written := wpMustWrite(t, env, wpInput(t, env, "notas/apagar.md", "# Apagar\n\nCorpo a remover.\n"))
+	// A escrita registra caminhos; quem chama commita. Fecha o commit da escrita para a baseline.
+	wpCommitTracked(t, env, "page-write: "+delRel(env, "notas/apagar.md"))
 	commits := wpCommits(t, env)
 	*env.clock = env.clock.Add(time.Minute)
 
@@ -56,11 +58,20 @@ func TestDeletePage_CaminhoFeliz(t *testing.T) {
 	if res.Path != rel {
 		t.Fatalf("Path = %q, quer %q", res.Path, rel)
 	}
-	if res.Checkpoint == "" {
-		t.Fatal("Checkpoint vazio: deveria ter commit")
+	if res.Checkpoint != "" {
+		t.Fatalf("Checkpoint = %q, quer vazio: DeletePage não faz commit", res.Checkpoint)
 	}
 	if len(res.Avisos) != 0 {
 		t.Fatalf("Avisos inesperados: %v", res.Avisos)
+	}
+	if n := wpCommits(t, env); n != commits {
+		t.Fatalf("commits %d -> %d: DeletePage não deveria commitar", commits, n)
+	}
+
+	// O chamador faz o commit com a mensagem de remoção.
+	checkpoint := wpCommitTracked(t, env, "page-delete: "+rel)
+	if checkpoint == "" {
+		t.Fatal("CommitTracked sem checkpoint: deveria ter commit")
 	}
 
 	// Arquivo removido do disco.
@@ -73,12 +84,12 @@ func TestDeletePage_CaminhoFeliz(t *testing.T) {
 		t.Fatalf("ReadPage após remoção: erro = %v, quer ErrPageNotFound", err)
 	}
 
-	// Commit com a mensagem exata, a remoção do arquivo e o log.md.
+	// Commit com a mensagem exata e a remoção do arquivo, e só ela.
 	if subj := strings.TrimSpace(gitInDir(t, env.root, "log", "-1", "--format=%s")); subj != "page-delete: "+rel {
 		t.Fatalf("mensagem do commit = %q, quer %q", subj, "page-delete: "+rel)
 	}
-	if hash := strings.TrimSpace(gitInDir(t, env.root, "rev-parse", "HEAD")); hash != res.Checkpoint {
-		t.Fatalf("Checkpoint %q, HEAD %q", res.Checkpoint, hash)
+	if hash := strings.TrimSpace(gitInDir(t, env.root, "rev-parse", "HEAD")); hash != checkpoint {
+		t.Fatalf("checkpoint %q, HEAD %q", checkpoint, hash)
 	}
 	if n := wpCommits(t, env); n != commits+1 {
 		t.Fatalf("commits %d -> %d, quer +1", commits, n)
@@ -87,19 +98,15 @@ func TestDeletePage_CaminhoFeliz(t *testing.T) {
 	if !strings.Contains(changed, "D\t"+rel) {
 		t.Fatalf("commit não registra a remoção de %q:\n%s", rel, changed)
 	}
-	if !strings.Contains(changed, delRel(env, "log.md")) {
-		t.Fatalf("commit sem log.md:\n%s", changed)
+	if strings.TrimSpace(changed) != "D\t"+rel {
+		t.Fatalf("commit deveria registrar só a remoção de %q:\n%s", rel, changed)
 	}
 	if tracked := gitInDir(t, env.root, "ls-files"); strings.Contains(tracked, rel) {
 		t.Fatalf("página ainda rastreada pelo git:\n%s", tracked)
 	}
 
-	// Linha do log, depois da linha de escrita.
-	want := "## [2026-03-01T10:00:00Z] page-write | Apagar\n" +
-		"## [2026-03-01T10:01:00Z] page-delete | Apagar\n"
-	if got := readFile(t, wpAbs(env, "log.md")); got != want {
-		t.Fatalf("log.md = %q, quer %q", got, want)
-	}
+	// A remoção não escreve log.md nem index.md.
+	wpSemLedgerNemIndice(t, env)
 }
 
 func TestDeletePage_SemVersaoCorrenteIdempotente(t *testing.T) {
@@ -167,7 +174,6 @@ func TestDeletePage_FalhaNoBancoReverteArquivo(t *testing.T) {
 	written := wpMustWrite(t, env, wpInput(t, env, "notas/reverte.md", "# Reverte\n\nconteúdo guardado\n"))
 	prev := readFile(t, wpAbs(env, "notas/reverte.md"))
 	commits := wpCommits(t, env)
-	logBefore := readFile(t, wpAbs(env, "log.md"))
 
 	// Chamada 1 do writer é a leitura (ReadPage); a 2 é DeletePath, que falha depois de executar.
 	failing := *env.store
@@ -187,9 +193,7 @@ func TestDeletePage_FalhaNoBancoReverteArquivo(t *testing.T) {
 	if n := wpCommits(t, env); n != commits {
 		t.Fatalf("commits %d -> %d: falha não deveria commitar", commits, n)
 	}
-	if readFile(t, wpAbs(env, "log.md")) != logBefore {
-		t.Fatal("log.md alterado numa falha")
-	}
+	wpSemLedgerNemIndice(t, env)
 	page, err := storage.ReadPage(env.ctx, env.reader, wpRef(t, env, "notas/reverte.md"))
 	if err != nil {
 		t.Fatalf("ReadPage após falha: %v", err)
@@ -208,18 +212,21 @@ func TestDeletePage_FalhaNoBancoReverteArquivo(t *testing.T) {
 	}
 }
 
-func TestDeletePage_ErrVersionMismatchPreservaArquivo(t *testing.T) {
+func TestDeletePage_VersaoDivergenteRestauraArquivoSemErro(t *testing.T) {
 	env := wpNewEnv(t)
 	written := wpMustWrite(t, env, wpInput(t, env, "notas/versao.md", "# Versão\n\nconteúdo\n"))
 	prev := readFile(t, wpAbs(env, "notas/versao.md"))
 	commits := wpCommits(t, env)
 
 	res, err := env.store.DeletePage(env.ctx, env.scope, delPath(t, "notas/versao.md"), delNewVersion(t))
-	if !errors.Is(err, storage.ErrVersionMismatch) {
-		t.Fatalf("erro = %v, quer ErrVersionMismatch", err)
+	if err != nil {
+		t.Fatalf("erro = %v, quer nil (versão divergente não é erro)", err)
 	}
 	if res.Deleted {
 		t.Fatal("Deleted = true com versão divergente")
+	}
+	if res.Checkpoint != "" {
+		t.Fatalf("Checkpoint = %q com versão divergente, quer vazio", res.Checkpoint)
 	}
 	if got := readFile(t, wpAbs(env, "notas/versao.md")); got != prev {
 		t.Fatalf("arquivo alterado com versão divergente:\n%s", got)
@@ -236,7 +243,7 @@ func TestDeletePage_ErrVersionMismatchPreservaArquivo(t *testing.T) {
 	}
 }
 
-func TestDeletePage_VersaoSupersededContinuaNoBanco(t *testing.T) {
+func TestDeletePage_RemoveTodasAsVersoesDoBanco(t *testing.T) {
 	env := wpNewEnv(t)
 	first := wpMustWrite(t, env, wpInput(t, env, "notas/historico.md", "# Histórico\n\nversão um\n"))
 	*env.clock = env.clock.Add(time.Minute)
@@ -254,19 +261,18 @@ func TestDeletePage_VersaoSupersededContinuaNoBanco(t *testing.T) {
 		t.Fatal("Deleted = false, quer true")
 	}
 
-	// A versão anterior não foi apagada nem reativada (INV-16).
+	// Todas as versões do caminho saem do banco, a anterior inclusive; nenhuma é reativada.
 	chain, err := storage.PageChain(env.ctx, env.reader, wpRef(t, env, "notas/historico.md"))
 	if err != nil {
 		t.Fatalf("PageChain: %v", err)
 	}
-	if len(chain) != 1 {
-		t.Fatalf("cadeia com %d versões após remoção, quer 1 (a anterior)", len(chain))
+	if len(chain) != 0 {
+		t.Fatalf("cadeia com %d versões após remoção, quer 0", len(chain))
 	}
-	if chain[0].ID != first.Version {
-		t.Fatalf("versão restante %s, quer a anterior %s", chain[0].ID.String(), first.Version.String())
-	}
-	if chain[0].IsLatest {
-		t.Fatal("versão anterior virou corrente")
+	for _, v := range chain {
+		if v.ID == first.Version {
+			t.Fatal("versão anterior sobreviveu à remoção por caminho")
+		}
 	}
 	if _, err := storage.ReadPage(env.ctx, env.reader, wpRef(t, env, "notas/historico.md")); !errors.Is(err, storage.ErrPageNotFound) {
 		t.Fatalf("ReadPage: erro = %v, quer ErrPageNotFound", err)

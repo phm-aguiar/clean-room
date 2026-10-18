@@ -219,6 +219,31 @@ func TestWatcherApagarArquivoNaoApagaAPagina(t *testing.T) {
 	}
 }
 
+func TestWatcherRemocaoRegistraCaminhoParaProximoCommit(t *testing.T) {
+	env, w, _ := wcNew(t, 50*time.Millisecond, time.Hour)
+	wpMustWrite(t, env, wpInput(t, env, "notas/c.md", "Página que sai do disco.\n"))
+	wpCommitTracked(t, env, "page-write: notas/c.md")
+	rel := env.scope.WorkspaceID.String() + "/" + env.scope.ProjectID.String() + "/notas/c.md"
+	wcStart(t, env, w)
+
+	if err := os.Remove(wpAbs(env, "notas/c.md")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	wcWaitFor(t, "remoção registrada", func() bool { return w.Removals() == 1 })
+
+	// O watcher não mexe no índice: a versão corrente continua no banco.
+	if n := wcCount(t, env.db, `SELECT COUNT(*) FROM pages WHERE path = ? AND is_latest = 1`, "notas/c.md"); n != 1 {
+		t.Fatalf("índice alterado pelo watcher: %d linhas correntes", n)
+	}
+	// O próximo CommitTracked inclui a remoção, e só ela.
+	if cp := wpCommitTracked(t, env, "remoção: notas/c.md"); cp == "" {
+		t.Fatalf("CommitTracked sem commit: a remoção não foi registrada")
+	}
+	if got := gitInDir(t, env.root, "show", "--name-status", "--format=", "HEAD"); got != "D\t"+rel {
+		t.Fatalf("commit da remoção = %q, quer %q", got, "D\t"+rel)
+	}
+}
+
 func TestWatcherCriacaoDeDiretorioReindexaOProjeto(t *testing.T) {
 	env, w, _ := wcNew(t, 50*time.Millisecond, time.Hour)
 	wpMustWrite(t, env, wpInput(t, env, "notas/inicial.md", "Inicial.\n"))
@@ -277,6 +302,10 @@ func TestWatcherRaizInvalidaFalhaNaCriacaoENoRun(t *testing.T) {
 
 func TestWatcherReconciliacaoReindexaArquivoPerdido(t *testing.T) {
 	env, w, _ := wcNew(t, 50*time.Millisecond, 50*time.Millisecond)
+	// O reindex só indexa escopos com manifesto `_meta.md` (T083): sem ele o escopo é pulado.
+	if _, err := EnsureScopeManifest(env.root, env.scope, ScopeNames{WorkspaceName: env.wsName, ProjectName: env.prjName}); err != nil {
+		t.Fatalf("EnsureScopeManifest: %v", err)
+	}
 	// Arquivo gravado antes do watcher existir: nenhum evento o cobre.
 	rxWriteRaw(t, env, "notas/perdido.md", "Conteúdo que o watcher nunca viu.\n")
 	wcStart(t, env, w)

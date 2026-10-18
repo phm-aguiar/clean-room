@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 )
 
-// expectedLabels são os 18 rótulos de DV §7.2, na ordem dos padrões.
+// expectedLabels são os 18 rótulos distintos de prompts §11.2 (27 linhas, alguns rótulos se repetem).
 var expectedLabels = []string{
 	"private_key", "url_credentials", "auth_header", "bearer_token", "api_key", "stripe_key",
 	"github_token", "aws_key", "google_api_key", "google_oauth", "meta_token", "telegram_token",
@@ -42,6 +42,11 @@ var (
 		`\n`, "\n",
 	)
 )
+
+// redact aplica os padrões embutidos, sem allowlist, como o pipeline faz na etapa 2.
+func redact(s string) string {
+	return Sanitizer{}.redact(s)
+}
 
 // fill monta n caracteres cíclicos do alfabeto. Os valores são sintéticos e determinísticos.
 func fill(alpha string, n int) string {
@@ -108,19 +113,58 @@ func loadFixtures(tb testing.TB) []fixture {
 
 // --- Controle, título e corpo ---
 
+// TestStripControl_RemoveEscapeControleEBidi cobre o §11.1, passos 1 e 2. Controles fora da lista
+// (U+200B, U+FEFF) ficam no texto; ESC seguido de caractere fora de `@` a `_` não é sequência.
 func TestStripControl_RemoveEscapeControleEBidi(t *testing.T) {
 	casos := []struct{ entrada, want string }{
 		{"\x1b[31mred\x1b[0m\x00\u202efoo\tbar\n", "redfoo\tbar\n"},
-		{"a\u009b31mb", "ab"},
 		{"a\x1b]0;titulo\x07b", "ab"},
-		{"a\u200bb\ufeffc\u2066d", "abcd"},
+		{"a\x1b]0;titulo\x1b\\b", "ab"},
+		{"a\u2066d\u2069e", "ade"},
+		{"a\u200bb\ufeffcd\u2066e", "a\u200bb\ufeffcde"},
 		{"a\x7fb", "ab"},
 		{"a\xffb", "ab"},
 		{"linha\r\nnova", "linha\r\nnova"},
+		// C1 de 8 bits não é sequência no §11.1: sai como controle e o resto fica como texto.
+		{"a\u009b31mb", "a31mb"},
+		// ESC seguido de `(` não está em `@` a `_`: sai só o ESC, o resto fica.
+		{"a\x1b(Bb", "a(Bb"},
 	}
 	for _, c := range casos {
 		if got := stripControl(c.entrada); got != c.want {
 			t.Errorf("stripControl(%q) = %q, quer %q", c.entrada, got, c.want)
+		}
+	}
+}
+
+// TestStripControl_ListaDoSecao111 confere a lista exata de controles do §11.1, passo 2.
+func TestStripControl_ListaDoSecao111(t *testing.T) {
+	for c := rune(0); c < 0x20; c++ {
+		if c == '\t' || c == '\n' || c == '\r' {
+			continue
+		}
+		if got := stripControl(string(c)); got != "" {
+			t.Errorf("C0 U+%04X não removido: %q", c, got)
+		}
+	}
+	for c := rune(0x7f); c <= 0x9f; c++ {
+		if got := stripControl(string(c)); got != "" {
+			t.Errorf("U+%04X (DEL/C1) não removido: %q", c, got)
+		}
+	}
+	for c := rune(0x202a); c <= 0x202e; c++ {
+		if got := stripControl(string(c)); got != "" {
+			t.Errorf("U+%04X (bidi) não removido: %q", c, got)
+		}
+	}
+	for c := rune(0x2066); c <= 0x2069; c++ {
+		if got := stripControl(string(c)); got != "" {
+			t.Errorf("U+%04X (isolate) não removido: %q", c, got)
+		}
+	}
+	for _, c := range []rune{'\t', '\n', '\r', 0xa0, 0x200b, 0xfeff} {
+		if got := stripControl(string(c)); got != string(c) {
+			t.Errorf("U+%04X removido indevidamente: %q", c, got)
 		}
 	}
 }
@@ -192,19 +236,105 @@ func TestBody_TetoPequenoSoCabeca(t *testing.T) {
 	}
 }
 
-// --- Padrões e fixtures ---
+// --- Padrões: uma linha da tabela §11.2 por teste ---
 
-func TestPadroes_SaoOsDezoitoRotulosEmOrdem(t *testing.T) {
-	if len(rules) != len(expectedLabels) {
-		t.Fatalf("%d padrões, quer %d", len(rules), len(expectedLabels))
+// linhaPadrao é uma linha da tabela §11.2: número (1 a 27), rótulo, exemplos que devem redigir
+// (pos) e exemplos que não podem mudar (neg, inclui os falsos positivos do §11.4).
+type linhaPadrao struct {
+	linha int
+	label string
+	pos   []string
+	neg   []string
+}
+
+var tabela112 = []linhaPadrao{
+	{1, "bearer_token", []string{"Bearer <<MIX#24>>"}, []string{"bearer curto"}},
+	{2, "api_key", []string{"sk-<<MIX#24>>"}, []string{"sk-curto"}},
+	{3, "stripe_key", []string{"sk_live_<<MIX#16>>", "rk_live_<<MIX#16>>"}, []string{"sk_test_<<MIX#16>>"}},
+	{4, "github_token", []string{"ghp_<<MIX#24>>", "gho_<<MIX#24>>", "ghu_<<MIX#24>>", "ghs_<<MIX#24>>", "ghr_<<MIX#24>>"}, []string{"ghp_curto"}},
+	{5, "github_token", []string{"github_pat_<<MIX#24>>"}, []string{"github_pat_curto"}},
+	{6, "aws_key", []string{"chave AKIA<<UP#16>> fim", "ASIA<<UP#16>>"}, []string{"ASIAPACIFICREGION"}},
+	{7, "google_api_key", []string{"AIza<<MIX#30>>"}, []string{"AIzaCurto"}},
+	{8, "google_api_key", []string{"AQ.Ab<<MIX#30>>"}, []string{"AQ.Abcurto"}},
+	{9, "google_oauth", []string{"1//<<MIX#20>>"}, []string{"1//curto"}},
+	{10, "meta_token", []string{"EAA<<MIX#24>>"}, []string{"EAAcurto"}},
+	{11, "telegram_token", []string{"123456789<<COLON>><<MIX#35>>", "123456789<<COLON>>AA<<MIX#30>>"}, []string{"12345<<COLON>>curto-token"}},
+	{12, "ghl_token", []string{"pit-<<HEX#8>>-<<HEX#4>>-<<HEX#4>>-<<HEX#4>>-<<HEX#12>>"}, []string{"pit-sem-uuid", "pit-stop-strategy-analysis"}},
+	{13, "slack_token", []string{"xoxb-<<MIX#24>>", "xoxp-<<MIX#24>>"}, []string{"xoxb-curto"}},
+	{14, "slack_token", []string{"xapp-<<MIX#24>>"}, []string{"xapp-curto"}},
+	{15, "jwt", []string{"eyJ<<MIX#20>>.<<MIX#20>>.<<MIX#20>>"}, []string{"internal.storage.writer", "eyJ<<MIX#15>>.<<MIX#20>>.<<MIX#20>>", "eyJ<<MIX#20>>.<<MIX#15>>.<<MIX#20>>"}},
+	{16, "base64_json_token", []string{"eyJ<<MIX#40>>"}, []string{"eyJcurto", "eyJ<<MIX#39>>"}},
+	{17, "private_key", []string{"<<PEM#BEGIN RSA PRIVATE KEY>>\n<<MIX#64>>\n<<PEM#END RSA PRIVATE KEY>>"}, []string{"<<PEM#BEGIN PUBLIC KEY>>\nMIIBIjANBgkqhkiG9w0BAQEF\n<<PEM#END PUBLIC KEY>>"}},
+	{18, "url_credentials", []string{"https://deploy<<COLON>><<MIX#16>>@git.example.com/repo.git"}, []string{"https://git.example.com/repo.git", "https://exemplo.org:8080/caminho"}},
+	{19, "auth_header", []string{"Authorization<<COLON>> <<MIX#24>>", "X-Api-Key<<COLON>> <<MIX#24>>", "Private-Token<<COLON>> <<MIX#24>>", "Ocp-Apim-Subscription-Key<<COLON>> <<MIX#24>>", "X-Amz-Security-Token<<COLON>> <<MIX#24>>"}, []string{"Idempotency-Key<<COLON>> 6f1c2e9a-retry-safe", "Continuation-Token<<COLON>> <<MIX#24>>"}},
+	{20, "env_secret", []string{"GITHUB_TOKEN<<EQ>><<MIX#20>>", "openai_api_key<<EQ>><<MIX#20>>", "AWS_SECRET_ACCESS_KEY<<COLON>> <<MIX#20>>"}, []string{"GITHUB_TOKEN is set"}},
+	{21, "env_secret", []string{"MY_APP_TOKEN<<EQ>><<MIX#20>>", "my_app_token<<EQ>><<MIX#20>>", "db_secret<<EQ>><<MIX#20>>"}, []string{"MAX_TOKENS<<EQ>>100", "api_key_id<<EQ>><<MIX#20>>"}},
+	{22, "env_secret", []string{"APP_PEPPER<<EQ>><<MIX#20>>", "MY_KEY_ID<<EQ>><<MIX#20>>", "APP_SALT<<COLON>> <<MIX#20>>"}, []string{"app_pepper<<EQ>><<MIX#20>>", "password_salt<<EQ>><<MIX#20>>"}},
+	{23, "credential_path", []string{"<<HOME>>/<<DOT#ssh>>/id_ed25519"}, []string{"/home/dev/docs/readme.md", "~/projects/sshd-notes"}},
+	{24, "credential_path", []string{`<<WIN_HOME>>\<<DOT#aws>>\credentials`}, []string{`C:\Users\dev\awesome\notas.txt`}},
+	{25, "credential_path", []string{"<<HOME>>/<<DOT#kube>>/config"}, []string{"/home/dev/kubernetes/readme.md"}},
+	{26, "credential_path", []string{"<<HOME>>/<<DOT#config>>/gcloud/credentials.db"}, []string{"/home/dev/.config/other/x.toml"}},
+	{27, "credential_path", []string{"<<HOME>>/<<DOT#gnupg>>/secring"}, []string{"/home/dev/gnupg-notes.md"}},
+}
+
+// TestPadroes_SaoOs27NaOrdemDoDoc confere a ordem e os rótulos da tabela §11.2.
+func TestPadroes_SaoOs27NaOrdemDoDoc(t *testing.T) {
+	quer := []string{
+		"bearer_token", "api_key", "stripe_key", "github_token", "github_token", "aws_key",
+		"google_api_key", "google_api_key", "google_oauth", "meta_token", "telegram_token",
+		"ghl_token", "slack_token", "slack_token", "jwt", "base64_json_token", "private_key",
+		"url_credentials", "auth_header", "env_secret", "env_secret", "env_secret",
+		"credential_path", "credential_path", "credential_path", "credential_path", "credential_path",
 	}
-	for i, r := range rules {
-		if r.label != expectedLabels[i] {
-			t.Errorf("padrão %d = %q, quer %q", i, r.label, expectedLabels[i])
+	if len(builtinRules) != len(quer) {
+		t.Fatalf("%d padrões, quer %d", len(builtinRules), len(quer))
+	}
+	for i, r := range builtinRules {
+		if r.label != quer[i] {
+			t.Errorf("padrão %d = %q, quer %q", i+1, r.label, quer[i])
+		}
+	}
+	if len(tabela112) != len(quer) {
+		t.Fatalf("tabela de teste com %d linhas, quer %d", len(tabela112), len(quer))
+	}
+}
+
+// TestPadroes_CadaLinhaTemPositivoENegativo cobre cada uma das 27 linhas: o positivo casa com o
+// padrão da própria linha e sai como `[REDACTED:<rótulo>]`; o negativo não muda o texto.
+func TestPadroes_CadaLinhaTemPositivoENegativo(t *testing.T) {
+	for _, l := range tabela112 {
+		r := builtinRules[l.linha-1]
+		if r.label != l.label {
+			t.Errorf("linha %d: rótulo %q, quer %q", l.linha, r.label, l.label)
+		}
+		if len(l.pos) == 0 || len(l.neg) == 0 {
+			t.Fatalf("linha %d sem positivo ou sem negativo", l.linha)
+		}
+		for _, tmpl := range l.pos {
+			segredo := expandTemplate(tmpl)
+			if !r.re.MatchString(segredo) {
+				t.Errorf("linha %d (%s): padrão da linha não casa o positivo %q", l.linha, l.label, tmpl)
+				continue
+			}
+			out := Body(segredo, Limits{}).Text()
+			if want := "[REDACTED:" + l.label + "]"; !strings.Contains(out, want) {
+				t.Errorf("linha %d: sem %s na saída %q", l.linha, want, out)
+			}
+			if strings.Contains(out, segredo) {
+				t.Errorf("linha %d: segredo cru sobreviveu: %q", l.linha, out)
+			}
+		}
+		for _, tmpl := range l.neg {
+			neg := expandTemplate(tmpl)
+			if out := Body(neg, Limits{}).Text(); out != neg {
+				t.Errorf("linha %d (%s): negativo alterado: entrada %q, saída %q", l.linha, l.label, neg, out)
+			}
 		}
 	}
 }
 
+// TestFixtures_CadaClasseTemPosNegECortado confere que o arquivo de fixtures cobre cada
+// rótulo com positivo, negativo e caso de corte.
 func TestFixtures_CadaClasseTemPosNegECortado(t *testing.T) {
 	cont := map[string]map[string]int{}
 	for _, fx := range loadFixtures(t) {
@@ -295,7 +425,7 @@ func TestFixtures_ArquivoCruSemSegredo(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	for _, r := range rules {
+	for _, r := range builtinRules {
 		for _, m := range r.re.FindAllString(s, -1) {
 			t.Errorf("testdata/secrets.txt: rótulo %s casa com %q", r.label, m)
 		}
@@ -314,16 +444,48 @@ func TestMarcadorNaoCasaComPadrao(t *testing.T) {
 	}
 }
 
-// TestRegressao_TokenColadoEmLetrasERedigido cobre INV-06 e DV §7.1. Um segredo colado em letras
-// não tem fronteira de palavra; sem `\b` no início, o padrão ainda casa e o token cru some. Os
-// valores são expandidos em runtime e cercados por letras com strings.Join, então o fonte não
-// contém segredo literal.
+// TestFalsosPositivos_Sec114 fixa os falsos positivos citados em prompts §11.4 e nas correções
+// anteriores: nenhum deles pode ser alterado.
+func TestFalsosPositivos_Sec114(t *testing.T) {
+	for _, neg := range []string{
+		"ASIAPACIFICREGION",
+		"pit-stop-strategy-analysis",
+		"Idempotency-Key: 6f1c2e9a-retry-safe",
+		"Continuation-Token: 6f1c2e9a-retry-safe",
+		"api_key_id=valor-de-teste-123",
+		"password_salt=valor-de-teste-123",
+		"MAX_TOKENS=100",
+		"internal.storage.writer",
+		"sk-curto",
+	} {
+		if out := redact(neg); out != neg {
+			t.Errorf("falso positivo: entrada %q, saída %q", neg, out)
+		}
+	}
+}
+
+// TestBordaDePalavra_AwsETelegramExigemFronteira fixa a decisão do doc (§11.2, linhas 6 e 11):
+// `aws_key` e `telegram_token` exigem fronteira de palavra. Um token colado em letras não casa.
+// É uma decisão de doc, não uma lacuna do código; mudar exige mudar o doc antes.
+func TestBordaDePalavra_AwsETelegramExigemFronteira(t *testing.T) {
+	for _, colado := range []string{
+		"xxxx" + expandTemplate("AKIA<<UP#16>>") + "yyyy",
+		"xxxx" + expandTemplate("123456789<<COLON>><<MIX#35>>") + "yyyy",
+	} {
+		if out := redact(colado); out != colado {
+			t.Errorf("token colado em letras foi alterado (o doc exige borda): saída %q", out)
+		}
+	}
+}
+
+// TestRegressao_TokenColadoEmLetrasERedigido cobre os padrões sem borda de palavra: um segredo
+// colado em letras ainda é redigido e o token cru some (INV-06, DV §7.1). Os valores são expandidos
+// em runtime e cercados por letras com strings.Join, então o fonte não contém segredo literal.
 func TestRegressao_TokenColadoEmLetrasERedigido(t *testing.T) {
 	casos := []struct{ label, tmpl string }{
 		{"github_token", "ghp_<<MIX#24>>"},
 		{"github_token", "github_pat_<<MIX#24>>"},
 		{"api_key", "sk-<<MIX#24>>"},
-		{"aws_key", "AKIA<<UP#16>>"},
 		{"bearer_token", "Bearer <<MIX#24>>"},
 		{"auth_header", "Authorization<<COLON>> <<MIX#24>>"},
 		{"stripe_key", "sk_live_<<MIX#16>>"},
@@ -331,7 +493,6 @@ func TestRegressao_TokenColadoEmLetrasERedigido(t *testing.T) {
 		{"google_api_key", "AQ.Ab<<MIX#30>>"},
 		{"google_oauth", "1//<<MIX#20>>"},
 		{"meta_token", "EAA<<MIX#24>>"},
-		{"telegram_token", "123456789<<COLON>><<MIX#35>>"},
 		{"ghl_token", "pit-<<HEX#8>>-<<HEX#4>>-<<HEX#4>>-<<HEX#4>>-<<HEX#12>>"},
 		{"slack_token", "xoxb-<<MIX#24>>"},
 		{"slack_token", "xapp-<<MIX#24>>"},
@@ -352,8 +513,25 @@ func TestRegressao_TokenColadoEmLetrasERedigido(t *testing.T) {
 	}
 }
 
-// TestRegressao_NegativosDaT013 fixa os negativos citados na correção de T013: nenhum deles pode
-// ser alterado pela remoção de `\b`.
+// TestRelabelagem_VariavelDeProvedorComValorRedigido fixa o comportamento observado do §11.1,
+// passo 3 ("a confirmar por teste"): o valor já redigido por `github_token` é casado de novo pela
+// atribuição de variável, e o marcador final é `env_secret`. O segredo cru não sobrevive.
+func TestRelabelagem_VariavelDeProvedorComValorRedigido(t *testing.T) {
+	segredo := expandTemplate("ghp_<<MIX#24>>")
+	raw := "GITHUB_TOKEN=" + segredo
+	out := Body(raw, Limits{}).Text()
+	if strings.Contains(out, segredo) {
+		t.Fatalf("token cru sobreviveu: %q", out)
+	}
+	if !strings.Contains(out, "[REDACTED:") {
+		t.Errorf("sem marcador na saída %q", out)
+	}
+	if redact(out) != out {
+		t.Errorf("a saída não é estável na segunda redação: %q", out)
+	}
+}
+
+// TestRegressao_NegativosDaT013 fixa os negativos citados na correção de T013.
 func TestRegressao_NegativosDaT013(t *testing.T) {
 	for _, neg := range []string{
 		"ASIAPACIFICREGION",
@@ -365,6 +543,75 @@ func TestRegressao_NegativosDaT013(t *testing.T) {
 		if out := redact(neg); out != neg {
 			t.Errorf("negativo alterado: entrada %q, saída %q", neg, out)
 		}
+	}
+}
+
+// --- Allowlist e padrões extras (prompts §11.3, DV §7.3) ---
+
+// TestAllowlist_ChecadaPorOcorrencia: a entrada da allowlist protege só a ocorrência que a contém;
+// a mesma regra continua redigindo as outras ocorrências do texto.
+func TestAllowlist_ChecadaPorOcorrencia(t *testing.T) {
+	s, err := New(nil, []string{"ALLOWED"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tok1 := expandTemplate("sk-ALLOWED<<MIX#24>>")
+	tok2 := expandTemplate("sk-<<MIX#24>>")
+	out := s.Body(tok1+" e "+tok2, Limits{}).Text()
+	if !strings.Contains(out, tok1) {
+		t.Errorf("ocorrência da allowlist foi alterada: %q", out)
+	}
+	if strings.Contains(out, tok2) {
+		t.Errorf("ocorrência fora da allowlist vazou: %q", out)
+	}
+	if !strings.Contains(out, "[REDACTED:api_key]") {
+		t.Errorf("sem marcador para a ocorrência fora da allowlist: %q", out)
+	}
+}
+
+// TestExtraPatterns_RotuloCustomNoFim cobre o padrão extra: rótulo custom, no fim da ordem, e a
+// allowlist também vale para ele.
+func TestExtraPatterns_RotuloCustomNoFim(t *testing.T) {
+	s, err := New([]string{`corp-[0-9]{4}`}, []string{"corp-1234"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	out := s.Body("id corp-1234 e corp-9999 fim", Limits{}).Text()
+	if want := "id corp-1234 e [REDACTED:custom] fim"; out != want {
+		t.Errorf("saída = %q, quer %q", out, want)
+	}
+	rules := s.patterns()
+	if last := rules[len(rules)-1]; last.label != "custom" || len(rules) != len(builtinRules)+1 {
+		t.Errorf("extra fora do fim da ordem: último rótulo %q, %d padrões", last.label, len(rules))
+	}
+}
+
+// TestNew_EntradaInvalidaImpedeConstrucao: expressão inválida, extra vazio e entrada vazia na
+// allowlist impedem a construção (o serviço não inicia).
+func TestNew_EntradaInvalidaImpedeConstrucao(t *testing.T) {
+	casos := []struct {
+		nome  string
+		extra []string
+		allow []string
+	}{
+		{"expressão inválida", []string{"[aberto"}, nil},
+		{"extra vazio", []string{""}, nil},
+		{"allowlist vazia", nil, []string{""}},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			if _, err := New(c.extra, c.allow); err == nil {
+				t.Fatal("esperava erro")
+			}
+		})
+	}
+}
+
+// TestSanitizer_ZeroValueUsaPadroesEmbutidos garante que o zero value não deixa passar segredo.
+func TestSanitizer_ZeroValueUsaPadroesEmbutidos(t *testing.T) {
+	segredo := expandTemplate("sk-<<MIX#24>>")
+	if out := (Sanitizer{}).Body(segredo, Limits{}).Text(); !strings.Contains(out, "[REDACTED:api_key]") {
+		t.Errorf("zero value não redigiu: %q", out)
 	}
 }
 

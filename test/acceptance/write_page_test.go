@@ -18,13 +18,15 @@ const (
 	dbPageTitle = "Banco de dados"
 	dbPageBody  = "Escolhemos SQLite em modo WAL para o armazenamento local, sem servidor externo."
 	dbPagePath  = "decisions/db.md"
-	dbLogEvent  = "page-write | " + dbPageTitle
 )
 
 // TestWritePageAtualizaArquivoIndiceEGit espelha o cenário 1 de
 // specs/features/001-nucleo/acceptance/nucleo.feature: "Escrever uma página atualiza
 // arquivo, índice e git juntos". Os passos Dado/Quando/Então viram subtestes em sequência.
 // Se um passo falha, os seguintes não rodam.
+//
+// Contrato atual (T080, docs/wiki-files-layer.md §5.2 e §7): WritePage não faz commit e não escreve
+// log.md nem index.md. Quem chama commita os caminhos registrados com CommitTracked.
 func TestWritePageAtualizaArquivoIndiceEGit(t *testing.T) {
 	ctx := context.Background()
 
@@ -114,6 +116,17 @@ func TestWritePageAtualizaArquivoIndiceEGit(t *testing.T) {
 		return
 	}
 
+	var checkpoint string
+	if !t.Run("Quando o chamador commita os caminhos registrados pela escrita", func(t *testing.T) {
+		cp, err := repo.CommitTracked(ctx, "page-write: "+rel)
+		if err != nil {
+			t.Fatalf("CommitTracked: %v", err)
+		}
+		checkpoint = cp
+	}) {
+		return
+	}
+
 	// Então o corpo e o frontmatter passam pela validação do caminho e pela sanitização.
 	// Essa parte é verificada pelo conteúdo que chega ao arquivo (subteste a seguir).
 	// A sanitização de segredo tem cenário próprio na feature.
@@ -169,38 +182,32 @@ func TestWritePageAtualizaArquivoIndiceEGit(t *testing.T) {
 			t.Errorf("assunto do último commit = %q, quer %q", subject, want)
 		}
 		head := gitOutput(t, wikiRoot, "rev-parse", "HEAD")
-		if head != res.Checkpoint {
-			t.Errorf("HEAD = %q, checkpoint devolvido = %q", head, res.Checkpoint)
+		if checkpoint == "" {
+			t.Errorf("CommitTracked devolveu checkpoint vazio; quer hash do commit")
+		}
+		if head != checkpoint {
+			t.Errorf("HEAD = %q, checkpoint do commit = %q", head, checkpoint)
 		}
 	})
 
-	t.Run("Então o log.md do projeto tem uma linha page-write para a escrita", func(t *testing.T) {
-		logPath := filepath.Join(wikiRoot, scope.WorkspaceID.String(), scope.ProjectID.String(), "log.md")
-		data, err := os.ReadFile(logPath)
-		if err != nil {
-			t.Fatalf("ler %s: %v", logPath, err)
-		}
-		n := 0
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "## [") && strings.Contains(line, "] "+dbLogEvent) {
-				n++
+	t.Run("Então não há log.md nem index.md do projeto", func(t *testing.T) {
+		for _, nome := range []string{"log.md", "index.md"} {
+			p := filepath.Join(wikiRoot, scope.WorkspaceID.String(), scope.ProjectID.String(), nome)
+			if _, err := os.Stat(p); !os.IsNotExist(err) {
+				t.Errorf("%s existe após a escrita (err=%v); a operação normal não o escreve", nome, err)
 			}
 		}
-		if n != 1 {
-			t.Errorf("linhas page-write com título %q no log.md = %d, quer 1; log = %q",
-				dbPageTitle, n, string(data))
-		}
 	})
 
-	t.Run("Então a resposta traz identificador, caminho e checkpoint", func(t *testing.T) {
+	t.Run("Então a resposta traz identificador, caminho e sem checkpoint", func(t *testing.T) {
 		if res.Version == (domain.PageID{}) {
 			t.Errorf("Version é zero; quer identificador de página")
 		}
 		if res.Path != rel {
 			t.Errorf("Path = %q, quer %q", res.Path, rel)
 		}
-		if res.Checkpoint == "" {
-			t.Errorf("Checkpoint vazio; quer hash do commit")
+		if res.Checkpoint != "" {
+			t.Errorf("Checkpoint = %q, quer vazio: WritePage não faz commit", res.Checkpoint)
 		}
 		if len(res.Avisos) != 0 {
 			t.Errorf("Avisos = %q, quer nenhum", res.Avisos)

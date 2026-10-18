@@ -125,9 +125,14 @@ func TestRollbackFalhaDoBancoReverteArquivo(t *testing.T) {
 		abs = filepath.Join(wikiRoot, scope.WorkspaceID.String(), scope.ProjectID.String(),
 			"decisions", "db.md")
 
-		// Passo 1: versão inicial com o Writer real, sem injeção.
+		// Passo 1: versão inicial com o Writer real, sem injeção. Desde a T080 o WritePage não commita:
+		// quem chama commita os caminhos registrados com CommitTracked (mesmo padrão de
+		// write_page_test.go). O commit inicial entra na contagem de commits antes da falha.
 		if _, err := store.WritePage(ctx, rbEntrada(t, scope, rbFirstBody)); err != nil {
 			t.Fatalf("WritePage da versão inicial: %v", err)
+		}
+		if _, err := repo.CommitTracked(ctx, "page-write: versão inicial de "+rbPagePath); err != nil {
+			t.Fatalf("CommitTracked da versão inicial: %v", err)
 		}
 		prevBytes, err = os.ReadFile(abs)
 		if err != nil {

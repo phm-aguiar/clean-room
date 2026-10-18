@@ -26,6 +26,8 @@ const (
 // allowedImports é o grafo permitido. Chave: componente; valor: componentes
 // internos que ele pode importar em código de produção. Um componente que não
 // está aqui é violação: novo pacote interno exige decisão explícita.
+// Constituição (Restrições Arquiteturais): mcp → domain, storage, wiki; mcp NÃO
+// importa ingest em produção (só em testes). ingest → domain, storage, wiki.
 var allowedImports = map[string][]string{
 	"domain":   {},
 	"config":   {},
@@ -36,6 +38,11 @@ var allowedImports = map[string][]string{
 	"mcp":      {"domain", "storage", "wiki"},
 	"cli":      {"domain", "config", "storage", "wiki", "ingest", "mcp"},
 }
+
+// mcpForbidden é a regra explícita da constituição: o pacote mcp nunca importa
+// ingest em código de produção. Testes (_test.go) não entram em go list .Imports,
+// então exceções de teste ficam permitidas por construção.
+const mcpForbidden = internalPrefix + "ingest"
 
 // envCallRe casa leituras de ambiente proibidas fora de internal/config.
 var envCallRe = regexp.MustCompile(`os\.(Getenv|LookupEnv|Environ)\(`)
@@ -210,6 +217,30 @@ func TestImportGraph(t *testing.T) {
 	}
 	for _, v := range checkImportGraph(pkgs) {
 		t.Error(v)
+	}
+}
+
+// TestMCPNaoImportaIngest verifica, no grafo real de produção, que nenhum
+// pacote sob internal/mcp importa internal/ingest (ou subpacotes). Regra
+// explícita da constituição; testes de mcp podem importar ingest.
+func TestMCPNaoImportaIngest(t *testing.T) {
+	root, err := moduleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgs, err := listImports(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pkg, imports := range pkgs {
+		if comp, ok := componentOf(pkg); !ok || comp != "mcp" {
+			continue
+		}
+		for _, imp := range imports {
+			if imp == mcpForbidden || strings.HasPrefix(imp, mcpForbidden+"/") {
+				t.Errorf("%s importa %s em produção: mcp não importa ingest (constituição)", pkg, imp)
+			}
+		}
 	}
 }
 

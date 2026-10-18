@@ -10,7 +10,7 @@ import (
 // ErrInvalidFrontmatterKey é a causa de Set quando a chave é vazia.
 var ErrInvalidFrontmatterKey = errors.New("chave de frontmatter inválida")
 
-// ErrInvalidFrontmatterValue é a causa de Set quando o valor não é string nem []string.
+// ErrInvalidFrontmatterValue é a causa de Set quando o valor não é um dos tipos aceitos de Frontmatter.
 var ErrInvalidFrontmatterValue = errors.New("valor de frontmatter inválido")
 
 // ErrInvalidImportance é a causa de NewObservation quando a importância está fora de 1 a 10.
@@ -30,8 +30,14 @@ const (
 // Set em chave nova acrescenta ao fim, e Set em chave existente troca o valor sem mudar a posição.
 // O zero value é um frontmatter vazio e pronto para uso. Não faz I/O e não entra em panic.
 //
-// Valores aceitos: string ou []string. Outros tipos são recusados por Set com
-// ErrInvalidFrontmatterValue. A leitura e a emissão YAML ficam na T039.
+// Valores aceitos:
+//   - string;
+//   - []string (lista de texto; lista vazia é sempre []string);
+//   - Frontmatter (mapeamento aninhado, por exemplo generated: {by, at}, com a mesma ordem de chaves);
+//   - []Frontmatter (lista de mapeamentos, por exemplo sources, com pelo menos um item).
+//
+// Outros tipos, e nulo, são recusados por Set com ErrInvalidFrontmatterValue. A leitura e a emissão
+// YAML ficam em internal/wiki (markdown.go).
 type Frontmatter struct {
 	entries []frontmatterEntry
 }
@@ -53,7 +59,16 @@ func (f *Frontmatter) Set(key string, value any) error {
 	case string:
 		stored = v
 	case []string:
-		stored = append([]string(nil), v...)
+		stored = copyStrings(v)
+	case Frontmatter:
+		stored = v.clone()
+	case []Frontmatter:
+		if len(v) == 0 {
+			// Lista vazia não tem como ser distinguida de lista de texto vazia na releitura.
+			stored = []string{}
+			break
+		}
+		stored = cloneList(v)
 	default:
 		return fmt.Errorf("%w: chave %q, tipo %T", ErrInvalidFrontmatterValue, key, value)
 	}
@@ -68,14 +83,12 @@ func (f *Frontmatter) Set(key string, value any) error {
 }
 
 // Get devolve o valor de key e true, ou nil e false se a chave não existe.
-// O valor devolvido é string ou []string. Para []string, a cópia devolvida é independente.
+// O valor devolvido é string, []string, Frontmatter ou []Frontmatter. Listas e mapeamentos
+// devolvidos são cópias independentes.
 func (f Frontmatter) Get(key string) (any, bool) {
 	for _, e := range f.entries {
 		if e.key == key {
-			if s, ok := e.value.([]string); ok {
-				return append([]string(nil), s...), true
-			}
-			return e.value, true
+			return cloneValue(e.value), true
 		}
 	}
 	return nil, false
@@ -91,37 +104,96 @@ func (f Frontmatter) Keys() []string {
 }
 
 // Equal diz se os dois frontmatters têm as mesmas chaves, na mesma ordem, com os mesmos valores.
-// A comparação é determinística: a ordem faz parte da igualdade.
+// A comparação é determinística e recursiva: a ordem das chaves de mapeamentos aninhados também
+// faz parte da igualdade.
 func (f Frontmatter) Equal(other Frontmatter) bool {
 	if len(f.entries) != len(other.entries) {
 		return false
 	}
 	for i := range f.entries {
 		a, b := f.entries[i], other.entries[i]
-		if a.key != b.key {
-			return false
-		}
-		switch av := a.value.(type) {
-		case string:
-			bv, ok := b.value.(string)
-			if !ok || av != bv {
-				return false
-			}
-		case []string:
-			bv, ok := b.value.([]string)
-			if !ok || len(av) != len(bv) {
-				return false
-			}
-			for j := range av {
-				if av[j] != bv[j] {
-					return false
-				}
-			}
-		default:
+		if a.key != b.key || !valuesEqual(a.value, b.value) {
 			return false
 		}
 	}
 	return true
+}
+
+// clone devolve uma cópia independente do mapeamento, em profundidade.
+func (f Frontmatter) clone() Frontmatter {
+	if len(f.entries) == 0 {
+		return Frontmatter{}
+	}
+	out := Frontmatter{entries: make([]frontmatterEntry, len(f.entries))}
+	for i, e := range f.entries {
+		out.entries[i] = frontmatterEntry{key: e.key, value: cloneValue(e.value)}
+	}
+	return out
+}
+
+// cloneList copia uma lista de mapeamentos, em profundidade.
+func cloneList(list []Frontmatter) []Frontmatter {
+	out := make([]Frontmatter, len(list))
+	for i := range list {
+		out[i] = list[i].clone()
+	}
+	return out
+}
+
+// copyStrings copia uma lista de texto. A cópia de lista vazia é não nula, para que []string{}
+// continue []string{} depois de Set e Get.
+func copyStrings(src []string) []string {
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
+// cloneValue copia um valor já aceito por Set (string, []string, Frontmatter ou []Frontmatter).
+func cloneValue(v any) any {
+	switch t := v.(type) {
+	case []string:
+		return copyStrings(t)
+	case Frontmatter:
+		return t.clone()
+	case []Frontmatter:
+		return cloneList(t)
+	}
+	return v
+}
+
+// valuesEqual compara dois valores aceitos por Set. Tipos diferentes são diferentes.
+func valuesEqual(a, b any) bool {
+	switch av := a.(type) {
+	case string:
+		bv, ok := b.(string)
+		return ok && av == bv
+	case []string:
+		bv, ok := b.([]string)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for j := range av {
+			if av[j] != bv[j] {
+				return false
+			}
+		}
+		return true
+	case Frontmatter:
+		bv, ok := b.(Frontmatter)
+		return ok && av.Equal(bv)
+	case []Frontmatter:
+		bv, ok := b.([]Frontmatter)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for j := range av {
+			if !av[j].Equal(bv[j]) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // Page é a página materializada da 001 (DV §6.3, PLAN §2.1). Só traz os campos com chamador

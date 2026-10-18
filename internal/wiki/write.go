@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -23,12 +24,23 @@ const (
 	// pageTitleMaxRunes é o teto do título de página no índice (ADR-10). O arquivo não é cortado.
 	pageTitleMaxRunes = 80
 
-	// generatedBy é a proveniência de generated.by (ADR-20). Ainda não há versão de build no
-	// código, então o valor não traz a versão. Decisão registrada no relatório da T046.
-	generatedBy       = "process:ai-memory"
+	// generatedKey é o mapeamento de proveniência do OKF 0.2: generated: {by, at} (docs/okf.md).
+	generatedKey      = "generated"
+	generatedByField  = "by"
+	generatedAtField  = "at"
 	generatedAtLayout = "2006-01-02T15:04:05Z"
-	generatedAtKey    = "generated.at"
-	generatedByKey    = "generated.by"
+	// generatedByModel é a chave que, se presente, vira generated.by (docs/okf.md, Proveniência).
+	generatedByModel = "generated_by_model"
+	// generatedByPrefix seguido da versão do build é o generated.by padrão.
+	generatedByPrefix = "process:ai-memory/"
+	// sourcesKey, sessionKey e agentKey alimentam a derivação de sources (docs/okf.md, Proveniência).
+	sourcesKey = "sources"
+	sessionKey = "session_id"
+	agentKey   = "agent"
+	// sessionResourcePrefix é o recurso de sources de uma sessão do ai-memory.
+	sessionResourcePrefix = "ai-memory://session/"
+	// agentActorPrefix é o prefixo de ator de agente em sources.author.
+	agentActorPrefix = "process:"
 
 	typeKey    = "type"
 	kindKey    = "kind"
@@ -39,6 +51,9 @@ const (
 	descKey    = "description"
 	expiresKey = "expires_at"
 	staleKey   = "stale_after"
+
+	// slotsFamily é o diretório de slots: páginas sob ele são fixadas (docs/wiki-files-layer.md §5.2).
+	slotsFamily = "_slots"
 )
 
 // Tabelas de derivação do tipo OKF (markdown-contract (d)). A primeira regra que se aplica vence.
@@ -52,7 +67,7 @@ var (
 	typeByFamily = map[string]string{
 		"sessions": "Session Summary", "_rules": "Rule", "gotchas": "Gotcha",
 		"decisions": "Decision", "procedures": "Procedure", "concepts": "Concept",
-		"notes": "Note", "runbooks": "Runbook", "_slots": "State", "_lint": "Lint Report",
+		"notes": "Note", "runbooks": "Runbook", slotsFamily: "State", "_lint": "Lint Report",
 		"_pending": "Pending Note",
 	}
 )
@@ -86,8 +101,9 @@ type PageInput struct {
 }
 
 // WriteResult é o resultado de WritePage. Path é relativo à raiz da wiki (`<ws>/<proj>/<path>`).
-// Checkpoint é o hash do commit, ou vazio quando não houve commit. Avisos traz as falhas
-// tratadas como aviso (log, manifesto, índice de projeto, commit) e os avisos de links.
+// Checkpoint é sempre vazio: WritePage não faz commit (T080). Os caminhos afetados ficam
+// registrados no Repo para o commit feito por quem chama (CommitTracked). Avisos traz as falhas
+// tratadas como aviso (manifesto, registro para commit) e os avisos de links.
 type WriteResult struct {
 	Version    domain.PageID
 	Outcome    storage.UpsertOutcome
@@ -102,9 +118,10 @@ type generated struct {
 }
 
 // WritePage grava uma página na ordem do P-03: confinamento, sanitização, derivação, trava,
-// criação do escopo, instalação do arquivo com rollback, UpsertPage, linha do log, manifesto e
-// índice de projeto, e commit. Erros de entrada e de índice voltam com %w. Falhas de log,
-// manifesto, índice de projeto e commit viram aviso.
+// criação do escopo, instalação do arquivo com rollback, UpsertPage, manifesto, e registro dos
+// caminhos para commit (sem commit). Não escreve log.md nem index.md: o ledger é só de eventos de
+// hook e o index.md da raiz é da migração OKF (docs/wiki-files-layer.md §5.2, §9). Erros de entrada
+// e de índice voltam com %w. Falhas de manifesto e de registro viram aviso.
 func (s *Store) WritePage(ctx context.Context, in PageInput) (WriteResult, error) {
 	if s == nil || s.Writer == nil || s.Repo == nil || s.Locks == nil {
 		return WriteResult{}, errors.New("wiki: escrita de página exige Writer, Repo e Locks")
@@ -178,7 +195,7 @@ func (s *Store) WritePage(ctx context.Context, in PageInput) (WriteResult, error
 	if err != nil {
 		return WriteResult{}, err
 	}
-	gen, err := generationFor(prev, existed, same, now)
+	gen, err := generationFor(prev, same, now, resolveGeneratedBy(in.Frontmatter, head))
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -231,17 +248,7 @@ func (s *Store) WritePage(ctx context.Context, in PageInput) (WriteResult, error
 	rel := scopeRelPath(in.Scope, in.Path.String())
 	paths := []string{rel}
 
-	// 8. Linha do log antes do commit (ADR-22). Só quando a página mudou. Falha vira aviso.
-	logged := false
-	if changed {
-		if err := AppendLogLine(s.Root, in.Scope, eventPageWrite, pageTitle, now); err != nil {
-			avisos = append(avisos, fmt.Sprintf("log.md não atualizado: %v", err))
-		} else {
-			logged = true
-		}
-	}
-
-	// 9. Manifesto e índice de projeto (ADR-23, ADR-24). Falha vira aviso: o índice já é a verdade.
+	// 8. Manifesto do escopo (ADR-23). Falha vira aviso: o índice já é a verdade.
 	manifest, err := EnsureScopeManifest(s.Root, in.Scope, ScopeNames{
 		WorkspaceName: in.WorkspaceName,
 		ProjectName:   in.ProjectName,
@@ -251,34 +258,23 @@ func (s *Store) WritePage(ctx context.Context, in PageInput) (WriteResult, error
 		avisos = append(avisos, fmt.Sprintf("manifesto do escopo não atualizado: %v", err))
 		manifest = nil
 	}
-	projIndex, err := EnsureProjectIndex(s.Root, in.Scope)
-	if err != nil {
-		avisos = append(avisos, fmt.Sprintf("index.md do projeto não atualizado: %v", err))
-		projIndex = nil
-	}
 	paths = append(paths, manifest...)
-	paths = append(paths, projIndex...)
-	if logged {
-		paths = append(paths, scopeRelPath(in.Scope, logFileName))
-	}
 
-	// 10. Commit. Sem mudança (Unchanged) e sem manifesto novo, não há commit. Falha vira aviso.
-	checkpoint := ""
-	if changed || len(manifest)+len(projIndex) > 0 {
-		cp, err := s.Repo.Commit(ctx, paths, "page-write: "+rel)
-		if err != nil {
-			avisos = append(avisos, fmt.Sprintf("commit não realizado: %v", err))
-		} else {
-			checkpoint = cp
+	// 9. Registro para commit. WritePage não faz commit: quem chama commita os caminhos
+	// registrados com Repo.CommitTracked, no ponto definido pelo doc (§7). Sem mudança (Unchanged)
+	// e sem manifesto novo, nada é registrado. Falha de registro vira aviso.
+	if changed || len(manifest) > 0 {
+		if err := s.Repo.Track(paths...); err != nil {
+			avisos = append(avisos, fmt.Sprintf("registro para commit não feito: %v", err))
 		}
 	}
 
-	// 11. Resultado.
+	// 10. Resultado. Checkpoint fica vazio: a escrita não cria commit.
 	return WriteResult{
 		Version:    res.Version,
 		Outcome:    res.Outcome,
 		Path:       rel,
-		Checkpoint: checkpoint,
+		Checkpoint: "",
 		Avisos:     avisos,
 	}, nil
 }
@@ -296,33 +292,58 @@ func scopeRelPath(scope domain.Scope, rel string) string {
 	return scope.WorkspaceID.String() + "/" + scope.ProjectID.String() + "/" + rel
 }
 
-// cleanCopy copia o frontmatter de entrada na ordem recebida, sem as chaves generated.* (que são
-// da escrita) e com os valores de texto sanitizados sem teto.
+// cleanCopy copia o frontmatter de entrada na ordem recebida, sem a chave generated (que é da
+// escrita) e com os valores de texto sanitizados sem teto, em todos os níveis.
 func cleanCopy(src domain.Frontmatter) (domain.Frontmatter, error) {
+	return cleanMap(src, generatedKey)
+}
+
+// cleanMap copia um mapeamento na ordem recebida, sanitizando textos sem teto, em profundidade.
+// Pula a chave omit (vazia não pula nada). Aceita texto, lista de texto, mapeamento e lista de
+// mapeamentos; outro tipo é erro.
+func cleanMap(src domain.Frontmatter, omit string) (domain.Frontmatter, error) {
 	var out domain.Frontmatter
 	for _, k := range src.Keys() {
-		if k == generatedAtKey || k == generatedByKey {
+		if k == omit {
 			continue
 		}
 		v, _ := src.Get(k)
-		var clean any
-		switch t := v.(type) {
-		case string:
-			clean = sanitize.Body(t, sanitize.Limits{}).Text()
-		case []string:
-			items := make([]string, len(t))
-			for i, it := range t {
-				items[i] = sanitize.Body(it, sanitize.Limits{}).Text()
-			}
-			clean = items
-		default:
-			return domain.Frontmatter{}, fmt.Errorf("wiki: valor de frontmatter %q: tipo %T", k, v)
+		clean, err := cleanValue(k, v)
+		if err != nil {
+			return domain.Frontmatter{}, err
 		}
 		if err := out.Set(k, clean); err != nil {
 			return domain.Frontmatter{}, fmt.Errorf("wiki: frontmatter: %w", err)
 		}
 	}
 	return out, nil
+}
+
+// cleanValue sanitiza um valor do frontmatter, recursivamente nos mapeamentos e listas de mapeamentos.
+func cleanValue(key string, v any) (any, error) {
+	switch t := v.(type) {
+	case string:
+		return sanitize.Body(t, sanitize.Limits{}).Text(), nil
+	case []string:
+		items := make([]string, len(t))
+		for i, it := range t {
+			items[i] = sanitize.Body(it, sanitize.Limits{}).Text()
+		}
+		return items, nil
+	case domain.Frontmatter:
+		return cleanMap(t, "")
+	case []domain.Frontmatter:
+		items := make([]domain.Frontmatter, 0, len(t))
+		for _, it := range t {
+			c, err := cleanMap(it, "")
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, c)
+		}
+		return items, nil
+	}
+	return nil, fmt.Errorf("wiki: valor de frontmatter %q: tipo %T", key, v)
 }
 
 // buildHead acrescenta tier, kind, type e description ao frontmatter de entrada (ADR-17). Chaves
@@ -351,6 +372,12 @@ func buildHead(in PageInput, fm domain.Frontmatter) (domain.Frontmatter, error) 
 			return domain.Frontmatter{}, fmt.Errorf("wiki: frontmatter: %w", err)
 		}
 	}
+	// Caminho de slot é fixado pelo caminho (docs/wiki-files-layer.md §5.2, passo 3).
+	if isSlotPath(in.Path.String()) {
+		if err := out.Set(pinnedKey, "true"); err != nil {
+			return domain.Frontmatter{}, fmt.Errorf("wiki: frontmatter: %w", err)
+		}
+	}
 	if _, ok := out.Get(descKey); !ok {
 		if s := textOf(out, summaryKey); s != "" {
 			if err := out.Set(descKey, s); err != nil {
@@ -358,7 +385,74 @@ func buildHead(in PageInput, fm domain.Frontmatter) (domain.Frontmatter, error) 
 			}
 		}
 	}
+	if err := deriveSources(&out); err != nil {
+		return domain.Frontmatter{}, fmt.Errorf("wiki: frontmatter: %w", err)
+	}
 	return out, nil
+}
+
+// deriveSources cria sources quando a página não tem sources e tem session_id (docs/okf.md,
+// Proveniência). O item traz resource ai-memory://session/<session_id>; com agent, também traz
+// author process:<agent>.
+func deriveSources(fm *domain.Frontmatter) error {
+	if _, ok := fm.Get(sourcesKey); ok {
+		return nil
+	}
+	sid := textOf(*fm, sessionKey)
+	if sid == "" {
+		return nil
+	}
+	var item domain.Frontmatter
+	if err := item.Set("resource", sessionResourcePrefix+sid); err != nil {
+		return err
+	}
+	if agent := textOf(*fm, agentKey); agent != "" {
+		if err := item.Set("author", agentActorPrefix+agent); err != nil {
+			return err
+		}
+	}
+	return fm.Set(sourcesKey, []domain.Frontmatter{item})
+}
+
+// resolveGeneratedBy escolhe generated.by de uma escrita com conteúdo novo (docs/okf.md): o
+// generated.by já presente na entrada não é sobrescrito; senão vale generated_by_model; senão
+// process:ai-memory/<versão do build>.
+func resolveGeneratedBy(src, head domain.Frontmatter) string {
+	if by := generatedOf(src).by; by != "" {
+		return sanitize.Body(by, sanitize.Limits{}).Text()
+	}
+	if model := textOf(head, generatedByModel); model != "" {
+		return model
+	}
+	return generatedByPrefix + buildVersion()
+}
+
+// buildVersion é a versão do build que entra em generated.by. Vem da informação de build do Go;
+// sem versão de módulo (build de desenvolvimento), vale "dev".
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
+	}
+	return "dev"
+}
+
+// generatedOf lê o mapeamento generated de um frontmatter. Ausente ou que não é mapeamento dá
+// proveniência vazia.
+func generatedOf(fm domain.Frontmatter) generated {
+	var gen generated
+	v, ok := fm.Get(generatedKey)
+	if !ok {
+		return gen
+	}
+	g, ok := v.(domain.Frontmatter)
+	if !ok {
+		return gen
+	}
+	gen.at = textOf(g, generatedAtField)
+	gen.by = textOf(g, generatedByField)
+	return gen
 }
 
 // deriveType aplica markdown-contract (d): kind, slot_kind, depois a família pelo primeiro
@@ -377,6 +471,12 @@ func deriveType(fm domain.Frontmatter, rel string) string {
 	return "Note"
 }
 
+// isSlotPath diz se o caminho relativo à raiz do projeto está sob `_slots/`.
+func isSlotPath(rel string) bool {
+	family, _, _ := strings.Cut(rel, "/")
+	return family == slotsFamily
+}
+
 // textOf devolve o valor de key aparado, se for texto; senão, vazio.
 func textOf(fm domain.Frontmatter, key string) string {
 	v, ok := fm.Get(key)
@@ -390,12 +490,12 @@ func textOf(fm domain.Frontmatter, key string) string {
 	return strings.TrimSpace(s)
 }
 
-// dropGenerated copia fm sem generated.at nem generated.by, sem sanitizar. Usada na comparação
-// de conteúdo (ADR-18).
+// dropGenerated copia fm sem o mapeamento generated, sem sanitizar. Usada na comparação de
+// conteúdo (ADR-18).
 func dropGenerated(fm domain.Frontmatter) (domain.Frontmatter, error) {
 	var out domain.Frontmatter
 	for _, k := range fm.Keys() {
-		if k == generatedAtKey || k == generatedByKey {
+		if k == generatedKey {
 			continue
 		}
 		v, _ := fm.Get(k)
@@ -406,20 +506,26 @@ func dropGenerated(fm domain.Frontmatter) (domain.Frontmatter, error) {
 	return out, nil
 }
 
-// assemble monta o frontmatter final na ordem do ADR-17: o de head, depois generated.at e
-// generated.by (de gen), depois stale_after se ausente.
+// assemble monta o frontmatter final na ordem do ADR-17: o de head, depois generated (mapeamento
+// {by, at}, de gen), depois stale_after se ausente.
 func assemble(head domain.Frontmatter, gen generated, stale string, hasStale bool) (domain.Frontmatter, error) {
 	out, err := dropGenerated(head)
 	if err != nil {
 		return domain.Frontmatter{}, err
 	}
-	if gen.at != "" {
-		if err := out.Set(generatedAtKey, gen.at); err != nil {
-			return domain.Frontmatter{}, fmt.Errorf("wiki: frontmatter: %w", err)
+	if gen.by != "" || gen.at != "" {
+		var g domain.Frontmatter
+		if gen.by != "" {
+			if err := g.Set(generatedByField, gen.by); err != nil {
+				return domain.Frontmatter{}, fmt.Errorf("wiki: frontmatter: %w", err)
+			}
 		}
-	}
-	if gen.by != "" {
-		if err := out.Set(generatedByKey, gen.by); err != nil {
+		if gen.at != "" {
+			if err := g.Set(generatedAtField, gen.at); err != nil {
+				return domain.Frontmatter{}, fmt.Errorf("wiki: frontmatter: %w", err)
+			}
+		}
+		if err := out.Set(generatedKey, g); err != nil {
 			return domain.Frontmatter{}, fmt.Errorf("wiki: frontmatter: %w", err)
 		}
 	}
@@ -446,6 +552,10 @@ func sameFileContent(prev []byte, existed bool, body string, head domain.Frontma
 	if curBody != body {
 		return false, nil
 	}
+	// Sem generated.at o arquivo não tem a proveniência completa: é reescrito para receber o instante.
+	if generatedOf(curFM).at == "" {
+		return false, nil
+	}
 	candidate, err := assemble(head, generated{}, stale, hasStale)
 	if err != nil {
 		return false, err
@@ -458,24 +568,18 @@ func sameFileContent(prev []byte, existed bool, body string, head domain.Frontma
 }
 
 // generationFor escolhe a proveniência: herda a do arquivo quando o conteúdo é o mesmo (okf
-// "Determinismo"), senão carimba o instante da escrita.
-func generationFor(prev []byte, existed, same bool, now time.Time) (generated, error) {
+// "Determinismo"), senão carimba o instante da escrita com o generated.by resolvido por by.
+func generationFor(prev []byte, same bool, now time.Time, by string) (generated, error) {
 	if !same {
-		return generated{at: now.UTC().Format(generatedAtLayout), by: generatedBy}, nil
-	}
-	if !existed {
-		return generated{}, nil
+		return generated{at: now.UTC().Format(generatedAtLayout), by: by}, nil
 	}
 	curFM, _, err := ReadMarkdown(prev)
 	if err != nil {
-		return generated{}, nil
+		return generated{}, fmt.Errorf("wiki: ler proveniência: %w", err)
 	}
-	var gen generated
-	if v, ok := curFM.Get(generatedAtKey); ok {
-		gen.at, _ = v.(string)
-	}
-	if v, ok := curFM.Get(generatedByKey); ok {
-		gen.by, _ = v.(string)
+	gen := generatedOf(curFM)
+	if gen.by == "" {
+		gen.by = by
 	}
 	return gen, nil
 }

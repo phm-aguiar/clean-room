@@ -12,12 +12,12 @@ import (
 )
 
 // Nomes dos arquivos de controle do escopo na árvore da wiki (wiki-layout-contract (a) e (c)).
+// index.md é reconhecido pela reindexação, mas não é escrito pela operação normal: quem o cria é a
+// migração OKF (docs/wiki-files-layer.md §10.2).
 const (
 	metaFileName  = "_meta.md"
 	indexFileName = "index.md"
 	scopeMetaType = "Scope Manifest"
-	okfVersion    = "0.2"
-	indexTitle    = "# Índice\n"
 )
 
 // ScopeNames são os nomes humanos gravados no manifesto do escopo (ADR-23). RepoPath entra só no
@@ -95,38 +95,6 @@ func EnsureScopeManifest(root string, scope domain.Scope, names ScopeNames) ([]s
 	return changed, nil
 }
 
-// EnsureProjectIndex cria `index.md` na raiz do projeto se ele não existe (ADR-24). Conteúdo:
-// frontmatter `okf_version: "0.2"` e corpo `# Índice`, sem lista. Se o arquivo existe, não é tocado.
-// A operação normal não o regrava.
-//
-// Devolve o caminho relativo à raiz, com barra normal, se criou o arquivo; lista vazia se já existia.
-func EnsureProjectIndex(root string, scope domain.Scope) ([]string, error) {
-	path, err := pathFor(root, scope, indexPage())
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Lstat(path); err == nil {
-		return nil, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("wiki: verificar %s: %w", path, err)
-	}
-	fm, err := manifestFrontmatter(kv{"okf_version", okfVersion})
-	if err != nil {
-		return nil, err
-	}
-	data, err := EmitMarkdown(fm, indexTitle)
-	if err != nil {
-		return nil, fmt.Errorf("wiki: emitir index.md: %w", err)
-	}
-	if err := ensureDir(filepath.Dir(path)); err != nil {
-		return nil, err
-	}
-	if _, err := Write(path, data); err != nil {
-		return nil, err
-	}
-	return []string{scope.WorkspaceID.String() + "/" + scope.ProjectID.String() + "/" + indexFileName}, nil
-}
-
 // kv é um par chave/valor do frontmatter, para montar o bloco com a ordem da chamada.
 type kv struct {
 	key, value string
@@ -173,21 +141,11 @@ func ensureDir(dir string) error {
 	return nil
 }
 
-// metaPage e indexPage são os caminhos de sistema do escopo. Usam ParseStoredPagePath porque o
-// construtor estrito recusa os nomes base reservados (`_meta.md`, `index.md`, `log.md`), que são
-// justamente os que o próprio sistema grava. Os nomes são constantes válidas, então o erro não
-// ocorre; se ocorresse, pathFor recusaria o PagePath zero com ErrInvalidPagePath.
+// metaPage é o caminho do manifesto do escopo. Usa ParseStoredPagePath porque o construtor estrito
+// recusa o nome base reservado (`_meta.md`), que é justamente o que o próprio sistema grava. O nome
+// é constante válido, então o erro não ocorre; se ocorresse, pathFor recusaria o PagePath zero com
+// ErrInvalidPagePath.
 func metaPage() domain.PagePath {
 	p, _ := domain.ParseStoredPagePath(metaFileName)
-	return p
-}
-
-func indexPage() domain.PagePath {
-	p, _ := domain.ParseStoredPagePath(indexFileName)
-	return p
-}
-
-func logPage() domain.PagePath {
-	p, _ := domain.ParseStoredPagePath(logFileName)
 	return p
 }

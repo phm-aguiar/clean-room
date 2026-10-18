@@ -169,15 +169,50 @@ func TestReindexReconstroiBancoComoAWikiEscrita(t *testing.T) {
 	}
 }
 
-func TestReindexMetaAusenteReconstroiEscopoPelosUUIDs(t *testing.T) {
+// rxMetaPaths devolve os caminhos do _meta.md do workspace e do projeto do env.
+func rxMetaPaths(env *wpEnv) (string, string) {
+	wsDir := filepath.Join(env.root, env.scope.WorkspaceID.String())
+	projDir := filepath.Join(wsDir, env.scope.ProjectID.String())
+	return filepath.Join(wsDir, "_meta.md"), filepath.Join(projDir, "_meta.md")
+}
+
+// rxHasErrorWithPath diz se alguma mensagem de Errors traz o caminho exato do arquivo.
+func rxHasErrorWithPath(errs []string, path string) bool {
+	for _, e := range errs {
+		if strings.Contains(e, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// rxAssertNoScopeIndexed confere que o banco não ganhou workspace, projeto nem página: o nome não foi
+// reconstruído pelo id e o escopo não foi criado.
+func rxAssertNoScopeIndexed(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM workspaces`,
+		`SELECT COUNT(*) FROM projects`,
+		`SELECT COUNT(*) FROM pages WHERE is_latest = 1`,
+	} {
+		var n int
+		if err := db.QueryRow(q).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if n != 0 {
+			t.Fatalf("%s = %d, esperado 0 (escopo sem _meta.md não é reconstruído)", q, n)
+		}
+	}
+}
+
+func TestReindexMetaAusenteFalhaComCaminhoExato(t *testing.T) {
 	env := wpNewEnv(t)
 	ctx := env.ctx
 	if _, err := env.store.WritePage(ctx, wpInput(t, env, "notas/a.md", "Corpo.\n")); err != nil {
 		t.Fatalf("WritePage: %v", err)
 	}
-	wsDir := filepath.Join(env.root, env.scope.WorkspaceID.String())
-	projDir := filepath.Join(wsDir, env.scope.ProjectID.String())
-	for _, p := range []string{filepath.Join(wsDir, "_meta.md"), filepath.Join(projDir, "_meta.md")} {
+	wsMeta, projMeta := rxMetaPaths(env)
+	for _, p := range []string{wsMeta, projMeta} {
 		if err := os.Remove(p); err != nil {
 			t.Fatalf("remover %s: %v", p, err)
 		}
@@ -188,28 +223,59 @@ func TestReindexMetaAusenteReconstroiEscopoPelosUUIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
-	if rep.Scopes != 1 || rep.Pages != 1 || len(rep.Errors) != 0 {
-		t.Fatalf("reindex sem _meta.md: %+v", rep)
+	if rep.Scopes != 0 || rep.Pages != 0 {
+		t.Fatalf("escopo sem _meta.md não devia ser indexado: %+v", rep)
 	}
-	if len(rep.Avisos) != 2 {
-		t.Fatalf("esperava aviso para workspace e projeto, veio %v", rep.Avisos)
+	if len(rep.Errors) != 2 {
+		t.Fatalf("Errors = %v, esperado um erro por _meta.md ausente", rep.Errors)
 	}
-
-	var wsName, projName string
-	if err := db2.QueryRow(`SELECT name FROM workspaces WHERE id = ?`, env.scope.WorkspaceID.Bytes()).Scan(&wsName); err != nil {
-		t.Fatalf("ler workspace: %v", err)
+	for _, p := range []string{wsMeta, projMeta} {
+		if !rxHasErrorWithPath(rep.Errors, p) {
+			t.Errorf("Errors = %v, esperado o caminho exato %s", rep.Errors, p)
+		}
 	}
-	if err := db2.QueryRow(`SELECT name FROM projects WHERE id = ?`, env.scope.ProjectID.Bytes()).Scan(&projName); err != nil {
-		t.Fatalf("ler projeto: %v", err)
+	if len(rep.Avisos) != 0 {
+		t.Fatalf("Avisos = %v, esperado nenhum: não há mais reconstrução pelo id", rep.Avisos)
 	}
-	if wsName != env.scope.WorkspaceID.String() || projName != env.scope.ProjectID.String() {
-		t.Fatalf("nomes reconstruídos = %q/%q, esperado os ids", wsName, projName)
-	}
-	if _, err := os.Stat(filepath.Join(projDir, "_meta.md")); !os.IsNotExist(err) {
+	rxAssertNoScopeIndexed(t, db2)
+	if _, err := os.Stat(projMeta); !os.IsNotExist(err) {
 		t.Fatalf("reindex não deve gravar _meta.md; stat err = %v", err)
 	}
-	if _, err := storage.ReadPage(ctx, storage.NewReader(db2), wpRef(t, env, "notas/a.md")); err != nil {
-		t.Fatalf("página não reconstruída: %v", err)
+}
+
+func TestReindexMetaInvalidoFalhaComCaminhoExato(t *testing.T) {
+	env := wpNewEnv(t)
+	ctx := env.ctx
+	if _, err := env.store.WritePage(ctx, wpInput(t, env, "notas/a.md", "Corpo.\n")); err != nil {
+		t.Fatalf("WritePage: %v", err)
+	}
+	_, projMeta := rxMetaPaths(env)
+	wsID := env.scope.WorkspaceID.String()
+	projID := env.scope.ProjectID.String()
+	cases := map[string]string{
+		"yaml quebrado":      "---\nname: [\n---\n",
+		"name ausente":       "---\nworkspace_id: " + wsID + "\nproject_id: " + projID + "\n---\n",
+		"sem frontmatter":    "Sem frontmatter.\n",
+		"identidade trocada": "---\nname: Outro\nworkspace_id: " + wsID + "\nproject_id: 00000000-0000-7000-8000-000000000000\n---\n",
+	}
+	for nome, conteudo := range cases {
+		t.Run(nome, func(t *testing.T) {
+			if err := os.WriteFile(projMeta, []byte(conteudo), 0o644); err != nil {
+				t.Fatalf("WriteFile %s: %v", projMeta, err)
+			}
+			store2, db2 := rxFreshStore(t, env.root, env.clock)
+			rep, err := Reindex(ctx, store2, env.root)
+			if err != nil {
+				t.Fatalf("Reindex: %v", err)
+			}
+			if len(rep.Errors) != 1 || !rxHasErrorWithPath(rep.Errors, projMeta) {
+				t.Fatalf("Errors = %v, esperado um erro com o caminho exato %s", rep.Errors, projMeta)
+			}
+			if rep.Scopes != 0 || rep.Pages != 0 {
+				t.Fatalf("escopo com _meta.md inválido não devia ser indexado: %+v", rep)
+			}
+			rxAssertNoScopeIndexed(t, db2)
+		})
 	}
 }
 
@@ -323,6 +389,56 @@ func TestReindexTierEKindDoFrontmatter(t *testing.T) {
 	}
 	if page.Kind != domain.PageKindFact {
 		t.Fatalf("kind = %q, esperado fact (vindo da chave kind do frontmatter)", page.Kind)
+	}
+}
+
+// TestReindexIndexaFrontmatterAninhado cobre a reindexação de página com generated (mapeamento),
+// sources (lista de mapeamentos) e relations (mapeamento de listas): o índice guarda os três em
+// todos os níveis, sem erro de tipo.
+func TestReindexIndexaFrontmatterAninhado(t *testing.T) {
+	env := wpNewEnv(t)
+	ctx := env.ctx
+	if _, err := env.store.WritePage(ctx, wpInput(t, env, "notas/semente.md", "Semente.\n")); err != nil {
+		t.Fatalf("WritePage semente: %v", err)
+	}
+	rxWriteRaw(t, env, "notas/aninhado.md", "---\n"+
+		"generated:\n  by: process:ai-memory/test\n  at: \"2026-03-01T10:00:00Z\"\n"+
+		"sources:\n  - kind: session\n    id: sess-1\n  - kind: session\n    id: sess-2\n    note: segunda\n"+
+		"relations:\n  causes:\n    - notas/semente.md\n"+
+		"---\nCorpo.\n")
+
+	store, db := rxFreshStore(t, env.root, env.clock)
+	rep, err := Reindex(ctx, store, env.root)
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if len(rep.Errors) != 0 {
+		t.Fatalf("Errors = %v, esperado nenhum", rep.Errors)
+	}
+
+	page, err := storage.ReadPage(ctx, storage.NewReader(db), wpRef(t, env, "notas/aninhado.md"))
+	if err != nil {
+		t.Fatalf("ReadPage aninhado: %v", err)
+	}
+	gv, ok := page.Frontmatter.Get("generated")
+	gen, isMap := gv.(domain.Frontmatter)
+	if !ok || !isMap {
+		t.Fatalf("generated = %T, esperado mapeamento", gv)
+	}
+	if by, _ := gen.Get("by"); by != "process:ai-memory/test" {
+		t.Fatalf("generated.by = %v", by)
+	}
+	sv, ok := page.Frontmatter.Get("sources")
+	list, isList := sv.([]domain.Frontmatter)
+	if !ok || !isList || len(list) != 2 {
+		t.Fatalf("sources = %T %v, esperada lista de 2 mapeamentos", sv, sv)
+	}
+	if note, _ := list[1].Get("note"); note != "segunda" {
+		t.Fatalf("sources[1].note = %v, esperado segunda", note)
+	}
+	rv, ok := page.Frontmatter.Get("relations")
+	if _, isMap := rv.(domain.Frontmatter); !ok || !isMap {
+		t.Fatalf("relations = %T, esperado mapeamento", rv)
 	}
 }
 

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -9,8 +11,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/phm-aguiar/ai-memory-go/internal/storage"
 	"github.com/phm-aguiar/ai-memory-go/internal/wiki"
 )
+
+// ErrDatabaseNotClean indica que o banco já tem linhas nas tabelas que o reindex reconstrói.
+var ErrDatabaseNotClean = errors.New("banco não está limpo")
 
 // NewReindexCommand devolve o subcomando "reindex", que reconstrói o índice (páginas,
 // links e busca textual) a partir do markdown de <data_dir>/wiki. Não tem argumentos.
@@ -62,6 +68,12 @@ func runReindex(cmd *cobra.Command, _ []string) (err error) {
 		}
 	}()
 
+	// Clean-target check (docs/lifecycle-ops.md): o reindex reconstrói o banco do zero, então
+	// recusa antes de escrever se alguma tabela de reconstrução já tem linhas.
+	if err := checkCleanTarget(ctx, app.Writer); err != nil {
+		return fmt.Errorf("cli: reindex recusado: %w", err)
+	}
+
 	rep, err := wiki.Reindex(ctx, app.Store, filepath.Join(app.Cfg.DataDir(), wikiDirName))
 	if err != nil {
 		return fmt.Errorf("cli: reindex: %w", err)
@@ -70,6 +82,30 @@ func runReindex(cmd *cobra.Command, _ []string) (err error) {
 		return fmt.Errorf("cli: reindex: escrever relatório: %w", err)
 	}
 	return nil
+}
+
+// checkCleanTarget conta as linhas das tabelas de reconstrução pelo escritor e recusa se
+// alguma tem linhas. A mensagem nomeia cada tabela não zero com a sua contagem.
+func checkCleanTarget(ctx context.Context, w storage.Writer) error {
+	var counts []storage.RowCount
+	err := w.Do(ctx, func(tx *sql.Tx) error {
+		var e error
+		counts, e = storage.CountRows(tx)
+		return e
+	})
+	if err != nil {
+		return fmt.Errorf("contar linhas do banco: %w", err)
+	}
+	nonZero := storage.NonZeroRowCounts(counts)
+	if len(nonZero) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(nonZero))
+	for _, c := range nonZero {
+		parts = append(parts, fmt.Sprintf("%s: %d", c.Table, c.Rows))
+	}
+	return fmt.Errorf("%w: %s; mova ou remova db/memory.sqlite (e os arquivos -wal e -shm) antes de reconstruir",
+		ErrDatabaseNotClean, strings.Join(parts, ", "))
 }
 
 // writeReindexReport imprime o resumo do reindex e, em seguida, cada erro e aviso.

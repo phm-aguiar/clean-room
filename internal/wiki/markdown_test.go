@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/phm-aguiar/ai-memory-go/internal/domain"
@@ -134,13 +135,20 @@ func TestMarkdownReadFrontmatterSoNoInicio(t *testing.T) {
 
 func TestMarkdownReadYAMLInvalidoDaErroTipado(t *testing.T) {
 	casos := map[string]string{
-		"sintaxe":         "---\ntype: [Note\n---\ncorpo\n",
-		"nulo":            "---\ntitle:\n---\n",
-		"mapeamento":      "---\ngenerated:\n  by: x\n---\n",
-		"lista de mapas":  "---\ntags:\n  - a: 1\n---\n",
-		"chave duplicada": "---\na: x\na: y\n---\n",
-		"raiz sequencia":  "---\n- a\n- b\n---\n",
-		"alias":           "---\na: &x v\nb: *x\n---\n",
+		"sintaxe":                   "---\ntype: [Note\n---\ncorpo\n",
+		"nulo":                      "---\ntitle:\n---\n",
+		"nulo em outra chave":       "---\ngenerated:\n  by: x\n  at: null\n---\n",
+		"nulo em entities aninhado": "---\ngenerated:\n  entities:\n---\n",
+		"nulo em item de lista":     "---\nsources:\n  - resource: r\n  -\n---\n",
+		"lista mista":               "---\nsources:\n  - resource: r\n  - texto\n---\n",
+		"lista de texto com mapa":   "---\ntags:\n  - a\n  - b: 1\n---\n",
+		"chave duplicada":           "---\na: x\na: y\n---\n",
+		"chave duplicada aninhada":  "---\ngenerated:\n  by: x\n  by: y\n---\n",
+		"chave nao texto aninhada":  "---\ngenerated:\n  1: x\n---\n",
+		"raiz sequencia":            "---\n- a\n- b\n---\n",
+		"alias":                     "---\na: &x v\nb: *x\n---\n",
+		"alias aninhado":            "---\ngenerated:\n  by: &x v\n  at: *x\n---\n",
+		"alias em lista de mapas":   "---\nsources:\n  - &m\n    resource: r\n  - *m\n---\n",
 	}
 	for nome, doc := range casos {
 		t.Run(nome, func(t *testing.T) {
@@ -309,5 +317,165 @@ func TestMarkdownReescritaSemMudancaPreservaBytes(t *testing.T) {
 	again := mustEmit(t, fm2, body2)
 	if !bytes.Equal(original, again) {
 		t.Errorf("reescrita sem mudança alterou bytes:\n antes=%q\n depois=%q", original, again)
+	}
+}
+
+// mapaDe lê o valor de key como mapeamento aninhado e falha o teste se não for.
+func mapaDe(t *testing.T, fm domain.Frontmatter, key string) domain.Frontmatter {
+	t.Helper()
+	v, ok := fm.Get(key)
+	if !ok {
+		t.Fatalf("chave %q ausente", key)
+	}
+	m, ok := v.(domain.Frontmatter)
+	if !ok {
+		t.Fatalf("chave %q = %T, quer domain.Frontmatter", key, v)
+	}
+	return m
+}
+
+// listaDeMapasDe lê o valor de key como lista de mapeamentos e falha o teste se não for.
+func listaDeMapasDe(t *testing.T, fm domain.Frontmatter, key string) []domain.Frontmatter {
+	t.Helper()
+	v, ok := fm.Get(key)
+	if !ok {
+		t.Fatalf("chave %q ausente", key)
+	}
+	l, ok := v.([]domain.Frontmatter)
+	if !ok {
+		t.Fatalf("chave %q = %T, quer []domain.Frontmatter", key, v)
+	}
+	return l
+}
+
+// TestMarkdownLeMapeamentoEListaDeMapas: generated (mapeamento), sources (lista de mapeamentos) e
+// relations (mapeamento com listas de texto) são lidos com a ordem das chaves preservada.
+func TestMarkdownLeMapeamentoEListaDeMapas(t *testing.T) {
+	doc := "---\ntype: Note\ngenerated:\n  by: process:ai-memory/x\n  at: 2026-03-01T10:00:00Z\n" +
+		"sources:\n  - resource: ai-memory://session/s1\n    author: process:claude\n" +
+		"relations:\n  fixes:\n    - gotchas/a.md\n  causes:\n    - decisions/b.md\n---\ncorpo\n"
+	fm, body := mustRead(t, []byte(doc))
+	if got, want := fm.Keys(), []string{"type", "generated", "sources", "relations"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Keys = %v, quer %v", got, want)
+	}
+
+	gen := mapaDe(t, fm, "generated")
+	if got, want := gen.Keys(), []string{"by", "at"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("generated.Keys = %v, quer %v", got, want)
+	}
+	if v, _ := gen.Get("at"); v != "2026-03-01T10:00:00Z" {
+		t.Errorf("generated.at = %#v, quer o texto literal", v)
+	}
+
+	src := listaDeMapasDe(t, fm, "sources")
+	if len(src) != 1 {
+		t.Fatalf("sources tem %d itens, quer 1", len(src))
+	}
+	if got, want := src[0].Keys(), []string{"resource", "author"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("sources[0].Keys = %v, quer %v", got, want)
+	}
+	if v, _ := src[0].Get("resource"); v != "ai-memory://session/s1" {
+		t.Errorf("sources[0].resource = %#v", v)
+	}
+
+	rel := mapaDe(t, fm, "relations")
+	if got, want := rel.Keys(), []string{"fixes", "causes"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("relations.Keys = %v, quer %v", got, want)
+	}
+	if v, _ := rel.Get("fixes"); !reflect.DeepEqual(v, []string{"gotchas/a.md"}) {
+		t.Errorf("relations.fixes = %#v", v)
+	}
+	if body != "corpo\n" {
+		t.Errorf("body = %q", body)
+	}
+}
+
+// TestMarkdownOrdemDeChavesAninhadasNaEmissao: a ordem das chaves de mapeamentos e de itens de
+// lista aninhados sai como foi gravada, e a ida e volta é idempotente.
+func TestMarkdownOrdemDeChavesAninhadasNaEmissao(t *testing.T) {
+	doc := "---\ngenerated:\n  at: 2026-03-01T10:00:00Z\n  by: process:x\n" +
+		"sources:\n  - author: process:claude\n    resource: ai-memory://session/s1\n" +
+		"relations:\n  contradicts:\n    - decisions/0007.md\n  fixes:\n    - gotchas/a.md\n---\ncorpo\n"
+	fm, body := mustRead(t, []byte(doc))
+	out := mustEmit(t, fm, body)
+
+	fm2, body2 := mustRead(t, out)
+	if !fm.Equal(fm2) {
+		t.Fatalf("frontmatter mudou na ida e volta:\n%s", out)
+	}
+	if body2 != body {
+		t.Errorf("corpo = %q, quer %q", body2, body)
+	}
+	if got, want := mapaDe(t, fm2, "generated").Keys(), []string{"at", "by"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("generated.Keys após ida e volta = %v, quer %v", got, want)
+	}
+	if got, want := listaDeMapasDe(t, fm2, "sources")[0].Keys(), []string{"author", "resource"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("sources[0].Keys após ida e volta = %v, quer %v", got, want)
+	}
+	if got, want := mapaDe(t, fm2, "relations").Keys(), []string{"contradicts", "fixes"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("relations.Keys após ida e volta = %v, quer %v", got, want)
+	}
+
+	s := string(out)
+	if !(strings.Index(s, "at:") < strings.Index(s, "by:") &&
+		strings.Index(s, "author:") < strings.Index(s, "resource:") &&
+		strings.Index(s, "contradicts:") < strings.Index(s, "fixes:")) {
+		t.Errorf("ordem das chaves aninhadas não preservada na saída:\n%s", s)
+	}
+
+	again := mustEmit(t, fm2, body2)
+	if !bytes.Equal(out, again) {
+		t.Errorf("emissão não idempotente:\n y1=%q\n y2=%q", out, again)
+	}
+}
+
+// TestMarkdownEmitMapeamentoEListaDeMapasIdaEVolta: valores montados por Set (generated, sources
+// e relations) saem no bloco e voltam iguais, com a mesma ordem.
+func TestMarkdownEmitMapeamentoEListaDeMapasIdaEVolta(t *testing.T) {
+	var gen domain.Frontmatter
+	mustSet(t, &gen, "by", "process:ai-memory/0.1", "at", "2026-03-01T10:00:00Z")
+	var src domain.Frontmatter
+	mustSet(t, &src, "resource", "ai-memory://session/s1", "author", "process:claude")
+	var rel domain.Frontmatter
+	mustSet(t, &rel, "causes", []string{"decisions/b.md"}, "fixes", []string{"gotchas/a.md"})
+
+	var fm domain.Frontmatter
+	mustSet(t, &fm,
+		"type", "Note",
+		"generated", gen,
+		"sources", []domain.Frontmatter{src},
+		"relations", rel,
+	)
+	out := mustEmit(t, fm, "corpo\n")
+	fm2, body2 := mustRead(t, out)
+	if !fm.Equal(fm2) {
+		t.Fatalf("frontmatter mudou na ida e volta; saída:\n%s", out)
+	}
+	if got, want := fm2.Keys(), []string{"type", "generated", "sources", "relations"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Keys = %v, quer %v", got, want)
+	}
+	if body2 != "corpo\n" {
+		t.Errorf("corpo = %q", body2)
+	}
+}
+
+// TestMarkdownEntitiesNuloEhListaVazia: entities nulo é aceito e lido como lista vazia, no topo.
+func TestMarkdownEntitiesNuloEhListaVazia(t *testing.T) {
+	for _, doc := range []string{
+		"---\ntype: Note\nentities:\n---\ncorpo\n",
+		"---\ntype: Note\nentities: null\n---\ncorpo\n",
+		"---\ntype: Note\nentities: ~\n---\ncorpo\n",
+	} {
+		fm, body := mustRead(t, []byte(doc))
+		v, ok := fm.Get("entities")
+		if !ok || !reflect.DeepEqual(v, []string{}) {
+			t.Errorf("entities = %#v (presente=%v) para %q, quer lista vazia", v, ok, doc)
+		}
+		if got, want := fm.Keys(), []string{"type", "entities"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("Keys = %v, quer %v", got, want)
+		}
+		if body != "corpo\n" {
+			t.Errorf("body = %q", body)
+		}
 	}
 }

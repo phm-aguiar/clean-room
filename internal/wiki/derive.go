@@ -75,24 +75,20 @@ func DeriveTitle(fm domain.Frontmatter, body string, filename string) string {
 // não terminam em `.md`. Consulta (`?`) e âncora (`#`) saem antes de resolver. Destino sem
 // extensão recebe `.md`. Destino inválido é descartado em silêncio.
 //
-// Relações: chave `relations` do frontmatter, aceita como string (uma relação) ou []string.
-// Cada item tem o formato `relação:alvo`, em que o alvo usa a mesma gramática dos wikilinks
-// (`caminho`, `projeto:caminho` ou `workspace/projeto:caminho`). A divisão é no primeiro `:`,
-// então `causes:proj:b` vira relação `causes` com alvo `proj:b`. Relação fora de
-// causes|fixes|contradicts vira link de corpo (Relation vazio, references, ADR-19) e gera
-// aviso. Alvo que não nomeia página é descartado e gera aviso. Valor no aviso é truncado a 200
-// bytes.
+// Relações: chave `relations` do frontmatter, mapeamento por relação (docs/typed-edges.md):
+// `relations: {causes|fixes|contradicts: [alvo, ...]}`. Cada lista de alvos usa a gramática dos
+// wikilinks (`caminho`, `projeto:caminho` ou `workspace/projeto:caminho`). Chave fora do
+// vocabulário fechado é ignorada e gera aviso; valor que não é lista é ignorado sem aviso;
+// alvo que não nomeia página é descartado e gera aviso. Valor no aviso é truncado a 200 bytes.
+// `relations` que não é mapeamento é ignorado sem aviso.
 //
-// Erro só vem de `relations` com tipo que o domínio não representa.
+// A função não falha por conteúdo de relations: entrada inválida vira aviso ou é ignorada.
 func ExtractLinks(body string, fm domain.Frontmatter, fromPath domain.PagePath) ([]storage.Link, []string, error) {
 	found := make([]storage.Link, 0)
 	for _, line := range maskCode(body) {
 		found = scanLine(line, fromPath, found)
 	}
-	rels, warns, err := relationLinks(fm)
-	if err != nil {
-		return nil, nil, err
-	}
+	rels, warns := relationLinks(fm)
 	found = append(found, rels...)
 	return dedupeSortLinks(found), warns, nil
 }
@@ -429,44 +425,41 @@ func withMarkdownExt(p string) (string, error) {
 	return p, nil
 }
 
-// relationLinks lê a chave relations do frontmatter. Só string ou []string são representáveis
-// pelo domínio; outro tipo é erro.
-func relationLinks(fm domain.Frontmatter) ([]storage.Link, []string, error) {
+// relationLinks lê a chave relations do frontmatter como mapeamento por relação. Cada chave do
+// mapeamento é uma relação do vocabulário fechado e cada valor é a lista de alvos dela. Na ordem
+// do documento: chave desconhecida gera aviso e é ignorada; valor que não é lista é ignorado sem
+// aviso; alvo inválido gera aviso e é descartado.
+func relationLinks(fm domain.Frontmatter) ([]storage.Link, []string) {
 	v, ok := fm.Get(relationsKey)
 	if !ok {
-		return nil, nil, nil
+		return nil, nil
 	}
-	var items []string
-	switch r := v.(type) {
-	case string:
-		items = []string{r}
-	case []string:
-		items = r
-	default:
-		return nil, nil, fmt.Errorf("%w: chave %s, tipo %T", ErrInvalidFrontmatter, relationsKey, v)
+	rels, ok := v.(domain.Frontmatter)
+	if !ok {
+		return nil, nil
 	}
-	out := make([]storage.Link, 0, len(items))
+	out := make([]storage.Link, 0)
 	var warns []string
-	for _, item := range items {
-		rel, rawTarget, found := strings.Cut(item, ":")
-		if !found {
-			warns = append(warns, fmt.Sprintf("alvo de relação não nomeia página: %q", truncateBytes(item, maxWarnBytes)))
-			continue
-		}
-		t, err := parseTarget(strings.TrimSpace(rawTarget))
-		if err != nil {
-			warns = append(warns, fmt.Sprintf("alvo de relação não nomeia página: %q", truncateBytes(item, maxWarnBytes)))
-			continue
-		}
-		rel = strings.TrimSpace(rel)
-		relation := rel
+	for _, rel := range rels.Keys() {
 		if !isKnownRelation(rel) {
-			warns = append(warns, fmt.Sprintf("relação desconhecida %q: gravada como references", truncateBytes(rel, maxWarnBytes)))
-			relation = ""
+			warns = append(warns, fmt.Sprintf("relação desconhecida %q: ignorada", truncateBytes(rel, maxWarnBytes)))
+			continue
 		}
-		out = append(out, storage.Link{ToWorkspace: t.ws, ToProject: t.pj, ToPath: t.path, Relation: relation})
+		rv, _ := rels.Get(rel)
+		targets, ok := rv.([]string)
+		if !ok {
+			continue
+		}
+		for _, raw := range targets {
+			t, err := parseTarget(strings.TrimSpace(raw))
+			if err != nil {
+				warns = append(warns, fmt.Sprintf("alvo de relação não nomeia página: %q", truncateBytes(raw, maxWarnBytes)))
+				continue
+			}
+			out = append(out, storage.Link{ToWorkspace: t.ws, ToProject: t.pj, ToPath: t.path, Relation: rel})
+		}
 	}
-	return out, warns, nil
+	return out, warns
 }
 
 // isKnownRelation diz se a relação está no vocabulário fechado (ADR-19).

@@ -59,7 +59,7 @@ done | sort -rn
 
 ### spec.md
 - [ ] Propósito claro (o QUE, não o COMO)
-- [ ] Cenários BDD com Given/When/Then
+- [ ] Cenários BDD com Given/When/Then (ou Dado/Quando/Então quando o Gherkin estiver em português, ex.: `# language: pt` no `.feature`; cenários podem estar em `acceptance/*.feature` ou na própria spec)
 - [ ] Restrições documentadas
 - [ ] `updated` nos últimos 90 dias
 - [ ] Consistente com `tech.md` (stack mencionada existe?)

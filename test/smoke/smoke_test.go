@@ -1,20 +1,28 @@
 // Package smoke é o teste fim a fim da CLI. Compila o binário ai-memory, cria o estado em
-// disco (páginas da wiki e banco) pela biblioteca, roda reindex e backup como processos
-// separados e confere o resultado. Todo arquivo fica em t.TempDir().
+// disco (páginas da wiki e banco) pela biblioteca, roda reindex como processo separado e
+// pede o backup ao servidor, confere o tarball e a leitura das páginas. Todo arquivo fica
+// em t.TempDir().
 package smoke
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"go/build"
+	"io"
+	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/phm-aguiar/ai-memory-go/internal/cli"
+	"github.com/phm-aguiar/ai-memory-go/internal/config"
 	"github.com/phm-aguiar/ai-memory-go/internal/domain"
 	"github.com/phm-aguiar/ai-memory-go/internal/storage"
 	"github.com/phm-aguiar/ai-memory-go/internal/wiki"
@@ -32,8 +40,9 @@ type smokePage struct {
 	body    string
 }
 
-// TestSmokeReindexEBackupFimAFim é o caminho feliz completo: build, semeadura, reindex,
-// backup, abertura do backup e leitura das páginas depois do reindex.
+// TestSmokeReindexEBackupFimAFim é o caminho feliz completo: build, semeadura, migração
+// do banco (docs/lifecycle-ops.md, reindex), reindex, backup pelo servidor, abertura do
+// tarball e leitura das páginas depois do reindex.
 func TestSmokeReindexEBackupFimAFim(t *testing.T) {
 	ctx := context.Background()
 	root := moduleRoot(t)
@@ -41,11 +50,16 @@ func TestSmokeReindexEBackupFimAFim(t *testing.T) {
 
 	tmp := t.TempDir()
 	dataDir := filepath.Join(tmp, "data")
-	cfgPath := writeConfig(t, tmp, dataDir)
+	cfgPath := writeConfig(t, tmp, dataDir, "")
 	// O .env nunca existe: a configuração vem só do TOML e do ambiente filtrado.
 	envPath := filepath.Join(tmp, "ausente.env")
 
 	pages := seedPages(t, ctx, dataDir)
+
+	// Migração (docs/lifecycle-ops.md, procedimento de migração): o reindex recusa banco
+	// com linhas. Tira o banco semeado do data_dir (guardado em tmp) e deixa o reindex
+	// reconstruí-lo a partir do markdown da wiki.
+	moverBancoParaReconstrucao(t, tmp, dataDir)
 
 	// Reindex: o binário lê o mesmo data_dir e reconstrói o índice a partir do markdown.
 	out, errOut, err := runBinary(t, bin, "--config", cfgPath, "--env-file", envPath, "reindex")
@@ -59,9 +73,10 @@ func TestSmokeReindexEBackupFimAFim(t *testing.T) {
 	}
 	t.Logf("saída do reindex:\n%s", out)
 
-	// Backup online: o binário grava o snapshot em um arquivo novo.
-	copyPath := filepath.Join(tmp, "copia.db")
-	out, errOut, err = runBinary(t, bin, "--config", cfgPath, "--env-file", envPath, "backup", "--to", copyPath)
+	// Backup: o binário pede o tarball ao servidor (aqui, o handler real sobre o mesmo
+	// data_dir) e grava o corpo no arquivo novo.
+	tarPath := filepath.Join(tmp, "backup.tar.gz")
+	out, errOut, err = backupPeloServidor(t, ctx, bin, tmp, dataDir, cfgPath, envPath, tarPath)
 	if err != nil {
 		t.Fatalf("backup: %v\nsaída:\n%s\nerro:\n%s", err, out, errOut)
 	}
@@ -69,11 +84,11 @@ func TestSmokeReindexEBackupFimAFim(t *testing.T) {
 		t.Fatalf("saída do backup sem confirmação:\n%s", out)
 	}
 	t.Logf("saída do backup:\n%s", out)
-	if _, err := os.Stat(copyPath); err != nil {
-		t.Fatalf("snapshot não foi gravado: %v", err)
+	if _, err := os.Stat(tarPath); err != nil {
+		t.Fatalf("tarball não foi gravado: %v", err)
 	}
 
-	checkBackupOpens(t, ctx, tmp, copyPath, len(pages))
+	checkBackupOpens(t, ctx, tmp, tarPath, len(pages))
 	checkPagesReadable(t, ctx, dataDir, pages)
 }
 
@@ -130,18 +145,23 @@ func buildBinary(t *testing.T, root string) string {
 	return out
 }
 
-// writeConfig grava um TOML com data_dir apontando para dataDir. Usa string literal (aspas
-// simples) para que as barras invertidas do Windows não sejam tratadas como escapes.
-func writeConfig(t *testing.T, tmp, dataDir string) string {
+// writeConfig grava um TOML com data_dir apontando para dataDir e, se serverURL não for
+// vazio, server_url. Usa string literal (aspas simples) para que as barras invertidas do
+// Windows não sejam tratadas como escapes.
+func writeConfig(t *testing.T, tmp, dataDir, serverURL string) string {
 	t.Helper()
 	if strings.ContainsRune(dataDir, '\'') {
 		t.Fatalf("caminho com aspas simples não cabe em TOML literal: %s", dataDir)
 	}
-	cfg := filepath.Join(tmp, "config.toml")
-	if err := os.WriteFile(cfg, []byte("data_dir = '"+dataDir+"'\n"), 0o600); err != nil {
+	cfg := "data_dir = '" + dataDir + "'\n"
+	if serverURL != "" {
+		cfg += "server_url = '" + serverURL + "'\n"
+	}
+	path := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("gravar config.toml: %v", err)
 	}
-	return cfg
+	return path
 }
 
 // isolatedEnv devolve o ambiente do processo sem as variáveis AI_MEMORY_*, para que o
@@ -158,6 +178,19 @@ func isolatedEnv() []string {
 	return env
 }
 
+// isolarEnvDoTeste tira as AI_MEMORY_* do processo de teste até o fim do teste, para que a
+// montagem em processo (servidor de backup) também dependa só do TOML.
+func isolarEnvDoTeste(t *testing.T) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(key, "AI_MEMORY_") {
+			t.Setenv(key, "")
+			_ = os.Unsetenv(key)
+		}
+	}
+}
+
 // runBinary executa o binário com o ambiente isolado e devolve stdout, stderr e o erro de saída.
 func runBinary(t *testing.T, bin string, args ...string) (string, string, error) {
 	t.Helper()
@@ -170,6 +203,49 @@ func runBinary(t *testing.T, bin string, args ...string) (string, string, error)
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	return stdout.String(), stderr.String(), err
+}
+
+// moverBancoParaReconstrucao tira db/memory.sqlite e os arquivos -wal e -shm do data_dir
+// e os guarda em <tmp>/banco-antigo, como o procedimento de migração pede. O data_dir
+// fica sem banco, então o reindex vê um alvo limpo.
+func moverBancoParaReconstrucao(t *testing.T, tmp, dataDir string) {
+	t.Helper()
+	guarda := filepath.Join(tmp, "banco-antigo")
+	if err := os.MkdirAll(guarda, 0o700); err != nil {
+		t.Fatalf("criar guarda do banco antigo: %v", err)
+	}
+	for _, nome := range []string{"memory.sqlite", "memory.sqlite-wal", "memory.sqlite-shm"} {
+		origem := filepath.Join(dataDir, "db", nome)
+		if _, err := os.Stat(origem); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			t.Fatalf("ler %s: %v", origem, err)
+		}
+		if err := os.Rename(origem, filepath.Join(guarda, nome)); err != nil {
+			t.Fatalf("mover %s: %v", origem, err)
+		}
+	}
+}
+
+// backupPeloServidor sobe, no processo de teste, o handler POST /admin/backup (o mesmo
+// que o servidor monta) sobre o data_dir, reescreve o TOML com o endereço desse servidor e
+// roda o binário backup contra ele. O banco é aberto aqui, não pelo binário, que só pede o
+// tarball e grava o corpo em dest.
+func backupPeloServidor(t *testing.T, ctx context.Context, bin, tmp, dataDir, cfgPath, envPath, dest string) (string, string, error) {
+	t.Helper()
+	isolarEnvDoTeste(t)
+	app, err := cli.Compose(ctx, config.Options{DataDir: dataDir, ConfigFile: cfgPath, EnvFile: envPath})
+	if err != nil {
+		t.Fatalf("montar servidor de backup: %v", err)
+	}
+	defer func() { _ = app.Close() }()
+
+	srv := httptest.NewServer(cli.NewAdminBackupHandler(app, cfgPath))
+	defer srv.Close()
+	writeConfig(t, tmp, dataDir, srv.URL)
+
+	return runBinary(t, bin, "--config", cfgPath, "--env-file", envPath, "backup", "--to", dest)
 }
 
 // newID gera um identificador novo ou encerra o teste.
@@ -249,44 +325,93 @@ func seedPages(t *testing.T, ctx context.Context, dataDir string) []smokePage {
 	return pages
 }
 
-// checkBackupOpens copia o snapshot para <tmp>/abre/db/memory.sqlite, abre com storage.Open e
-// confere que schema_migrations existe e que as páginas correntes estão lá.
-func checkBackupOpens(t *testing.T, ctx context.Context, tmp, copyPath string, wantPages int) {
+// checkBackupOpens extrai o tarball para <tmp>/abre, confere que ele traz as páginas da
+// wiki e o banco, abre o banco com storage.Open e confere que schema_migrations existe e
+// que as páginas correntes estão lá.
+func checkBackupOpens(t *testing.T, ctx context.Context, tmp, tarPath string, wantPages int) {
 	t.Helper()
 	openDir := filepath.Join(tmp, "abre")
-	dbDir := filepath.Join(openDir, "db")
-	if err := os.MkdirAll(dbDir, 0o700); err != nil {
-		t.Fatalf("criar diretório do backup: %v", err)
-	}
-	data, err := os.ReadFile(copyPath)
-	if err != nil {
-		t.Fatalf("ler snapshot: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dbDir, "memory.sqlite"), data, 0o600); err != nil {
-		t.Fatalf("copiar snapshot para diretório de abertura: %v", err)
+	paginasMD := extrairBackup(t, tarPath, openDir)
+	if paginasMD < wantPages {
+		t.Fatalf("tarball traz %d arquivos .md de páginas em wiki/, esperava pelo menos %d", paginasMD, wantPages)
 	}
 
 	db, err := storage.Open(ctx, openDir)
 	if err != nil {
-		t.Fatalf("storage.Open do snapshot: %v", err)
+		t.Fatalf("storage.Open do backup: %v", err)
 	}
 	defer func() { _ = db.Close() }()
 
 	var migrations int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrations); err != nil {
-		t.Fatalf("consultar schema_migrations no snapshot: %v", err)
+		t.Fatalf("consultar schema_migrations no backup: %v", err)
 	}
 	if migrations == 0 {
-		t.Fatalf("snapshot sem migrações aplicadas")
+		t.Fatalf("backup sem migrações aplicadas")
 	}
 
 	var pages int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pages WHERE is_latest = 1`).Scan(&pages); err != nil {
-		t.Fatalf("consultar páginas no snapshot: %v", err)
+		t.Fatalf("consultar páginas no backup: %v", err)
 	}
 	if pages != wantPages {
-		t.Fatalf("snapshot tem %d páginas correntes, esperava %d", pages, wantPages)
+		t.Fatalf("backup tem %d páginas correntes, esperava %d", pages, wantPages)
 	}
+}
+
+// extrairBackup lê o tar.gz de backup: grava a entrada db/memory.sqlite em
+// <destDir>/db/memory.sqlite e conta as páginas de wiki/ (arquivos .md que não são
+// _meta.md). Devolve essa contagem.
+func extrairBackup(t *testing.T, tarPath, destDir string) int {
+	t.Helper()
+	f, err := os.Open(tarPath)
+	if err != nil {
+		t.Fatalf("abrir tarball: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("tarball não é gzip: %v", err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	tr := tar.NewReader(gz)
+	dbOK := false
+	paginas := 0
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ler tar do backup: %v", err)
+		}
+		switch {
+		case hdr.Name == "db/memory.sqlite" && hdr.Typeflag == tar.TypeReg:
+			dbDir := filepath.Join(destDir, "db")
+			if err := os.MkdirAll(dbDir, 0o700); err != nil {
+				t.Fatalf("criar diretório do banco do backup: %v", err)
+			}
+			out, err := os.OpenFile(filepath.Join(dbDir, "memory.sqlite"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+			if err != nil {
+				t.Fatalf("criar banco do backup: %v", err)
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				_ = out.Close()
+				t.Fatalf("extrair banco do backup: %v", err)
+			}
+			if err := out.Close(); err != nil {
+				t.Fatalf("fechar banco do backup: %v", err)
+			}
+			dbOK = true
+		case strings.HasPrefix(hdr.Name, "wiki/") && path.Ext(hdr.Name) == ".md" && path.Base(hdr.Name) != "_meta.md":
+			paginas++
+		}
+	}
+	if !dbOK {
+		t.Fatalf("tarball sem db/memory.sqlite")
+	}
+	return paginas
 }
 
 // checkPagesReadable reabre o data_dir depois do reindex e confere que cada página escrita

@@ -235,23 +235,20 @@ func TestDeriveExtractLinks_DestinoLongoNaoEhLink(t *testing.T) {
 	}
 }
 
-func TestDeriveExtractLinks_RelacoesComoLista(t *testing.T) {
-	fm := fmDe(t, relationsKey, []string{"causes:proj:b", "fixes:c", "xpto:d"})
-	links, warns, err := ExtractLinks("", fm, pagePath(t, "origem.md"))
-	if err != nil {
-		t.Fatal(err)
+// relacoesDe monta relations como mapeamento: pares relação, lista de alvos (ou valor qualquer).
+func relacoesDe(t *testing.T, pares ...any) domain.Frontmatter {
+	t.Helper()
+	var rels domain.Frontmatter
+	for i := 0; i < len(pares); i += 2 {
+		if err := rels.Set(pares[i].(string), pares[i+1]); err != nil {
+			t.Fatalf("Set(%v): %v", pares[i], err)
+		}
 	}
-	want := []string{"c.md rel=fixes", "d.md", "proj:b.md rel=causes"}
-	if got := linkStrs(links); !reflect.DeepEqual(got, want) {
-		t.Fatalf("links = %v, want %v", got, want)
-	}
-	if len(warns) != 1 || !strings.Contains(warns[0], "xpto") {
-		t.Fatalf("avisos = %v, want 1 com relação desconhecida", warns)
-	}
+	return fmDe(t, relationsKey, rels)
 }
 
-func TestDeriveExtractLinks_RelacaoComoString(t *testing.T) {
-	fm := fmDe(t, relationsKey, "contradicts:ws/proj:e")
+func TestDeriveExtractLinks_RelacoesPorChave(t *testing.T) {
+	fm := relacoesDe(t, "causes", []string{"proj:b"}, "fixes", []string{"c"}, "contradicts", []string{"ws/proj:e"})
 	links, warns, err := ExtractLinks("", fm, pagePath(t, "origem.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -259,13 +256,61 @@ func TestDeriveExtractLinks_RelacaoComoString(t *testing.T) {
 	if len(warns) != 0 {
 		t.Fatalf("avisos inesperados: %v", warns)
 	}
-	if got := linkStrs(links); !reflect.DeepEqual(got, []string{"ws/proj:e.md rel=contradicts"}) {
-		t.Fatalf("links = %v", got)
+	want := []string{"c.md rel=fixes", "proj:b.md rel=causes", "ws/proj:e.md rel=contradicts"}
+	if got := linkStrs(links); !reflect.DeepEqual(got, want) {
+		t.Fatalf("links = %v, want %v", got, want)
+	}
+}
+
+func TestDeriveExtractLinks_ListaVaziaNaoCriaAresta(t *testing.T) {
+	fm := relacoesDe(t, "fixes", []string{})
+	links, warns, err := ExtractLinks("", fm, pagePath(t, "origem.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 || len(warns) != 0 {
+		t.Fatalf("links = %v, avisos = %v; want nenhum", linkStrs(links), warns)
+	}
+}
+
+func TestDeriveExtractLinks_ChaveDesconhecidaAvisaEIgnora(t *testing.T) {
+	fm := relacoesDe(t, "xpto", []string{"d"}, "fixes", []string{"c"})
+	links, warns, err := ExtractLinks("", fm, pagePath(t, "origem.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := linkStrs(links); !reflect.DeepEqual(got, []string{"c.md rel=fixes"}) {
+		t.Fatalf("links = %v, want só a relação conhecida", got)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "xpto") {
+		t.Fatalf("avisos = %v, want 1 com relação desconhecida", warns)
+	}
+}
+
+func TestDeriveExtractLinks_ValorQueNaoEListaEIgnoradoSemAviso(t *testing.T) {
+	fm := relacoesDe(t, "fixes", "c")
+	links, warns, err := ExtractLinks("", fm, pagePath(t, "origem.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 || len(warns) != 0 {
+		t.Fatalf("links = %v, avisos = %v; want nenhum", linkStrs(links), warns)
+	}
+}
+
+func TestDeriveExtractLinks_RelationsQueNaoEMapeamentoEIgnorado(t *testing.T) {
+	fm := fmDe(t, relationsKey, []string{"fixes:c"})
+	links, warns, err := ExtractLinks("", fm, pagePath(t, "origem.md"))
+	if err != nil {
+		t.Fatalf("relations em lista não devia falhar a leitura: %v", err)
+	}
+	if len(links) != 0 || len(warns) != 0 {
+		t.Fatalf("links = %v, avisos = %v; want nenhum", linkStrs(links), warns)
 	}
 }
 
 func TestDeriveExtractLinks_AlvoDeRelacaoInvalidoAvisa(t *testing.T) {
-	fm := fmDe(t, relationsKey, []string{"fixes:pasta/", "causes:arq.txt", "fixes", "fixes:../fora"})
+	fm := relacoesDe(t, "fixes", []string{"pasta/", "../fora", "arq.txt"})
 	links, warns, err := ExtractLinks("", fm, pagePath(t, "origem.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -273,14 +318,14 @@ func TestDeriveExtractLinks_AlvoDeRelacaoInvalidoAvisa(t *testing.T) {
 	if len(links) != 0 {
 		t.Fatalf("links = %v, want none", linkStrs(links))
 	}
-	if len(warns) != 4 {
-		t.Fatalf("avisos = %v, want 4", warns)
+	if len(warns) != 3 {
+		t.Fatalf("avisos = %v, want 3", warns)
 	}
 }
 
 func TestDeriveExtractLinks_AvisoTruncadoEm200Bytes(t *testing.T) {
 	rel := strings.Repeat("a", 300)
-	fm := fmDe(t, relationsKey, []string{rel + ":alvo"})
+	fm := relacoesDe(t, rel, []string{"alvo"})
 	_, warns, err := ExtractLinks("", fm, pagePath(t, "origem.md"))
 	if err != nil {
 		t.Fatal(err)

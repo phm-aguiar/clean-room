@@ -3,10 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -46,8 +47,24 @@ func reindexFixture(t *testing.T) (config.Options, string) {
 }
 
 // seedReindexWiki grava uma página na wiki do data_dir por Compose e WritePage, como
-// o servidor faria, e fecha o App antes de devolver.
+// o servidor faria, fecha o App e remove o banco (db/ com -wal e -shm). Fica só a
+// wiki, que é o estado que o reindex reconstrói a partir de um banco limpo
+// (docs/lifecycle-ops.md, passo 3 do procedimento de migração).
 func seedReindexWiki(t *testing.T, opts config.Options) {
+	t.Helper()
+	seedReindexWikiRows(t, opts)
+	cfg, err := loadConfig(opts)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(cfg.DataDir(), "db")); err != nil {
+		t.Fatalf("remover db/ semeado: %v", err)
+	}
+}
+
+// seedReindexWikiRows grava a página pelo App (banco + wiki) e fecha o App antes de devolver.
+// Deixa o banco com linhas: é o caso de banco sujo.
+func seedReindexWikiRows(t *testing.T, opts config.Options) {
 	t.Helper()
 	ctx := context.Background()
 	app, err := Compose(ctx, opts)
@@ -117,11 +134,9 @@ func TestReindexExecutaEImprimePaginas(t *testing.T) {
 }
 
 func TestReindexRecusaComProcessoVivo(t *testing.T) {
-	opts, dataDir := reindexFixture(t)
+	opts, _ := reindexFixture(t)
 	seedReindexWiki(t, opts)
-	if err := os.WriteFile(filepath.Join(dataDir, PIDFileName), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
-		t.Fatalf("gravar marcador de PID: %v", err)
-	}
+	fakeProcesses(t, procInfo{pid: os.Getpid() + 1, name: "ai-memory"})
 
 	out, err := runReindexCmd(t, opts)
 	if !errors.Is(err, ErrProcessLive) {
@@ -132,28 +147,30 @@ func TestReindexRecusaComProcessoVivo(t *testing.T) {
 	}
 }
 
-func TestReindexSemPIDExecuta(t *testing.T) {
+func TestReindexSemOutroProcessoExecuta(t *testing.T) {
 	opts, _ := reindexFixture(t)
 	seedReindexWiki(t, opts)
+	fakeProcesses(t, procInfo{pid: os.Getpid(), name: "ai-memory"}, procInfo{pid: os.Getpid() + 1, name: "bash"})
 
 	if _, err := runReindexCmd(t, opts); err != nil {
-		t.Fatalf("sem marcador de PID esperava execução, veio %v", err)
+		t.Fatalf("sem outro ai-memory esperava execução, veio %v", err)
 	}
 }
 
-func TestReindexPIDDeProcessoMortoExecuta(t *testing.T) {
-	const pid = 999999
-	if alive, err := processAlive(pid); err == nil && alive {
-		t.Skipf("pid %d existe nesta máquina; teste não se aplica", pid)
-	}
-	opts, dataDir := reindexFixture(t)
+func TestReindexFalhaDeEnumeracaoRecusa(t *testing.T) {
+	opts, _ := reindexFixture(t)
 	seedReindexWiki(t, opts)
-	if err := os.WriteFile(filepath.Join(dataDir, PIDFileName), []byte(strconv.Itoa(pid)), 0o600); err != nil {
-		t.Fatalf("gravar marcador de PID: %v", err)
-	}
+	fakeEnumError(t, errors.New("enumeração indisponível"))
 
-	if _, err := runReindexCmd(t, opts); err != nil {
-		t.Fatalf("PID inexistente esperava execução, veio %v", err)
+	out, err := runReindexCmd(t, opts)
+	if err == nil {
+		t.Fatalf("falha de enumeração esperava recusa, saída:\n%s", out)
+	}
+	if errors.Is(err, ErrProcessLive) {
+		t.Fatalf("falha de enumeração não deve ser ErrProcessLive: %v", err)
+	}
+	if strings.Contains(out, "reindex concluído") {
+		t.Fatalf("reindex executou com enumeração falhando:\n%s", out)
 	}
 }
 
@@ -161,5 +178,106 @@ func TestReindexRejeitaArgumentos(t *testing.T) {
 	opts, _ := reindexFixture(t)
 	if _, err := runReindexCmd(t, opts, "extra"); err == nil {
 		t.Fatal("esperava erro com argumento posicional")
+	}
+}
+
+// openReindexDB abre o banco de dataDir com storage.Open para inspecionar ou semear linhas
+// diretamente; quem chama fecha o *sql.DB.
+func openReindexDB(t *testing.T, dataDir string) *sql.DB {
+	t.Helper()
+	db, err := storage.Open(context.Background(), dataDir)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	return db
+}
+
+func TestReindexBancoLimpoProsegue(t *testing.T) {
+	opts, dataDir := reindexFixture(t)
+	seedReindexWiki(t, opts)
+
+	db := openReindexDB(t, dataDir)
+	defer func() { _ = db.Close() }()
+	var n int64
+	if err := db.QueryRow("SELECT COUNT(*) FROM pages").Scan(&n); err != nil {
+		t.Fatalf("COUNT pages: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("banco semeado para o teste limpo tem %d páginas, esperado 0", n)
+	}
+	_ = db.Close()
+
+	out, err := runReindexCmd(t, opts)
+	if err != nil {
+		t.Fatalf("banco limpo esperava execução, veio %v\nsaída:\n%s", err, out)
+	}
+	if !strings.Contains(out, "reindex concluído") || !strings.Contains(out, "páginas: 1") {
+		t.Fatalf("banco limpo sem relatório esperado:\n%s", out)
+	}
+}
+
+func TestReindexRecusaBancoComUmaTabela(t *testing.T) {
+	opts, dataDir := reindexFixture(t)
+	seedReindexWiki(t, opts)
+
+	db := openReindexDB(t, dataDir)
+	if _, err := db.Exec(`INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)`,
+		make([]byte, 16), "ws-sujo", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("semear workspace: %v", err)
+	}
+	_ = db.Close()
+
+	out, err := runReindexCmd(t, opts)
+	if !errors.Is(err, ErrDatabaseNotClean) {
+		t.Fatalf("uma tabela com linhas esperava ErrDatabaseNotClean, veio %v\nsaída:\n%s", err, out)
+	}
+	if !strings.Contains(err.Error(), "workspaces: 1") {
+		t.Fatalf("mensagem não nomeia workspaces: 1: %v", err)
+	}
+	if strings.Contains(err.Error(), "pages:") {
+		t.Fatalf("mensagem nomeia tabela zerada pages: %v", err)
+	}
+	if strings.Contains(out, "reindex concluído") {
+		t.Fatalf("reindex executou com banco sujo:\n%s", out)
+	}
+}
+
+func TestReindexRecusaBancoComVariasTabelas(t *testing.T) {
+	opts, dataDir := reindexFixture(t)
+	seedReindexWikiRows(t, opts)
+
+	db := openReindexDB(t, dataDir)
+	defer func() { _ = db.Close() }()
+	// Contagens reais de cada tabela semeada; a mensagem tem de nomear cada uma delas.
+	tables := []string{"workspaces", "projects", "pages"}
+	for _, table := range tables {
+		var n int64
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil {
+			t.Fatalf("COUNT %s: %v", table, err)
+		}
+		if n == 0 {
+			t.Fatalf("semeadura não criou linhas em %s", table)
+		}
+	}
+	_ = db.Close()
+
+	out, err := runReindexCmd(t, opts)
+	if !errors.Is(err, ErrDatabaseNotClean) {
+		t.Fatalf("várias tabelas com linhas esperava ErrDatabaseNotClean, veio %v\nsaída:\n%s", err, out)
+	}
+	db2 := openReindexDB(t, dataDir)
+	defer func() { _ = db2.Close() }()
+	for _, table := range tables {
+		var n int64
+		if err := db2.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil {
+			t.Fatalf("COUNT %s: %v", table, err)
+		}
+		want := fmt.Sprintf("%s: %d", table, n)
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("mensagem não nomeia %q: %v", want, err)
+		}
+	}
+	if strings.Contains(out, "reindex concluído") {
+		t.Fatalf("reindex executou com banco sujo:\n%s", out)
 	}
 }

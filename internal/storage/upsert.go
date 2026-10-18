@@ -219,13 +219,20 @@ func upsertCreate(tx *sql.Tx, in UpsertInput, fm domain.Frontmatter) (UpsertResu
 	outcome := UpsertCreated
 	op := auditPageCreate
 	if hasTomb {
-		// A lápide não é apagada nem reativada: a nova versão a sucede. A janela de validade
-		// dela é fechada se estiver aberta, para não sobrepor a nova versão no as_of.
-		if _, err := tx.Exec(
-			`UPDATE pages SET valid_to = ? WHERE id = ? AND valid_to IS NULL`,
-			at, tomb.Bytes(),
-		); err != nil {
-			return UpsertResult{}, fmt.Errorf("fechar janela da lápide: %w", err)
+		// A lápide não é apagada: vira a versão anterior da nova. Limpa-se superseded_at (deixa
+		// de ser lápide, para não ser removida pela limpeza de decaimento) e mantém-se o valid_to
+		// original, que registra quando a página deixou de existir (docs/storage-and-retrieval.md §5.1).
+		res, err := tx.Exec(
+			`UPDATE pages SET superseded_at = NULL WHERE id = ? AND is_latest = 0 AND superseded_at IS NOT NULL`,
+			tomb.Bytes(),
+		)
+		if err != nil {
+			return UpsertResult{}, fmt.Errorf("limpar superseded_at da lápide: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return UpsertResult{}, fmt.Errorf("limpar superseded_at da lápide: %w", err)
+		} else if n != 1 {
+			return UpsertResult{}, fmt.Errorf("limpar superseded_at da lápide %s: esperada 1 linha, afetadas %d", tomb.String(), n)
 		}
 		if err := CloseEntityLinksTx(tx, tomb, at); err != nil {
 			return UpsertResult{}, err
@@ -468,10 +475,18 @@ func copyFrontmatter(src domain.Frontmatter, skip string) (domain.Frontmatter, e
 	return out, nil
 }
 
-// encodeFrontmatter serializa o frontmatter como objeto JSON na ordem de inserção. Valores são
-// string ou []string, então json.Marshal não falha; o erro é devolvido por cautela.
+// encodeFrontmatter serializa o frontmatter como objeto JSON na ordem de inserção, em todos os
+// níveis: mapeamento aninhado vira objeto e lista de mapeamentos vira array de objetos.
 func encodeFrontmatter(fm domain.Frontmatter) ([]byte, error) {
 	var buf bytes.Buffer
+	if err := writeObject(&buf, fm); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// writeObject escreve fm como objeto JSON na ordem de inserção.
+func writeObject(buf *bytes.Buffer, fm domain.Frontmatter) error {
 	buf.WriteByte('{')
 	for i, k := range fm.Keys() {
 		if i > 0 {
@@ -479,22 +494,49 @@ func encodeFrontmatter(fm domain.Frontmatter) ([]byte, error) {
 		}
 		kb, err := json.Marshal(k)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		v, _ := fm.Get(k)
-		vb, err := json.Marshal(v)
-		if err != nil {
-			return nil, err
-		}
 		buf.Write(kb)
 		buf.WriteByte(':')
-		buf.Write(vb)
+		if err := writeValue(buf, v); err != nil {
+			return err
+		}
 	}
 	buf.WriteByte('}')
-	return buf.Bytes(), nil
+	return nil
 }
 
-// decodeFrontmatter lê o frontmatter_json gravado por encodeFrontmatter, preservando a ordem.
+// writeValue escreve um valor aceito por domain.Frontmatter.Set como JSON.
+func writeValue(buf *bytes.Buffer, v any) error {
+	switch t := v.(type) {
+	case string, []string:
+		vb, err := json.Marshal(t)
+		if err != nil {
+			return err
+		}
+		buf.Write(vb)
+	case domain.Frontmatter:
+		return writeObject(buf, t)
+	case []domain.Frontmatter:
+		buf.WriteByte('[')
+		for i := range t {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := writeObject(buf, t[i]); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+	default:
+		return fmt.Errorf("valor de frontmatter de tipo %T não suportado", v)
+	}
+	return nil
+}
+
+// decodeFrontmatter lê o frontmatter_json gravado por encodeFrontmatter, preservando a ordem em
+// todos os níveis. Nulo, número e booleano são recusados.
 func decodeFrontmatter(raw string) (domain.Frontmatter, error) {
 	dec := json.NewDecoder(strings.NewReader(raw))
 	tok, err := dec.Token()
@@ -504,42 +546,93 @@ func decodeFrontmatter(raw string) (domain.Frontmatter, error) {
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
 		return domain.Frontmatter{}, errors.New("frontmatter_json não é objeto")
 	}
+	fm, err := decodeObject(dec)
+	if err != nil {
+		return domain.Frontmatter{}, fmt.Errorf("frontmatter_json: %w", err)
+	}
+	return fm, nil
+}
+
+// decodeObject lê os pares de um objeto cujo '{' já foi consumido, até o '}' inclusive.
+func decodeObject(dec *json.Decoder) (domain.Frontmatter, error) {
 	var fm domain.Frontmatter
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
-			return domain.Frontmatter{}, fmt.Errorf("frontmatter_json: %w", err)
+			return domain.Frontmatter{}, err
 		}
 		key, ok := tok.(string)
 		if !ok {
-			return domain.Frontmatter{}, errors.New("frontmatter_json: chave não é texto")
+			return domain.Frontmatter{}, errors.New("chave não é texto")
 		}
-		var v any
-		if err := dec.Decode(&v); err != nil {
-			return domain.Frontmatter{}, fmt.Errorf("frontmatter_json: valor de %q: %w", key, err)
-		}
-		switch x := v.(type) {
-		case string:
-			err = fm.Set(key, x)
-		case []any:
-			list := make([]string, 0, len(x))
-			for _, e := range x {
-				s, ok := e.(string)
-				if !ok {
-					return domain.Frontmatter{}, fmt.Errorf("frontmatter_json: lista de %q não é só texto", key)
-				}
-				list = append(list, s)
-			}
-			err = fm.Set(key, list)
-		default:
-			return domain.Frontmatter{}, fmt.Errorf("frontmatter_json: tipo não suportado em %q", key)
-		}
+		v, err := decodeValue(dec)
 		if err != nil {
-			return domain.Frontmatter{}, fmt.Errorf("frontmatter_json: %q: %w", key, err)
+			return domain.Frontmatter{}, fmt.Errorf("%q: %w", key, err)
+		}
+		if err := fm.Set(key, v); err != nil {
+			return domain.Frontmatter{}, fmt.Errorf("%q: %w", key, err)
 		}
 	}
 	if _, err := dec.Token(); err != nil {
-		return domain.Frontmatter{}, fmt.Errorf("frontmatter_json: %w", err)
+		return domain.Frontmatter{}, err
 	}
 	return fm, nil
+}
+
+// decodeValue lê um valor JSON e devolve string, []string, Frontmatter ou []Frontmatter.
+func decodeValue(dec *json.Decoder) (any, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch t := tok.(type) {
+	case string:
+		return t, nil
+	case json.Delim:
+		switch t {
+		case '{':
+			return decodeObject(dec)
+		case '[':
+			return decodeArray(dec)
+		}
+	}
+	return nil, errors.New("tipo não suportado")
+}
+
+// decodeArray lê uma lista cujo '[' já foi consumido, até o ']' inclusive. Lista de texto vira
+// []string (a vazia é []string{}); lista de mapeamentos vira []Frontmatter. Mistura é recusada.
+func decodeArray(dec *json.Decoder) (any, error) {
+	strs := []string{}
+	var maps []domain.Frontmatter
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		switch t := tok.(type) {
+		case string:
+			if maps != nil {
+				return nil, errors.New("lista mistura texto e mapeamento")
+			}
+			strs = append(strs, t)
+		case json.Delim:
+			if t != '{' || len(strs) > 0 {
+				return nil, errors.New("lista não é só texto nem só mapeamentos")
+			}
+			fm, err := decodeObject(dec)
+			if err != nil {
+				return nil, err
+			}
+			maps = append(maps, fm)
+		default:
+			return nil, errors.New("lista não é só texto nem só mapeamentos")
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, err
+	}
+	if maps != nil {
+		return maps, nil
+	}
+	return strs, nil
 }

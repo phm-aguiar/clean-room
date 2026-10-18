@@ -3,55 +3,104 @@ package cli
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
-func writeLiveGuardPIDFile(t *testing.T, dir, content string) {
+// fakeProcesses troca a enumeração por uma lista fixa até o fim do teste.
+func fakeProcesses(t *testing.T, procs ...procInfo) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, PIDFileName), []byte(content), 0o600); err != nil {
-		t.Fatalf("gravar marcador de PID: %v", err)
-	}
+	prev := listProcesses
+	listProcesses = func() ([]procInfo, error) { return procs, nil }
+	t.Cleanup(func() { listProcesses = prev })
 }
 
-func TestLiveGuard_SemArquivoDePID(t *testing.T) {
+// fakeEnumError troca a enumeração por uma falha até o fim do teste.
+func fakeEnumError(t *testing.T, err error) {
+	t.Helper()
+	prev := listProcesses
+	listProcesses = func() ([]procInfo, error) { return nil, err }
+	t.Cleanup(func() { listProcesses = prev })
+}
+
+func TestLiveGuard_SemOutroAIMemory(t *testing.T) {
+	fakeProcesses(t, procInfo{pid: 100, name: "bash"}, procInfo{pid: 101, name: "ai-memory-hook"})
 	if err := CheckNoLiveProcess(t.TempDir()); err != nil {
-		t.Fatalf("sem marcador esperava nil, veio %v", err)
+		t.Fatalf("sem outro ai-memory esperava nil, veio %v", err)
 	}
 }
 
-func TestLiveGuard_PIDDeProcessoInexistente(t *testing.T) {
-	const pid = 999999
-	if alive, err := processAlive(pid); err == nil && alive {
-		t.Skipf("pid %d existe nesta máquina; teste não se aplica", pid)
-	}
-	dir := t.TempDir()
-	writeLiveGuardPIDFile(t, dir, strconv.Itoa(pid)+"\n")
-	if err := CheckNoLiveProcess(dir); err != nil {
-		t.Fatalf("PID inexistente esperava nil, veio %v", err)
-	}
-}
-
-func TestLiveGuard_PIDDoProprioProcesso(t *testing.T) {
-	dir := t.TempDir()
-	writeLiveGuardPIDFile(t, dir, strconv.Itoa(os.Getpid()))
-	err := CheckNoLiveProcess(dir)
+func TestLiveGuard_OutroAIMemoryVivo(t *testing.T) {
+	const pid = 4242
+	fakeProcesses(t, procInfo{pid: pid, name: "ai-memory"})
+	err := CheckNoLiveProcess(t.TempDir())
 	if !errors.Is(err, ErrProcessLive) {
-		t.Fatalf("PID do próprio processo esperava ErrProcessLive, veio %v", err)
+		t.Fatalf("outro ai-memory esperava ErrProcessLive, veio %v", err)
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(pid)) {
+		t.Fatalf("mensagem deve trazer o pid %d: %v", pid, err)
 	}
 }
 
-func TestLiveGuard_PIDCorrompido(t *testing.T) {
-	for _, conteudo := range []string{"abc", "", "0", "-5", "12x", "99999999999"} {
-		dir := t.TempDir()
-		writeLiveGuardPIDFile(t, dir, conteudo)
-		err := CheckNoLiveProcess(dir)
-		if !errors.Is(err, ErrPIDFileFormat) {
-			t.Errorf("conteúdo %q: esperava ErrPIDFileFormat, veio %v", conteudo, err)
-		}
-		if errors.Is(err, ErrProcessLive) {
-			t.Errorf("conteúdo %q: não deveria ser ErrProcessLive", conteudo)
+func TestLiveGuard_NomeComExtensaoEMaiusculas(t *testing.T) {
+	fakeProcesses(t, procInfo{pid: 4243, name: "AI-MEMORY.EXE"})
+	if err := CheckNoLiveProcess(t.TempDir()); !errors.Is(err, ErrProcessLive) {
+		t.Fatalf("AI-MEMORY.EXE esperava ErrProcessLive, veio %v", err)
+	}
+}
+
+func TestLiveGuard_PropriaPIDIgnorada(t *testing.T) {
+	fakeProcesses(t, procInfo{pid: os.Getpid(), name: "ai-memory"})
+	if err := CheckNoLiveProcess(t.TempDir()); err != nil {
+		t.Fatalf("o próprio processo não conta como outro, esperava nil, veio %v", err)
+	}
+}
+
+func TestLiveGuard_FalhaDeEnumeracaoFechaAPorta(t *testing.T) {
+	boom := errors.New("enumeração indisponível")
+	fakeEnumError(t, boom)
+	err := CheckNoLiveProcess(t.TempDir())
+	if !errors.Is(err, boom) {
+		t.Fatalf("falha de enumeração esperava erro encadeado, veio %v", err)
+	}
+	if errors.Is(err, ErrProcessLive) {
+		t.Fatalf("falha de enumeração não é ErrProcessLive: %v", err)
+	}
+}
+
+func TestIsAIMemoryName(t *testing.T) {
+	casos := map[string]bool{
+		"ai-memory":      true,
+		"ai-memory.exe":  true,
+		"AI-Memory.exe":  true,
+		"ai-memory-hook": false,
+		"ai-memory2":     false,
+		"ai":             false,
+		"":               false,
+		"bash":           false,
+	}
+	for nome, esperado := range casos {
+		if got := isAIMemoryName(nome); got != esperado {
+			t.Errorf("isAIMemoryName(%q) = %v, esperava %v", nome, got, esperado)
 		}
 	}
+}
+
+// TestLiveGuard_EnumeraProcessoAtual exercita a enumeração real: o processo de teste
+// precisa aparecer na lista, com nome não vazio.
+func TestLiveGuard_EnumeraProcessoAtual(t *testing.T) {
+	procs, err := enumerateProcesses()
+	if err != nil {
+		t.Fatalf("enumerateProcesses: %v", err)
+	}
+	for _, p := range procs {
+		if p.pid == os.Getpid() {
+			if p.name == "" {
+				t.Fatalf("nome vazio para o próprio processo %d", p.pid)
+			}
+			return
+		}
+	}
+	t.Fatalf("o próprio processo %d não apareceu na enumeração (%d processos)", os.Getpid(), len(procs))
 }

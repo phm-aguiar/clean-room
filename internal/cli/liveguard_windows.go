@@ -4,38 +4,34 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"syscall"
+	"unsafe"
 )
 
-const (
-	// PROCESS_QUERY_LIMITED_INFORMATION: basta para GetExitCodeProcess.
-	processQueryLimitedInformation = 0x1000
-	// STILL_ACTIVE: código de saída de processo que ainda não terminou.
-	stillActive = 259
-	// ERROR_INVALID_PARAMETER: OpenProcess com PID inexistente.
-	errorInvalidParameter = syscall.Errno(87)
-	// ERROR_ACCESS_DENIED: o processo existe, mas sem permissão de consulta.
-	errorAccessDenied = syscall.Errno(5)
-)
-
-// processAlive usa OpenProcess e GetExitCodeProcess (stdlib syscall). Um processo
-// existe com código STILL_ACTIVE. ERROR_ACCESS_DENIED também conta como vivo
-// (falha fechada). ERROR_INVALID_PARAMETER indica PID inexistente.
-func processAlive(pid int) (bool, error) {
-	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+// enumerateProcesses usa CreateToolhelp32Snapshot com TH32CS_SNAPPROCESS, pela stdlib
+// syscall (sem x/sys, ADR-33). Percorre a lista com Process32First e Process32Next até
+// ERROR_NO_MORE_FILES, que é o fim normal da enumeração.
+func enumerateProcesses() ([]procInfo, error) {
+	snap, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		if errors.Is(err, errorInvalidParameter) {
-			return false, nil
-		}
-		if errors.Is(err, errorAccessDenied) {
-			return true, nil
-		}
-		return false, err
+		return nil, fmt.Errorf("CreateToolhelp32Snapshot: %w", err)
 	}
-	defer syscall.CloseHandle(h)
-	var code uint32
-	if err := syscall.GetExitCodeProcess(h, &code); err != nil {
-		return false, err
+	defer func() { _ = syscall.CloseHandle(snap) }()
+
+	var entry syscall.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	var procs []procInfo
+	err = syscall.Process32First(snap, &entry)
+	for err == nil {
+		procs = append(procs, procInfo{
+			pid:  int(entry.ProcessID),
+			name: syscall.UTF16ToString(entry.ExeFile[:]),
+		})
+		err = syscall.Process32Next(snap, &entry)
 	}
-	return code == stillActive, nil
+	if !errors.Is(err, syscall.ERROR_NO_MORE_FILES) {
+		return nil, fmt.Errorf("enumerar processos (Process32): %w", err)
+	}
+	return procs, nil
 }

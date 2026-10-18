@@ -37,8 +37,9 @@ var reindexEvidence = storage.EvidenceSource{Kind: storage.SourceReconsolidation
 
 // ReindexReport resume uma execução do reindex. Scopes conta os projetos que tiveram o escopo garantido.
 // Pages conta os arquivos indexados sem erro, e Unchanged a parte deles que não gerou versão nova.
-// Errors traz as falhas por escopo ou por arquivo, que não interrompem a execução. Avisos traz os
-// avisos não fatais: manifesto ausente (nome reconstruído pelo id) e avisos de link ou de índice.
+// Errors traz as falhas por escopo ou por arquivo, que não interrompem a execução. Um _meta.md ausente
+// ou inválido é falha do escopo, com o caminho exato do arquivo. Avisos traz os avisos não fatais de
+// link ou de índice.
 type ReindexReport struct {
 	Scopes    int
 	Pages     int
@@ -147,24 +148,16 @@ func indexFile(ctx context.Context, s *Store, ref domain.PageRef, absPath string
 	return res.Outcome, avisos, nil
 }
 
-// sanitizeKeepAll copia o frontmatter sanitizando os valores de texto, sem remover chave alguma (ao
-// contrário de cleanCopy, que tira generated.*: o índice guarda o frontmatter com essas chaves).
+// sanitizeKeepAll copia o frontmatter sanitizando os valores de texto, em todos os níveis, sem remover
+// chave alguma (ao contrário de cleanCopy, que tira generated.*: o índice guarda o frontmatter com essas
+// chaves). Mapeamentos aninhados e listas de mapeamentos (generated, sources) são percorridos.
 func sanitizeKeepAll(src domain.Frontmatter) (domain.Frontmatter, error) {
 	var out domain.Frontmatter
 	for _, k := range src.Keys() {
 		v, _ := src.Get(k)
-		var clean any
-		switch t := v.(type) {
-		case string:
-			clean = sanitize.Body(t, sanitize.Limits{}).Text()
-		case []string:
-			items := make([]string, len(t))
-			for i, it := range t {
-				items[i] = sanitize.Body(it, sanitize.Limits{}).Text()
-			}
-			clean = items
-		default:
-			return domain.Frontmatter{}, fmt.Errorf("valor de frontmatter %q: tipo %T", k, v)
+		clean, err := sanitizeValue(v)
+		if err != nil {
+			return domain.Frontmatter{}, fmt.Errorf("valor de frontmatter %q: %w", k, err)
 		}
 		if err := out.Set(k, clean); err != nil {
 			return domain.Frontmatter{}, fmt.Errorf("frontmatter: %w", err)
@@ -173,14 +166,43 @@ func sanitizeKeepAll(src domain.Frontmatter) (domain.Frontmatter, error) {
 	return out, nil
 }
 
+// sanitizeValue sanitiza o texto de um valor aceito por domain.Frontmatter, recursivamente. Tipo fora
+// desse conjunto é recusado.
+func sanitizeValue(v any) (any, error) {
+	switch t := v.(type) {
+	case string:
+		return sanitize.Body(t, sanitize.Limits{}).Text(), nil
+	case []string:
+		items := make([]string, len(t))
+		for i, it := range t {
+			items[i] = sanitize.Body(it, sanitize.Limits{}).Text()
+		}
+		return items, nil
+	case domain.Frontmatter:
+		return sanitizeKeepAll(t)
+	case []domain.Frontmatter:
+		list := make([]domain.Frontmatter, len(t))
+		for i := range t {
+			fm, err := sanitizeKeepAll(t[i])
+			if err != nil {
+				return nil, err
+			}
+			list[i] = fm
+		}
+		return list, nil
+	}
+	return nil, fmt.Errorf("tipo %T", v)
+}
+
 // Reindex reconstrói o índice a partir da árvore markdown da wiki em root, que deve ser a raiz do
 // Store. Percorre só <root>/<ws>/<proj>/ com dois níveis de UUID (diretórios que não são UUID são
 // ignorados), garante cada escopo (EnsureScope, com os nomes de _meta.md) e indexa cada arquivo
 // `.md` que não é ignorado (ADR-27) pelo IndexFile. Não escreve no disco e não faz commit.
 //
-// Sem _meta.md, ou com _meta.md inválido, o escopo é reconstruído pelos UUIDs: o id vira o nome, e
-// o aviso vai para o report. Erro de um escopo ou de um arquivo vai para Errors e não para a
-// execução. Só erro de contexto, de root ou de Store interrompe o reindex.
+// Sem _meta.md, ou com _meta.md inválido, o escopo não é reconstruído: o nome não sai do id. O erro
+// vai para Errors com o caminho exato do _meta.md, e as páginas do escopo não são indexadas
+// (docs/lifecycle-ops.md, reindex, passo 4). Erro de um escopo ou de um arquivo vai para Errors e não
+// para a execução. Só erro de contexto, de root ou de Store interrompe o reindex.
 func Reindex(ctx context.Context, s *Store, root string) (ReindexReport, error) {
 	var rep ReindexReport
 	if s == nil || s.Writer == nil {
@@ -231,9 +253,17 @@ func reindexScope(ctx context.Context, s *Store, root string, scope domain.Scope
 	wsDir := filepath.Join(root, wsID)
 	projDir := filepath.Join(wsDir, projID)
 
-	wsName := scopeName(filepath.Join(wsDir, metaFileName), map[string]string{wsIDKey: wsID}, wsID, "workspace", rep)
-	projName := scopeName(filepath.Join(projDir, metaFileName),
-		map[string]string{wsIDKey: wsID, projIDKey: projID}, projID, "projeto "+projID, rep)
+	wsName, wsErr := manifestName(filepath.Join(wsDir, metaFileName), map[string]string{wsIDKey: wsID})
+	projName, projErr := manifestName(filepath.Join(projDir, metaFileName),
+		map[string]string{wsIDKey: wsID, projIDKey: projID})
+	if wsErr != nil || projErr != nil {
+		for _, e := range []error{wsErr, projErr} {
+			if e != nil {
+				rep.Errors = append(rep.Errors, fmt.Sprintf("wiki: reindex: escopo %s/%s: %v", wsID, projID, e))
+			}
+		}
+		return nil
+	}
 
 	if err := storage.EnsureScope(ctx, s.Writer, scope, wsName, projName, s.now()); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -305,6 +335,16 @@ func indexEntry(ctx context.Context, s *Store, scope domain.Scope, projDir, p st
 	if !fi.Mode().IsRegular() || filepath.Ext(name) != ".md" || ignoredFileName(name) {
 		return nil
 	}
+	// Ledger de eventos: nome e conteúdo (docs/complementary-contracts.md §4). Página com nome
+	// parecido, mas sem entrada de log no início, é indexada normalmente.
+	led, err := isLedgerFile(p)
+	if err != nil {
+		rep.Errors = append(rep.Errors, fmt.Sprintf("wiki: reindex: verificar ledger %s: %v", p, err))
+		return nil
+	}
+	if led {
+		return nil
+	}
 
 	pagePath, err := domain.ParsePagePath(slashRel)
 	if err != nil {
@@ -328,15 +368,15 @@ func indexEntry(ctx context.Context, s *Store, scope domain.Scope, projDir, p st
 }
 
 // ignoredFileName diz se o nome de arquivo é um controle da wiki que o reindex não indexa: manifesto,
-// índice do bundle, bootstrap e ledgers `log*.md` (ADR-27). A comparação não distingue caixa.
+// índice do bundle e bootstrap (ADR-27). A comparação não distingue caixa. Ledgers `log*.md` não
+// entram aqui: o nome sozinho não basta, e a decisão depende do conteúdo (isLedgerFile).
 func ignoredFileName(name string) bool {
 	lower := strings.ToLower(name)
 	switch lower {
 	case metaFileName, indexFileName, bootstrapName:
 		return true
 	}
-	ok, _ := filepath.Match("log*.md", lower)
-	return ok
+	return false
 }
 
 // uuidDir devolve o identificador do diretório se ele é um diretório real (sem link nem ponto de
@@ -353,27 +393,13 @@ func uuidDir(p string) (domain.ID, bool) {
 	return id, true
 }
 
-// scopeName devolve o nome humano do escopo lido do _meta.md. Sem o arquivo, ou com ele inválido, usa o
-// id como nome e registra o aviso no report. Arquivo inválido também vai para Errors. Não grava nada.
-func scopeName(path string, identity map[string]string, id, what string, rep *ReindexReport) string {
-	name, err := manifestName(path, identity)
-	if err != nil {
-		rep.Errors = append(rep.Errors, fmt.Sprintf("wiki: reindex: %v", err))
-	}
-	if name == "" {
-		rep.Avisos = append(rep.Avisos, fmt.Sprintf("%s sem _meta.md válido: nome reconstruído pelo id %s", what, id))
-		return id
-	}
-	return name
-}
-
-// manifestName lê o nome de um _meta.md. Devolve "" e nil se o arquivo não existe. Devolve erro se o
-// arquivo é link, se o YAML é inválido, se falta name, ou se um identificador do manifesto não bate com
-// o do escopo. Não segue links.
+// manifestName lê o nome de um _meta.md. Devolve erro se o arquivo não existe, se é link, se o YAML é
+// inválido, se falta name, ou se um identificador do manifesto não bate com o do escopo. Toda mensagem
+// de erro traz o caminho do arquivo. Não segue links.
 func manifestName(path string, identity map[string]string) (string, error) {
 	fi, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil
+		return "", fmt.Errorf("%s: _meta.md ausente", path)
 	}
 	if err != nil {
 		return "", fmt.Errorf("verificar %s: %w", path, err)

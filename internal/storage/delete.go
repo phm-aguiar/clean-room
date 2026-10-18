@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -13,28 +12,26 @@ import (
 // auditPageDelete é a op de audit_log da remoção física feita por DeletePath.
 const auditPageDelete = "page-delete"
 
-// ErrVersionMismatch é devolvido por DeletePath quando a versão corrente do caminho não é a
-// versão esperada. Nesse caso nada é alterado.
-var ErrVersionMismatch = errors.New("page version mismatch")
-
-// DeletePath remove fisicamente a versão corrente do caminho ref, em uma transação própria por
-// Writer.Do (INV-03). É condicional e idempotente:
+// DeletePath remove fisicamente todas as versões do caminho ref (corrente e superseded), em uma
+// transação própria por Writer.Do (INV-03). É condicional e idempotente, e nunca devolve erro por
+// versão divergente:
 //
 //   - Se não há versão corrente do caminho, devolve deleted = false e erro nil (nada é feito e
 //     nada é auditado).
-//   - Se a versão corrente tem id diferente de expectedVersion, devolve deleted = false e um erro
-//     com ErrVersionMismatch na cadeia (errors.Is). Nada é alterado.
-//   - Caso contrário, apaga a linha da versão corrente de pages, grava auditoria page-delete com
-//     a página apagada e remove entidades órfãs do escopo, tudo na mesma transação.
+//   - Se a versão corrente tem id diferente de expectedVersion, devolve deleted = false e erro nil.
+//     Nada é alterado: quem chama decide o que fazer com o arquivo (a wiki restaura o conteúdo).
+//   - Caso contrário, apaga as linhas de pages do caminho no escopo (todas as versões), grava
+//     auditoria page-delete com a versão corrente apagada e remove entidades órfãs do escopo, tudo
+//     na mesma transação. Só grava auditoria se alguma linha foi removida.
 //
-// Efeitos nos vínculos da versão apagada, pelas FKs do esquema: page_evidence, page_access,
+// Efeitos nos vínculos das versões apagadas, pelas FKs do esquema: page_evidence, page_access,
 // entity_page_links e links de origem (from_page_id) caem por ON DELETE CASCADE; links de destino
 // (to_page_id) viram pendentes por ON DELETE SET NULL, com to_path preservado.
 //
-// As versões superseded do caminho não são tocadas (INV-16): nenhuma é reativada. Quem chama
-// decide o que fazer com o caminho depois da remoção.
+// Nenhuma versão é reativada. A remoção física é a exclusão por caminho de docs/storage-and-retrieval.md
+// §5.2; os tombstones de decaimento (§5.3) são de outro caminho e não passam por aqui.
 //
-// Não apaga arquivo da wiki: isso é da T047. Erros voltam com %w.
+// Não apaga arquivo da wiki: isso é da wiki (wiki.DeletePage). Erros voltam com %w.
 func DeletePath(ctx context.Context, w Writer, ref domain.PageRef, expectedVersion domain.PageID) (bool, error) {
 	deleted := false
 	err := w.Do(ctx, func(tx *sql.Tx) error {
@@ -42,31 +39,27 @@ func DeletePath(ctx context.Context, w Writer, ref domain.PageRef, expectedVersi
 		if err != nil {
 			return err
 		}
-		if !found {
+		if !found || head.id != expectedVersion {
 			return nil
-		}
-		if head.id != expectedVersion {
-			return fmt.Errorf("%w: versão corrente %s, esperada %s",
-				ErrVersionMismatch, head.id.String(), expectedVersion.String())
 		}
 
 		res, err := tx.Exec(
-			`DELETE FROM pages WHERE id = ? AND is_latest = 1`,
-			head.id.Bytes(),
+			`DELETE FROM pages WHERE workspace_id = ? AND project_id = ? AND path = ?`,
+			ref.Scope.WorkspaceID.Bytes(), ref.Scope.ProjectID.Bytes(), ref.Path.String(),
 		)
 		if err != nil {
-			return fmt.Errorf("apagar versão corrente: %w", err)
+			return fmt.Errorf("apagar versões do caminho: %w", err)
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return fmt.Errorf("apagar versão corrente: %w", err)
+			return fmt.Errorf("apagar versões do caminho: %w", err)
 		}
-		if n != 1 {
-			return fmt.Errorf("apagar versão corrente de %s: esperada 1 linha, afetadas %d", head.id.String(), n)
+		if n < 1 {
+			return fmt.Errorf("apagar versões do caminho de %s: nenhuma linha afetada", head.id.String())
 		}
 
-		// Entidades do escopo sem nenhum vínculo em entity_page_links. Roda depois do DELETE da página,
-		// porque os vínculos da versão apagada já saíram pelo CASCADE.
+		// Entidades do escopo sem nenhum vínculo em entity_page_links. Roda depois do DELETE das páginas,
+		// porque os vínculos das versões apagadas já saíram pelo CASCADE.
 		if _, err := tx.Exec(
 			`DELETE FROM entities
 			  WHERE workspace_id = ? AND project_id = ?

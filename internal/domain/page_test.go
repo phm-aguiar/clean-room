@@ -94,6 +94,120 @@ func TestFrontmatter_EqualDeterministico(t *testing.T) {
 	}
 }
 
+func TestFrontmatter_MapeamentoAninhadoPreservaOrdemECopia(t *testing.T) {
+	var gen Frontmatter
+	_ = gen.Set("at", "2026-03-01T10:00:00Z")
+	_ = gen.Set("by", "process:x")
+	var fm Frontmatter
+	if err := fm.Set("generated", gen); err != nil {
+		t.Fatalf("Set(generated, mapeamento): %v", err)
+	}
+	// Alterar o original depois de gravar não pode mudar o frontmatter.
+	_ = gen.Set("by", "mudado")
+
+	v, ok := fm.Get("generated")
+	if !ok {
+		t.Fatal("Get(generated) ausente")
+	}
+	got, ok := v.(Frontmatter)
+	if !ok {
+		t.Fatalf("Get(generated) = %T, quer Frontmatter", v)
+	}
+	if want := []string{"at", "by"}; !reflect.DeepEqual(got.Keys(), want) {
+		t.Errorf("Keys aninhadas = %v, quer %v", got.Keys(), want)
+	}
+	if by, _ := got.Get("by"); by != "process:x" {
+		t.Errorf("by = %v, quer process:x (cópia independente)", by)
+	}
+
+	// Alterar o valor devolvido por Get também não pode mudar o frontmatter.
+	_ = got.Set("by", "outro")
+	again, _ := fm.Get("generated")
+	if by, _ := again.(Frontmatter).Get("by"); by != "process:x" {
+		t.Errorf("Get devolveu mapeamento compartilhado: by = %v", by)
+	}
+}
+
+func TestFrontmatter_ListaDeMapasEhCopiadaEOrdenada(t *testing.T) {
+	var item Frontmatter
+	_ = item.Set("resource", "ai-memory://session/s1")
+	_ = item.Set("author", "process:claude")
+	var fm Frontmatter
+	if err := fm.Set("sources", []Frontmatter{item}); err != nil {
+		t.Fatalf("Set(sources, lista de mapas): %v", err)
+	}
+	_ = item.Set("resource", "mudado")
+
+	v, _ := fm.Get("sources")
+	lista, ok := v.([]Frontmatter)
+	if !ok || len(lista) != 1 {
+		t.Fatalf("Get(sources) = %#v, quer lista de 1 mapeamento", v)
+	}
+	if want := []string{"resource", "author"}; !reflect.DeepEqual(lista[0].Keys(), want) {
+		t.Errorf("Keys do item = %v, quer %v", lista[0].Keys(), want)
+	}
+	if res, _ := lista[0].Get("resource"); res != "ai-memory://session/s1" {
+		t.Errorf("resource = %v, quer o valor gravado (cópia)", res)
+	}
+	_ = lista[0].Set("resource", "outro")
+	again, _ := fm.Get("sources")
+	if res, _ := again.([]Frontmatter)[0].Get("resource"); res != "ai-memory://session/s1" {
+		t.Errorf("Get devolveu lista compartilhada: resource = %v", res)
+	}
+}
+
+func TestFrontmatter_ListaVaziaDeMapasViraListaDeTexto(t *testing.T) {
+	var fm Frontmatter
+	if err := fm.Set("sources", []Frontmatter{}); err != nil {
+		t.Fatalf("Set(sources, vazia): %v", err)
+	}
+	v, _ := fm.Get("sources")
+	if !reflect.DeepEqual(v, []string{}) {
+		t.Errorf("Get(sources) = %#v, quer []string vazia", v)
+	}
+}
+
+func TestFrontmatter_EqualRecursivoSensivelAOrdem(t *testing.T) {
+	var g1, g2, g3 Frontmatter
+	_ = g1.Set("by", "p")
+	_ = g1.Set("at", "t")
+	_ = g2.Set("by", "p")
+	_ = g2.Set("at", "t")
+	_ = g3.Set("at", "t")
+	_ = g3.Set("by", "p")
+
+	var a, b, c Frontmatter
+	_ = a.Set("generated", g1)
+	_ = b.Set("generated", g2)
+	_ = c.Set("generated", g3)
+	if !a.Equal(b) {
+		t.Error("mapeamentos aninhados iguais deveriam ser iguais")
+	}
+	if a.Equal(c) {
+		t.Error("ordem das chaves aninhadas faz parte da igualdade")
+	}
+
+	var d, e Frontmatter
+	_ = d.Set("sources", []Frontmatter{g1})
+	_ = e.Set("sources", []Frontmatter{g3})
+	if d.Equal(e) {
+		t.Error("lista de mapas com ordem interna diferente deveria ser diferente")
+	}
+}
+
+func TestFrontmatter_RecusaTipoNaoAceitoEmAninhado(t *testing.T) {
+	var f Frontmatter
+	if err := f.Set("x", map[string]string{"a": "b"}); !errors.Is(err, ErrInvalidFrontmatterValue) {
+		t.Errorf("Set com map[string]string: erro = %v, esperado ErrInvalidFrontmatterValue", err)
+	}
+	if err := f.Set("x", []any{"a"}); !errors.Is(err, ErrInvalidFrontmatterValue) {
+		t.Errorf("Set com []any: erro = %v, esperado ErrInvalidFrontmatterValue", err)
+	}
+	if len(f.Keys()) != 0 {
+		t.Errorf("Set recusado alterou o mapa: %v", f.Keys())
+	}
+}
+
 func TestObservation_ImportanciaLimites(t *testing.T) {
 	ref := testObservationFixture(t)
 

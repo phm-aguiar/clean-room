@@ -29,9 +29,13 @@ var gitIdentity = []string{
 
 // Repo é o repositório git da wiki, operado pelo executável git do sistema
 // via os/exec. Um commit por vez, serializado pelo mutex do próprio Repo.
+//
+// pending são os caminhos registrados por Track desde o último commit bem-sucedido
+// de CommitTracked (escritas rastreadas, docs/wiki-files-layer.md §7). Protegidos pelo mesmo mutex.
 type Repo struct {
-	root string
-	mu   sync.Mutex
+	root    string
+	mu      sync.Mutex
+	pending []string
 }
 
 // Open valida que git está no PATH e prepara o repositório em root: cria
@@ -87,6 +91,50 @@ func (r *Repo) Commit(ctx context.Context, paths []string, message string) (stri
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	return r.commitLocked(ctx, rel, message)
+}
+
+// Track registra caminhos (relativos à raiz do repositório) como alterados, para o próximo
+// CommitTracked. Não toca no git: só guarda os caminhos. Caminho inválido devolve erro e não
+// registra nenhum da chamada. Registrar o mesmo caminho duas vezes não duplica.
+func (r *Repo) Track(paths ...string) error {
+	rel, err := relPaths(paths)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, p := range rel {
+		if !containsPath(r.pending, p) {
+			r.pending = append(r.pending, p)
+		}
+	}
+	return nil
+}
+
+// CommitTracked faz commit dos caminhos registrados por Track, com message, e esvazia o registro
+// quando o commit dá certo. Sem caminhos registrados, ou sem mudança nos registrados, não cria
+// commit: devolve checkpoint vazio e erro nil. Falha de git devolve erro e mantém o registro, para
+// que o próximo commit ainda inclua esses caminhos. ctx cancela o comando git em execução.
+func (r *Repo) CommitTracked(ctx context.Context, message string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.pending) == 0 {
+		return "", nil
+	}
+	cp, err := r.commitLocked(ctx, r.pending, message)
+	if err != nil {
+		return "", err
+	}
+	r.pending = nil
+	return cp, nil
+}
+
+// commitLocked é o corpo de Commit. O chamador já segura r.mu e passa caminhos normalizados.
+func (r *Repo) commitLocked(ctx context.Context, rel []string, message string) (string, error) {
 	addArgs := append([]string{"add", "--"}, rel...)
 	if out, err := r.runCtx(ctx, addArgs...); err != nil {
 		return "", gitFailure(ctx, "add", err, out)
@@ -155,6 +203,16 @@ func relPaths(paths []string) ([]string, error) {
 		out = append(out, filepath.ToSlash(clean))
 	}
 	return out, nil
+}
+
+// containsPath diz se p já está em paths.
+func containsPath(paths []string, p string) bool {
+	for _, q := range paths {
+		if q == p {
+			return true
+		}
+	}
+	return false
 }
 
 // gitFailure embrulha a falha de um comando git com a saída do próprio git.

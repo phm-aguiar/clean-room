@@ -223,6 +223,159 @@ func TestGitCommitConcurrentIsSerialized(t *testing.T) {
 	}
 }
 
+func TestGitTrackedCommitIncludesOnlyRegisteredPaths(t *testing.T) {
+	root := t.TempDir()
+	repo, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	writeFile(t, root, "ws/proj/registrado.md", "1\n")
+	writeFile(t, root, "ws/proj/nao-registrado.md", "2\n")
+
+	if err := repo.Track("ws/proj/registrado.md"); err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+	checkpoint, err := repo.CommitTracked(context.Background(), "page-write: ws/proj/registrado.md")
+	if err != nil {
+		t.Fatalf("CommitTracked: %v", err)
+	}
+	if !sha1Hex.MatchString(checkpoint) {
+		t.Fatalf("checkpoint = %q, quer hash de 40 caracteres", checkpoint)
+	}
+	if head := gitInDir(t, root, "rev-parse", "HEAD"); head != checkpoint {
+		t.Fatalf("checkpoint %q != HEAD %q", checkpoint, head)
+	}
+	if got := gitInDir(t, root, "log", "-1", "--format=%s"); got != "page-write: ws/proj/registrado.md" {
+		t.Fatalf("mensagem = %q", got)
+	}
+	if files := gitInDir(t, root, "ls-tree", "-r", "--name-only", "HEAD"); files != "ws/proj/registrado.md" {
+		t.Fatalf("arquivos no commit = %q, quer só o registrado", files)
+	}
+}
+
+func TestGitCommitTrackedWithoutRegisteredReturnsEmpty(t *testing.T) {
+	root := t.TempDir()
+	repo, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	writeFile(t, root, "a.md", "x\n")
+
+	checkpoint, err := repo.CommitTracked(context.Background(), "page-write: a.md")
+	if err != nil {
+		t.Fatalf("CommitTracked sem registro deveria dar nil, deu: %v", err)
+	}
+	if checkpoint != "" {
+		t.Fatalf("checkpoint = %q, quer vazio", checkpoint)
+	}
+	if out, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "-q", "HEAD").Output(); err == nil {
+		t.Fatalf("criou commit sem caminho registrado: %s", out)
+	}
+}
+
+func TestGitCommitTrackedClearsRegistryAfterCommit(t *testing.T) {
+	root := t.TempDir()
+	repo, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	writeFile(t, root, "a.md", "x\n")
+	if err := repo.Track("a.md"); err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+	if _, err := repo.CommitTracked(context.Background(), "page-write: a.md"); err != nil {
+		t.Fatalf("primeiro CommitTracked: %v", err)
+	}
+
+	checkpoint, err := repo.CommitTracked(context.Background(), "page-write: a.md")
+	if err != nil {
+		t.Fatalf("segundo CommitTracked: %v", err)
+	}
+	if checkpoint != "" {
+		t.Fatalf("segundo CommitTracked criou commit %q: registro não foi esvaziado", checkpoint)
+	}
+	if n := gitInDir(t, root, "rev-list", "--count", "HEAD"); n != "1" {
+		t.Fatalf("commits = %s, quer 1", n)
+	}
+}
+
+func TestGitCommitTrackedFailureKeepsRegistry(t *testing.T) {
+	root := t.TempDir()
+	repo, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	writeFile(t, root, "a.md", "x\n")
+	if err := repo.Track("a.md"); err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+
+	lock := filepath.Join(root, ".git", "index.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(index.lock): %v", err)
+	}
+	if _, err := repo.CommitTracked(context.Background(), "page-write: a.md"); err == nil {
+		t.Fatal("CommitTracked com trava do git deveria falhar")
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatalf("Remove(index.lock): %v", err)
+	}
+
+	checkpoint, err := repo.CommitTracked(context.Background(), "page-write: a.md")
+	if err != nil {
+		t.Fatalf("CommitTracked depois da falha: %v", err)
+	}
+	if checkpoint == "" {
+		t.Fatal("registro perdido após falha: nenhum commit")
+	}
+	if files := gitInDir(t, root, "ls-tree", "-r", "--name-only", "HEAD"); files != "a.md" {
+		t.Fatalf("arquivos no commit = %q, quer a.md", files)
+	}
+}
+
+func TestGitTrackRejectsInvalidPathsAndRegistersNothing(t *testing.T) {
+	root := t.TempDir()
+	repo, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	writeFile(t, root, "ok.md", "x\n")
+
+	for _, bad := range [][]string{{""}, {"."}, {"../fora.md"}, {filepath.Join(root, "a.md")}, {"ok.md", "../fora.md"}} {
+		if err := repo.Track(bad...); err == nil {
+			t.Errorf("Track aceitou caminho inválido %q", bad)
+		}
+	}
+	if err := repo.Track(); err == nil {
+		t.Error("Track aceitou chamada sem caminhos")
+	}
+	// Nada foi registrado pelas chamadas inválidas: o commit não cria nada.
+	if cp, err := repo.CommitTracked(context.Background(), "page-write: x"); err != nil || cp != "" {
+		t.Fatalf("CommitTracked após Track inválido = %q, %v; quer vazio e nil", cp, err)
+	}
+}
+
+func TestGitTrackDeduplicatesPaths(t *testing.T) {
+	root := t.TempDir()
+	repo, err := Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	writeFile(t, root, "a.md", "x\n")
+	if err := repo.Track("a.md"); err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+	if err := repo.Track("./a.md", "a.md"); err != nil {
+		t.Fatalf("Track repetido: %v", err)
+	}
+	if _, err := repo.CommitTracked(context.Background(), "page-write: a.md"); err != nil {
+		t.Fatalf("CommitTracked: %v", err)
+	}
+	if files := gitInDir(t, root, "ls-tree", "-r", "--name-only", "HEAD"); files != "a.md" {
+		t.Fatalf("arquivos no commit = %q", files)
+	}
+}
+
 func TestGitOpenWithoutGitInPathReturnsErrGitNotFound(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 

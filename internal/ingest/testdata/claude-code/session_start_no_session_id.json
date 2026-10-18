@@ -1,0 +1,17 @@
+{
+  "description": "SessionStart sem session_id no corpo nem na consulta: o evento segue sem sessão. A geração do identificador é etapa posterior (LEI §8, passo 1).",
+  "input": {"agent": "claude-code", "event": "session-start", "cwd": "", "session_id": ""},
+  "body": {
+    "cwd": "/work/project-b",
+    "model": "claude-opus"
+  },
+  "expect": {
+    "hook": "session-start",
+    "has_session": false,
+    "cwd": "/work/project-b",
+    "title": "claude-opus",
+    "body": "",
+    "occurred_at": "now",
+    "is_subagent": false
+  }
+}

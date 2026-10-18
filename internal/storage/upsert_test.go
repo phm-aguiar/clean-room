@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -176,6 +178,124 @@ func upTake(t *testing.T, db *sql.DB) upSnapshot {
 		audit:       upCount(t, db, `SELECT COUNT(*) FROM audit_log`),
 		entityLinks: upCount(t, db, `SELECT COUNT(*) FROM entity_page_links`),
 		links:       upCount(t, db, `SELECT COUNT(*) FROM links`),
+	}
+}
+
+// upFMAninhado monta um frontmatter com mapeamento aninhado (generated), lista de mapeamentos
+// (sources), mapeamento de três níveis com lista de mapeamentos, lista de texto e lista vazia.
+// As chaves de cada nível estão fora da ordem alfabética, para o teste pegar perda de ordem.
+func upFMAninhado(t *testing.T) domain.Frontmatter {
+	t.Helper()
+	src1 := upFM(t, "kind", "session", "id", "sess-1")
+	src2 := upFM(t, "kind", "session", "id", "sess-2", "note", "segunda")
+	deep := upFM(t, "z", "ultimo", "a", "primeiro")
+	return upFM(t,
+		"title", "Rota",
+		"tags", []string{"b", "a"},
+		"generated", upFM(t, "by", "process:ai-memory/test", "at", "2026-10-12T10:00:00Z"),
+		"sources", []domain.Frontmatter{src1, src2},
+		"meta", upFM(t, "inner", deep, "lista", []domain.Frontmatter{src1}),
+		"vazia", []string{},
+	)
+}
+
+func TestFrontmatterAninhadoIdaEVoltaPreservaOrdem(t *testing.T) {
+	fm := upFMAninhado(t)
+	raw, err := encodeFrontmatter(fm)
+	if err != nil {
+		t.Fatalf("encodeFrontmatter: %v", err)
+	}
+	if !json.Valid(raw) {
+		t.Fatalf("saída não é JSON válido: %s", raw)
+	}
+	for _, trecho := range []string{
+		`"generated":{"by":"process:ai-memory/test","at":"2026-10-12T10:00:00Z"}`,
+		`"sources":[{"kind":"session","id":"sess-1"},{"kind":"session","id":"sess-2","note":"segunda"}]`,
+		`"meta":{"inner":{"z":"ultimo","a":"primeiro"},"lista":[{"kind":"session","id":"sess-1"}]}`,
+		`"vazia":[]`,
+	} {
+		if !strings.Contains(string(raw), trecho) {
+			t.Errorf("JSON sem o trecho %s:\n%s", trecho, raw)
+		}
+	}
+
+	back, err := decodeFrontmatter(string(raw))
+	if err != nil {
+		t.Fatalf("decodeFrontmatter: %v", err)
+	}
+	if !back.Equal(fm) {
+		t.Fatalf("ida e volta difere do original:\n%s", raw)
+	}
+	again, err := encodeFrontmatter(back)
+	if err != nil {
+		t.Fatalf("encodeFrontmatter da volta: %v", err)
+	}
+	if string(again) != string(raw) {
+		t.Fatalf("segunda codificação difere:\n%s\n%s", raw, again)
+	}
+	if got, want := strings.Join(back.Keys(), ","), "title,tags,generated,sources,meta,vazia"; got != want {
+		t.Fatalf("ordem de chaves = %s, esperada %s", got, want)
+	}
+}
+
+func TestFrontmatterDecodeRecusaTiposNaoSuportados(t *testing.T) {
+	casos := map[string]string{
+		"número":           `{"a":1}`,
+		"booleano":         `{"a":true}`,
+		"nulo":             `{"a":null}`,
+		"número em objeto": `{"a":{"b":2}}`,
+		"lista mista":      `{"a":["x",{"b":"c"}]}`,
+		"lista de lista":   `{"a":[["x"]]}`,
+		"lista com nulo":   `{"a":["x",null]}`,
+	}
+	for nome, raw := range casos {
+		if _, err := decodeFrontmatter(raw); err == nil {
+			t.Errorf("%s: aceito, esperado erro (%s)", nome, raw)
+		}
+	}
+}
+
+func TestUpsertReescritaComGeneratedESources(t *testing.T) {
+	db, w, ws := upEnv(t)
+	scope := upScope(t, w, ws, "ws-r", "pj-r")
+	ref := domain.NewPageRef(scope, upPath(t, "notas/rota.md"))
+
+	in1 := upIn(t, ref, "corpo 1", "sess-1", upT0)
+	in1.Kind = ""
+	in1.Frontmatter = upFMAninhado(t)
+	r1 := upMustUpsert(t, w, in1)
+	if r1.Outcome != UpsertCreated {
+		t.Fatalf("primeira escrita: outcome %q, esperado %q", r1.Outcome, UpsertCreated)
+	}
+
+	// Mesmo conteúdo com frontmatter aninhado: a comparação precisa ser recursiva, sem erro de leitura.
+	in2 := upIn(t, ref, "corpo 1", "sess-2", upT0.Add(time.Minute))
+	in2.Kind = ""
+	in2.Frontmatter = upFMAninhado(t)
+	r2 := upMustUpsert(t, w, in2)
+	if r2.Outcome != UpsertUnchanged || r2.Version != r1.Version {
+		t.Fatalf("conteúdo aninhado igual: outcome %q, versão %s; esperado unchanged em %s",
+			r2.Outcome, r2.Version.String(), r1.Version.String())
+	}
+
+	// Corpo novo: a versão corrente é lida (decodifica o aninhado) e substituída.
+	in3 := upIn(t, ref, "corpo 2", "sess-3", upT0.Add(2*time.Minute))
+	in3.Kind = ""
+	in3.Frontmatter = upFMAninhado(t)
+	r3 := upMustUpsert(t, w, in3)
+	if r3.Outcome != UpsertSuperseded {
+		t.Fatalf("corpo novo: outcome %q, esperado %q", r3.Outcome, UpsertSuperseded)
+	}
+
+	for _, id := range []domain.PageID{r1.Version, r3.Version} {
+		raw := upReadPage(t, db, id).fmJSON
+		got, err := decodeFrontmatter(raw)
+		if err != nil {
+			t.Fatalf("decodeFrontmatter da versão %s: %v\n%s", id.String(), err, raw)
+		}
+		if !got.Equal(upFMAninhado(t)) {
+			t.Fatalf("frontmatter da versão %s difere do gravado:\n%s", id.String(), raw)
+		}
 	}
 }
 
@@ -407,11 +527,11 @@ func TestUpsertCasoC_RessuscitaTombstone(t *testing.T) {
 
 	r1 := upMustUpsert(t, w, upIn(t, ref, "corpo v1", "sess-1", at1))
 
-	// Simula a lápide de decaimento: is_latest = 0 com superseded_at, e janelas de entidade
-	// fechadas no instante da retirada, como o caminho de runtime faz.
+	// Simula a lápide de decaimento (§5.3): is_latest = 0, superseded_at = valid_to = at2, e
+	// janelas de entidade fechadas no instante da retirada, como o caminho de runtime faz.
 	if err := w.Do(context.Background(), func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`UPDATE pages SET is_latest = 0, superseded_at = ? WHERE id = ?`,
-			at2.UnixMicro(), r1.Version.Bytes()); err != nil {
+		if _, err := tx.Exec(`UPDATE pages SET is_latest = 0, superseded_at = ?, valid_to = ? WHERE id = ?`,
+			at2.UnixMicro(), at2.UnixMicro(), r1.Version.Bytes()); err != nil {
 			return err
 		}
 		return CloseEntityLinksTx(tx, r1.Version, at2.UnixMicro())
@@ -432,11 +552,18 @@ func TestUpsertCasoC_RessuscitaTombstone(t *testing.T) {
 	}
 
 	tomb := upReadPage(t, db, r1.Version)
-	if tomb.isLatest != 0 || !tomb.supersededAt.Valid || tomb.supersededAt.Int64 != at2.UnixMicro() {
-		t.Errorf("lápide alterada: is_latest=%d superseded_at=%v", tomb.isLatest, tomb.supersededAt)
+	if tomb.isLatest != 0 {
+		t.Errorf("lápide is_latest = %d, esperado 0", tomb.isLatest)
 	}
-	if !tomb.validTo.Valid || tomb.validTo.Int64 != at3.UnixMicro() {
-		t.Errorf("lápide valid_to = %v, esperado %d (fecha a janela antes da nova versão)", tomb.validTo, at3.UnixMicro())
+	if tomb.supersededAt.Valid {
+		t.Errorf("superseded_at da lápide = %d, esperado NULL (ressurreição limpa a marca)", tomb.supersededAt.Int64)
+	}
+	if !tomb.validTo.Valid || tomb.validTo.Int64 != at2.UnixMicro() {
+		t.Errorf("lápide valid_to = %v, esperado %d (valid_to original mantido)", tomb.validTo, at2.UnixMicro())
+	}
+	if n := upCount(t, db, `SELECT COUNT(*) FROM pages WHERE path = ? AND is_latest = 0 AND superseded_at IS NOT NULL`,
+		"notas/rota.md"); n != 0 {
+		t.Errorf("lápides restantes no caminho = %d, esperadas 0", n)
 	}
 
 	nova := upReadPage(t, db, r2.Version)
@@ -449,6 +576,68 @@ func TestUpsertCasoC_RessuscitaTombstone(t *testing.T) {
 	if n := upCount(t, db, `SELECT COUNT(*) FROM audit_log WHERE op = ? AND page_id = ?`,
 		auditPageResurrect, r2.Version.Bytes()); n != 1 {
 		t.Errorf("auditoria page-resurrect = %d, esperada 1", n)
+	}
+}
+
+func TestUpsertCasoC_RessurreicaoAuditaComoRessurreicaoNaoCriacao(t *testing.T) {
+	db, w, ws := upEnv(t)
+	scope := upScope(t, w, ws, "ws-c-aud", "pj-c-aud")
+	ref := domain.NewPageRef(scope, upPath(t, "notas/aud.md"))
+
+	at1 := upT0
+	at2 := upT0.Add(time.Hour)
+	at3 := upT0.Add(2 * time.Hour)
+	at4 := upT0.Add(3 * time.Hour)
+
+	r1 := upMustUpsert(t, w, upIn(t, ref, "corpo v1", "sess-1", at1))
+
+	if err := w.Do(context.Background(), func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE pages SET is_latest = 0, superseded_at = ?, valid_to = ? WHERE id = ?`,
+			at2.UnixMicro(), at2.UnixMicro(), r1.Version.Bytes()); err != nil {
+			return err
+		}
+		return CloseEntityLinksTx(tx, r1.Version, at2.UnixMicro())
+	}); err != nil {
+		t.Fatalf("simular lápide: %v", err)
+	}
+
+	r2 := upMustUpsert(t, w, upIn(t, ref, "corpo v2", "sess-2", at3))
+	if r2.Outcome != UpsertResurrected {
+		t.Fatalf("outcome %q, esperado %q", r2.Outcome, UpsertResurrected)
+	}
+
+	// A ressurreição é a única auditoria de criação do caminho: uma criação registrada para
+	// a nova versão seria a auditoria errada (caso C sem lápide).
+	if n := upCount(t, db, `SELECT COUNT(*) FROM audit_log WHERE op = ? AND page_id = ?`,
+		auditPageResurrect, r2.Version.Bytes()); n != 1 {
+		t.Errorf("auditoria page-resurrect da nova versão = %d, esperada 1", n)
+	}
+	if n := upCount(t, db, `SELECT COUNT(*) FROM audit_log WHERE op = ? AND page_id = ?`,
+		auditPageCreate, r2.Version.Bytes()); n != 0 {
+		t.Errorf("auditoria page-create da nova versão = %d, esperada 0", n)
+	}
+	if n := upCount(t, db, `SELECT COUNT(*) FROM audit_log WHERE op = ?`, auditPageCreate); n != 1 {
+		t.Errorf("auditorias page-create no banco = %d, esperada 1 (só a primeira versão)", n)
+	}
+
+	// A cadeia continua íntegra: uma supersessão da ressuscitada mantém a lápide como antecessora
+	// com superseded_at limpo e valid_to original.
+	r3 := upMustUpsert(t, w, upIn(t, ref, "corpo v3", "sess-3", at4))
+	if r3.Outcome != UpsertSuperseded {
+		t.Fatalf("outcome %q, esperado %q", r3.Outcome, UpsertSuperseded)
+	}
+	tomb := upReadPage(t, db, r1.Version)
+	if tomb.isLatest != 0 || tomb.supersededAt.Valid || !tomb.validTo.Valid || tomb.validTo.Int64 != at2.UnixMicro() {
+		t.Errorf("lápide após supersessão: is_latest=%d superseded_at=%v valid_to=%v",
+			tomb.isLatest, tomb.supersededAt, tomb.validTo)
+	}
+	ressuscitada := upReadPage(t, db, r2.Version)
+	if ressuscitada.isLatest != 0 || !ressuscitada.validTo.Valid || ressuscitada.validTo.Int64 != at4.UnixMicro() {
+		t.Errorf("versão ressuscitada após supersessão: is_latest=%d valid_to=%v, esperado 0 e %d",
+			ressuscitada.isLatest, ressuscitada.validTo, at4.UnixMicro())
+	}
+	if n := upCount(t, db, `SELECT COUNT(*) FROM pages WHERE path = ?`, "notas/aud.md"); n != 3 {
+		t.Errorf("linhas do caminho = %d, esperadas 3 (lápide, ressuscitada, atual)", n)
 	}
 }
 
