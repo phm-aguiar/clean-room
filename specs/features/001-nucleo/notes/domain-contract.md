@@ -8,6 +8,19 @@ Fontes (caminhos relativos à raiz do repo):
 - `specs/features/001-nucleo/plan.md` (PLAN)
 - `.github/memory/constitution.md` (CONST)
 
+> **Auditoria de 2026-10-18, passada 2.** Lacunas fechadas pelos docs revisados (que vencem esta nota):
+> - **`PageKind` na busca** (a.1): é o `kind` do frontmatter usado como está (sem aparar, caixa
+>   sensível); sem ele, o tipo vem do prefixo do caminho (`_rules/`→rule, `_slots/`→slot,
+>   `sessions/`→session, `decisions/`→decision, `gotchas/`→gotcha, `concepts/`→concept,
+>   `procedures/`→procedure, `notes/`→note, `profile/`→preference, comparado sem distinguir caixa ASCII),
+>   senão `fact` (SR §11.5). As regras de 64 caracteres/aparar de DV §6.6 valem para os metadados públicos
+>   de escrita, não para a leitura do tipo na busca.
+> - **Segmentos reservados** (linha 48): não existem na validação de caminho de referência (DV §4.2);
+>   decisão pendente T108.
+> - **Nomes não portáveis** (linhas 149–150): lista completa em DV §4.2 (`ensure_portable`), que é uma
+>   validação **separada**, aplicada só a caminho novo na escrita de página; o construtor só faz a
+>   validação básica e recusa `\` (não converte).
+
 ## (a) Tipos de página
 
 "Tipo de página" tem dois sentidos nas fontes. Registro os dois e não os fundo.

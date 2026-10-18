@@ -855,6 +855,306 @@ max-rounds: 40
   - **Pergunta:** esperar a primeira execução verde do CI, ou fechar com ressalva registrada?
 
 
+## Fase 6: Auditoria contra a referência (2026-10-18)
+
+> Abertas pela auditoria descrita em `spec.md`, seção "Auditoria contra a referência". A fonte de cada task é o doc corrigido no mesmo dia. Nenhuma task depende de outra, exceto onde indicado. As tasks 1 a 3 da tabela da spec (T091, T093, T096) são as prioritárias: hoje a primeira vaza segredo e as outras duas quebram garantias documentadas.
+
+- [ ] **T091:** Fazer `\s`, `\S`, `\d` e `\b` dos padrões de segredo se comportarem como as classes Unicode do doc
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/domain/sanitize/patterns.go`, `internal/domain/sanitize/sanitize.go`, `internal/domain/sanitize/sanitize_test.go`
+  - **Wiki-Keywords:** sanitizador, Unicode, White_Space, borda de palavra, vazamento
+  - **Fonte:** `docs/prompts-schemas-and-sanitizer.md` §11.2, notas de leitura
+  - **Como:** trocar `\s` por uma classe explícita com o conjunto White_Space do doc (e `\S`/`[^\s]` pelo complemento), `\d` por `\p{Nd}`. Para `\b` (padrões 6, 11, 19, 21 e 22), o RE2 não tem borda Unicode: casar sem `\b` e conferir a borda em código, olhando a runa antes e depois do trecho (caractere de palavra = letra, marca, dígito Nd, conector Pc). Se a borda falhar, continuar a busca a partir da posição seguinte, para não perder um casamento que começa depois.
+  - **Verificação:** testes novos: `Authorization: Bearer` + U+00A0 + 20 caracteres é redigido; `X-Api-Key:` + U+3000 + valor é redigido; `éAKIAABCDEFGHIJKLMNOP` não é redigido; `AKIAABCDEFGHIJKLMNOP` entre espaços continua redigido; token do Telegram com id em dígitos árabes-índicos é redigido.
+
+- [ ] **T092:** Alinhar remoção de escapes e corte ao doc: passada única, faixas de escape, cauda e teto < 64
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/domain/sanitize/sanitize.go`, `internal/domain/sanitize/sanitize_test.go`
+  - **Wiki-Keywords:** sanitizador, truncamento, cabeça e cauda, escape de terminal
+  - **Fonte:** `docs/prompts-schemas-and-sanitizer.md` §11.1 (passos 1 e 5, "Passada única")
+  - **Como:** (a) remover o laço de convergência de `process`: uma redação e um corte; (b) CSI aceita como parâmetro só dígitos, `;` e `?`; a forma de dois caracteres usa `@`–`Z` e `\`–`_` (sem `[`); (c) cabeça e cauda com a mesma `metade` = (teto − 48) ÷ 2; a cauda começa no último início de caractere em ou antes de `total − metade`; (d) teto < 64: cabeça em `teto − 3` bytes + `…`, e texto vazio com teto < 3, sem marcador.
+  - **Verificação:** testes: `ESC[38:5:1m` deixa `[38:5:1m`; `ESC[` sozinho deixa `[`; corpo de 20000 bytes com caractere de 3 bytes atravessando `total − 8168` mantém o caractere na cauda; `truncateBody(x, 10)` termina em `…` e tem no máximo 10 bytes; `Title(Title(x))` deixa de ser exigido por convergência (ajustar o teste de idempotência para os casos que a referência garante).
+
+- [ ] **T093:** Usar o sanitizador configurado (extras e allowlist) na escrita de página
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/wiki/write.go`, `internal/wiki/write_test.go`
+  - **Wiki-Keywords:** sanitizador, allowlist, extra_patterns, página
+  - **Fonte:** `docs/prompts-schemas-and-sanitizer.md` §11.1 ("Páginas da wiki"); `docs/wiki-files-layer.md` §5.1 (higienizador no estado do componente) e §5.2 (passos 2 e 5)
+  - **Como:** `Store` recebe um `sanitize.Sanitizer` e usa os métodos dele no corpo, em toda string do frontmatter (valores em qualquer nível, inclusive dentro de listas e mapeamentos; chaves não) e no título explícito, em vez das funções de pacote. A higienização roda duas vezes na referência: no corpo recebido e de novo, depois da cadeia de admissão, no corpo e nas strings do frontmatter. Sem cadeia de admissão (caso da 001) a segunda passada sobre o corpo é idempotente para os casos cobertos, mas é a única sobre o frontmatter. **Corrigido em 2026-10-18 (passada 2):** a versão anterior desta task mandava higienizar também em `reindex.go`. Isso contradiz a referência: a reindexação a partir do disco não higieniza (`docs/wiki-files-layer.md` §5.5, item 3). A decisão sobre o tipo `Sanitized` na reindexação está na T115.
+  - **Verificação:** teste com padrão extra `PROJETO-[0-9]+` redige o corpo da página; teste com allowlist preserva um trecho que o padrão embutido redigiria.
+
+- [ ] **T094:** Trocar a lista de palavras de parada pela lista do doc e torná-la configurável
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/ftsquery.go`, `internal/storage/ftsquery_test.go`, `internal/config/config.go`
+  - **Wiki-Keywords:** FTS5, palavras de parada, stopwords, configuração
+  - **Fonte:** `docs/storage-and-retrieval.md` §11.2, item 2
+  - **Como:** substituir as 57 palavras (saem 21, entram 21). A comparação passa a ser no token bruto, antes do tratamento de coluna e pontuação, em minúsculas Unicode. Ler a lista da configuração do operador: chave ausente usa a padrão; lista vazia desliga o filtro.
+  - **Verificação:** `what deploy` vira `deploy` (`what` passa a ser palavra de parada); `you what is` vira `you OR what OR is` (só palavras de parada: ficam todas); `about deploy` vira `about OR deploy` (`about` deixa de ser palavra de parada); `title:the` mantém o token; a lista padrão tem 57 entradas; lista vazia na configuração não remove nada.
+
+- [ ] **T095:** Alinhar `prepareFTS5Query` ao doc: sintaxe explícita por token, variante dividida, coluna sensível à caixa, degradação
+  - **Papel:** executor
+  - **Dependências:** T094
+  - **depends_on:** [T094]
+  - **Paralelizável:** false
+  - **Arquivos:** `internal/storage/ftsquery.go`, `internal/storage/ftsquery_test.go`
+  - **Wiki-Keywords:** FTS5, consulta segura, degradação, variante dividida, sonda
+  - **Fonte:** `docs/storage-and-retrieval.md` §11.2, itens 1 a 7
+  - **Como:** com sintaxe explícita, cada token passa pelo tratamento do item 3 e os termos são unidos por espaço antes da sonda. Implementar a regra de citação do item 4 (variante dividida, `*` fora das aspas, aspas dobradas). `title:` e `body:` só em minúsculas exatas. Termos só de pontuação não são descartados: são citados. Degradação: trocar `"`, `(` e `)` por espaço, citar cada pedaço com a variante e unir com ` OR `, sem remover `:` nem `*`. A sonda usa uma conexão reaproveitada (`title, body`), protegida para uso concorrente.
+  - **Verificação:** `ai-memory` → `("ai-memory" OR "ai memory")`; `title:ai-memory` → `title:("ai-memory" OR "ai memory")`; `ai-mem*` → `("ai-mem"* OR "ai mem"*)`; `Title:foo` → `"Title" OR "foo"`; `"foo" pick:bar` → `"foo" "pick" "bar"` (sem degradar); toda saída é aceita pelo FTS5 real.
+
+- [ ] **T096:** Gravar `pages.expires_at` em toda nova versão
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/upsert.go`, `internal/wiki/write.go`, `internal/wiki/reindex.go`, `internal/storage/upsert_test.go`
+  - **Wiki-Keywords:** expires_at, TTL, expiração, busca
+  - **Fonte:** `docs/storage-and-retrieval.md` §8 (expiração), `docs/wiki-files-layer.md` §5.2 passo 6
+  - **Como:** `UpsertInput` ganha o instante de expiração (opcional, em microssegundos); `WritePage` e o reindex passam o valor já calculado por `ParseExpiresAt`; `insertPageVersion` grava a coluna.
+  - **Verificação:** página com `expires_at` no passado não aparece em nenhum fluxo de busca; página sem a chave grava NULL.
+
+- [ ] **T097:** Ignorar o `at` de dentro do mapeamento `generated` na comparação do caso A
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/upsert.go`, `internal/storage/upsert_test.go`
+  - **Wiki-Keywords:** OKF, generated.at, idempotência, caso A
+  - **Fonte:** `docs/storage-and-retrieval.md` §5.1 (caso A)
+  - **Como:** remover só o campo `at` do mapeamento `generated` (mantendo `by`) antes de comparar; carimbar `generated.at` só quando o mapeamento existe e não traz `at`. Frontmatter guardado ilegível conta como vazio.
+  - **Verificação:** upsert direto com mesmo conteúdo e `generated.at` diferente devolve `UpsertUnchanged`; com `generated.by` diferente, `UpsertSuperseded`.
+
+- [ ] **T098:** Caso A sem auditoria e nomes de ação de auditoria do doc
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/upsert.go`, `internal/storage/upsert_test.go`
+  - **Wiki-Keywords:** auditoria, audit_log, upsert
+  - **Fonte:** `docs/storage-and-retrieval.md` §5.1
+  - **Como:** remover a linha `page-unchanged`; renomear para `supersede_page`, `create_page` e `resurrect_tombstoned_page`.
+  - **Verificação:** reescrita idêntica não cria linha de auditoria; os três casos gravam as ações com esses nomes.
+
+- [ ] **T099:** Reforço de acesso anônimo incrementa o contador compartilhado
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/access.go`, `internal/storage/access_test.go`
+  - **Wiki-Keywords:** reforço de acesso, throttle, anônimo, page_access
+  - **Fonte:** `docs/storage-and-retrieval.md` §8
+  - **Como:** ator vazio passa a ser um operador próprio no throttle; incrementa `access_count` e `last_accessed_at` e não grava `page_access`. Aceitar várias páginas num só comando do escritor.
+  - **Verificação:** duas leituras anônimas com 61 s de intervalo dão `access_count = 2` e nenhuma linha em `page_access`; duas dentro de 60 s dão 1.
+
+- [ ] **T100:** Arquivo de página com permissão 0600 no Unix
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/wiki/atomicfile.go`, `internal/wiki/atomicfile_other.go`, `internal/wiki/atomicfile_test.go`
+  - **Wiki-Keywords:** escrita atômica, permissão, 0600
+  - **Fonte:** `docs/wiki-files-layer.md` §4, etapa 1
+  - **Verificação:** em Linux, arquivo novo e arquivo que era 0644 ficam 0600 depois de `Write`.
+
+- [ ] **T101:** Título de página sem teto e ignorando linhas `# ` em código cercado
+  - **Papel:** executor
+  - **Dependências:** T093
+  - **depends_on:** [T093]
+  - **Paralelizável:** false
+  - **Arquivos:** `internal/wiki/derive.go`, `internal/wiki/write.go`, `internal/wiki/derive_test.go`
+  - **Wiki-Keywords:** título, código cercado, derivação
+  - **Fonte:** `docs/wiki-files-layer.md` §3.3
+  - **Como:** reaproveitar o reconhecimento de bloco cercado de `ExtractLinks` em `DeriveTitle`; remover o corte de 80 runes do título de página (`pageTitleMaxRunes`).
+  - **Verificação:** corpo com bloco cercado contendo `# instala` antes de `# Título real` deriva `Título real`; título com 120 caracteres chega inteiro ao índice.
+
+- [ ] **T102:** Completar `ensure_portable` (`portableViolation`)
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/domain/pagepath.go`, `internal/domain/pagepath_test.go`
+  - **Wiki-Keywords:** caminho portável, Windows, nomes de dispositivo, Git
+  - **Fonte:** `docs/domain-vocabulary.md` §4.2, itens 1 a 6
+  - **Como:** acrescentar o teto de 255 bytes por segmento, os nomes `com¹`/`com²`/`com³`/`lpt¹`/`lpt²`/`lpt³`, a remoção de espaços finais do radical antes da checagem de dispositivo e `git~1` a `git~4`. Mover `.git` para essa mesma checagem.
+  - **Verificação:** `CON .md`, `com².md`, `git~1/x.md` e um segmento de 256 bytes são recusados; `com0.md` é aceito.
+
+- [ ] **T103:** Chave de colisão com minúsculas Unicode completas
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/domain/pagepath.go`, `internal/domain/pagepath_test.go`
+  - **Wiki-Keywords:** colisão de caminho, minúsculas, NFC, sigma final
+  - **Fonte:** `docs/domain-vocabulary.md` §4.2 (chave de colisão)
+  - **Como:** aplicar o mapeamento completo de minúsculas (com expansão de `İ` e sigma final por contexto) antes da NFC. `golang.org/x/text/cases` com `cases.Lower(language.Und)` cobre os dois casos; confirmar com teste.
+  - **Verificação:** `İ.md` tem chave `i` + U+0307 + `.md`; `ΟΔΟΣ.md` tem chave terminada em `ς`.
+
+- [ ] **T104:** Normalização de tag de autoridade e bônus por presença
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/rank.go`, `internal/storage/rank_test.go`
+  - **Wiki-Keywords:** autoridade, tags, ranking
+  - **Fonte:** `docs/storage-and-retrieval.md` §11.5
+  - **Como:** `NormalizeTag` apara só as pontas e usa minúsculas ASCII; `Authority` soma cada bônus uma vez por presença.
+  - **Verificação:** tags `[canonical, source-of-truth]` dão fator 1.20 (não 1.40); `"source of truth"` não ganha bônus.
+
+- [ ] **T105:** `journal_size_limit` de 64 MiB na conexão de escrita
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/open.go`, `internal/storage/open_test.go`
+  - **Wiki-Keywords:** WAL, journal_size_limit, abertura
+  - **Fonte:** `docs/storage-and-retrieval.md` §2, passo 2
+  - **Verificação:** `PRAGMA journal_size_limit` devolve 67108864 depois de `Open`.
+
+- [ ] **T106:** Schema à frente quando qualquer migração aplicada é desconhecida
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/migrate.go`, `internal/storage/migrate_test.go`
+  - **Wiki-Keywords:** migrações, schema à frente
+  - **Fonte:** `docs/storage-and-retrieval.md` §2, passo 4
+  - **Como:** devolver `ErrSchemaAhead` se alguma versão aplicada não existe entre as embutidas; a mensagem nomeia a migração aplicada e a maior versão suportada.
+  - **Verificação:** banco com versão aplicada que falta no meio da sequência embutida não abre.
+
+- [ ] **T107:** BLOQUEADA. Decidir entre a referência e a validação extra para allowlist vazia e padrão extra vazio
+  - **Papel:** analyst
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `specs/features/001-nucleo/spec.md`, `internal/domain/sanitize/sanitize.go`
+  - **Wiki-Keywords:** allowlist, extra_patterns, desvio
+  - **Fonte:** `docs/prompts-schemas-and-sanitizer.md` §11.3
+  - **Pergunta:** manter a recusa na construção (desvio registrado, mais seguro) ou aceitar como a referência (entrada vazia na allowlist desliga toda a redação)? Recomendação da auditoria: manter a recusa e registrar o desvio na spec.
+
+- [ ] **T108:** BLOQUEADA. Decidir onde ficam os nomes reservados que hoje estão em `ParsePagePath` (ADR-05)
+  - **Papel:** analyst
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/domain/pagepath.go`, `specs/features/001-nucleo/plan.md`
+  - **Wiki-Keywords:** nomes reservados, caminho, ADR-05
+  - **Fonte:** `docs/domain-vocabulary.md` §4.2 (a validação não tem lista de reservados)
+  - **Pergunta:** a referência não recusa `index.md`, `_meta.md`, `log.md`, `_pending/` nem `_graveyard/` na validação do caminho. Mover essa recusa para as superfícies públicas de escrita que o doc descreve (feature 002) ou mantê-la no domínio como desvio registrado? Recomendação: mover, porque no domínio ela também bloqueia escritas internas legítimas (por exemplo, propostas em `_pending/`).
+
+### Fase 6b: revisão dos docs contra a referência 3.1.1 (2026-10-18)
+
+> Tasks abertas pela segunda passada (seção "Revisão da documentação contra a referência 3.1.1" da `spec.md`). Os números T113, T115 e T117 são citados no `plan.md`.
+
+- [ ] **T109:** Escrita de página sem criar escopo, com `tier` do pedido e sem herança de `pinned`
+  - **Papel:** executor
+  - **depends_on:** []
+  - **Arquivos:** `internal/wiki/write.go`, `internal/wiki/write_test.go`
+  - **Fonte:** `docs/wiki-files-layer.md` §5.2, passos 3, 5 e 7
+  - **Como:** trocar a criação de escopo por uma conferência (projeto inexistente ou de outro workspace é erro de não encontrado); gravar `tier` do pedido no frontmatter, sobrescrevendo o do arquivo; `pinned` final = pedido, ou caminho `_slots/`, ou `pinned: true` booleano no frontmatter enviado, sem olhar a versão anterior; regravar o arquivo mesmo quando o conteúdo é idêntico (mesmos bytes).
+  - **Complemento (consolidação da passada 2, Fase 6c, 2026-10-18):** (a) a conferência acontece dentro da guarda compartilhada e da trava da página, **antes** de instalar o arquivo. Os dois erros se distinguem: "projeto não existe" e "projeto pertence a outro workspace", nomeando o dono. Depois dela, gravar os `_meta.md` do workspace e do projeto na primeira escrita do processo naquele escopo, de forma idempotente (`docs/wiki-files-layer.md` §1.1). (b) Frontmatter ausente vira mapeamento antes de receber `tier`; um `pinned: false` presente fica como está. (c) As chaves OKF novas entram no fim, na ordem `type`, `description`, `stale_after`, `sources`, `generated`. `generated.at` (`AAAA-MM-DDTHH:MM:SSZ`, UTC) é herdado do arquivo atual quando corpo e frontmatter sem `generated.at` são iguais. (d) `expires_at` que não é texto, ou texto que não é instante RFC 3339 nem data `AAAA-MM-DD`, faz a escrita **falhar** antes de qualquer gravação; vazio ou só espaços vale como ausente. `entities` que não é lista nem nulo também falha; `tags` é tolerante. A fixação booleana depende de T111 (frontmatter com tipos).
+  - **Verificação (complemento):** projeto de outro workspace: a mensagem nomeia o dono e não cria arquivo; a primeira escrita num escopo sem `_meta.md` cria os dois manifestos, e a segunda não os regrava; reescrita idêntica mantém os bytes e o `generated.at`; `expires_at: soon`, `expires_at: 7` e `entities: x` falham sem criar arquivo; `tags: x` passa.
+
+- [ ] **T110:** Ajustes da busca híbrida conforme o doc
+  - **Papel:** executor
+  - **depends_on:** []
+  - **Arquivos:** `internal/storage/search_streams.go`, `internal/storage/rank.go` e testes
+  - **Fonte:** `docs/storage-and-retrieval.md` §11.3 e §11.5
+  - **Como:** tipo da página para a autoridade = `kind` do frontmatter (como texto), senão prefixo do caminho sem distinguir caixa, senão `fact`; sementes do grafo = FTS, vetor, abstract e entidades, nessa ordem, sem repetição; grafo só no mesmo projeto, parando na janela de candidatos; tokens de entidade separados por todo caractere que não é letra, dígito, `-` ou `_`, com 3 a 64 caracteres, partes de compostos e no máximo 12; trecho FTS de 24 tokens; página sem dados de autoridade fica sem fator.
+  - **Complemento (consolidação da passada 2, Fase 6c, 2026-10-18):** tokens de entidade têm as pontas `-`/`_` aparadas e o tamanho medido **antes** das minúsculas; não há filtro de palavras de parada. O limite de 12 conta as partes. `freq` de uma entidade conta só páginas correntes **e não expiradas** do projeto. `kind` do frontmatter vale como está, sem aparar nem mudar caixa (`kind: Decision` não é `decision`); `kind` nulo cai no prefixo do caminho. Vizinhos do grafo também precisam ser correntes e não expirados.
+  - **Verificação:** um teste por regra, com os exemplos do doc; `kind: Decision` não recebe o bônus de `decision`, e `Decisions/x.md` sem `kind` recebe; entidade presente só em páginas expiradas não muda o peso.
+
+- [ ] **T111:** Leitura e emissão de markdown pelos contratos do doc
+  - **Papel:** executor
+  - **depends_on:** [T119]
+  - **Arquivos:** `internal/wiki/markdown.go`, `internal/wiki/derive.go` e testes
+  - **Fonte:** `docs/wiki-files-layer.md` §3.1 a §3.7
+  - **Complemento (consolidação da passada 2, Fase 6c, 2026-10-18):** o modelo de valores vem da T119. Pontos que a tabela de §3.2 não deixa óbvios e que o Go de hoje erra: (a) o fechamento usa a mesma quebra da abertura (LF com LF, CRLF com CRLF); com quebras misturadas o bloco não é reconhecido, salvo `\n---` no fim do texto; (b) `---\n\n---\n` é bloco com frontmatter nulo (hoje vira corpo); (c) chave duplicada é erro com linha; chave nula, lista ou mapeamento é erro; chave booleana ou numérica vira texto; (d) aliases são expandidos (hoje recusados), com limite de 128 níveis e 250 000 nós contando a expansão; (e) bloco escalar que é o último valor perde a quebra final; (f) tag local `!x v` vira `{"!x": v}`; (g) na emissão, listas saem com `- ` na coluna da chave dona (hoje indentadas pelo encoder); (h) um destino de link inválido nunca é erro: é descartado. Só a relação desconhecida e o alvo que não nomeia página geram aviso.
+  - **Como:** frontmatter com qualquer tipo JSON (booleanos, números, nulos, listas e mapeamentos), pela tabela de escalares de §3.2; raiz que não é mapeamento vira mapeamento vazio; fechamento no fim do arquivo aceito; emissão conforme §3.3; links markdown com `<destino>`, espaços sem título, parênteses balanceados, decodificação `%XX`, imagens e `![[x]]`; relações sem corte de `#`/`?`.
+  - **Verificação:** os três casos dourados de §3.3 passam byte a byte; uma tabela de testes com cada linha da tabela de escalares.
+
+- [ ] **T112:** Commits pelo `git` do sistema com o comportamento do doc
+  - **Papel:** executor
+  - **depends_on:** []
+  - **Arquivos:** `internal/wiki/gitrepo.go`, `internal/wiki/gitrepo_test.go`
+  - **Fonte:** `docs/wiki-files-layer.md` §7
+  - **Como:** autor e committer `ai-memory <ai-memory@local>`; sem hooks e sem assinatura (`-c commit.gpgsign=false`, `--no-verify`, `-c core.hooksPath=` vazio); variáveis `GIT_*` do §7 removidas do ambiente; ledgers fora do índice (e retirados se já rastreados); nenhum commit quando a árvore é igual à do `HEAD`, nem commit inicial vazio; listas de caminhos pela entrada padrão.
+  - **Verificação:** repositório com `commit.gpgsign=true` e um hook `pre-commit` que falha ainda recebe o commit; `log-2026-09.md` de ledger nunca aparece em `git ls-files`.
+
+- [ ] **T113:** BLOQUEADA. Nome da tabela de histórico de migrações
+  - **Papel:** analyst
+  - **depends_on:** []
+  - **Fonte:** `docs/database-schema.md` §0 (nomes de tabela são contrato)
+  - **Pergunta:** a referência usa `refinery_schema_history` (`version`, `name`, `applied_on`, `checksum`); o Go usa `schema_migrations` (ADR-34). Adotar o nome e as colunas da referência, para que os bancos sejam intercambiáveis, ou manter o desvio registrado? Recomendação: adotar o da referência.
+
+- [ ] **T114:** Escrita atômica no Windows como a referência
+  - **Papel:** executor
+  - **depends_on:** [T100]
+  - **Arquivos:** `internal/wiki/atomicfile_windows.go`, `internal/wiki/atomicfile_test.go`
+  - **Fonte:** `docs/wiki-files-layer.md` §4
+  - **Como:** sufixo aleatório de 6 caracteres; temporário com atributo `TEMPORARY`, trocado para `NORMAL` antes da troca com substituição; até 5 repetições em erros 32 e 33 com espera de 10 a 50 ms; sincronização do diretório como melhor esforço (no Windows, falha ignorada); temporário apagado em falha anterior à troca.
+  - **Verificação:** teste com falha de compartilhamento simulada; atributos conferidos depois da troca.
+
+- [ ] **T115:** BLOQUEADA. Higienização na reindexação
+  - **Papel:** analyst
+  - **depends_on:** []
+  - **Fonte:** `docs/wiki-files-layer.md` §5.5 (a reindexação não passa pelo higienizador)
+  - **Pergunta:** o Go higieniza na reindexação por exigência do tipo `Sanitized` (P-07). Seguir a referência (o índice reflete o arquivo, que é a fonte da verdade; INV-06 vale para escrita, não para reindex) ou manter o desvio? Recomendação: seguir a referência e tirar `internal/wiki/reindex.go` da T093.
+
+- [ ] **T116:** Filtros do observador com o alcance do doc
+  - **Papel:** executor
+  - **depends_on:** []
+  - **Arquivos:** `internal/wiki/watcher.go`, `internal/wiki/watcher_test.go`, `internal/wiki/reindex.go`, `internal/wiki/reindex_test.go`
+  - **Fonte:** `docs/wiki-files-layer.md` §5.5, §8.1, §8.2 e §9
+  - **Complemento (consolidação da passada 2, Fase 6c, 2026-10-18):** diretório órfão é o par (workspace, projeto) sem linha no banco: é pulado inteiro, sem indexar páginas, sem criar escopo e sem escrever `_meta.md`, no evento e na reconciliação, e conta em `skipped_orphans`. No Windows, o sistema reporta modificação do diretório pai quando um arquivo dentro dele muda, então a regra "evento de diretório reindexa o projeto" dispara em edições comuns. Na reindexação de página: `tier` ausente vale `semantic`; valor que não é texto ou nível desconhecido é erro e a página fica fora do índice (aviso no log, a reconciliação continua); fixação = `_slots/` ou `pinned: true` booleano (depende de T111); sem autor e sem evidência.
+  - **Como:** evento de diretório de qualquer tipo reindexa o projeto (só se o projeto tem linha); `_meta.md` ignorado em qualquer nível; `bootstrap.md`, `_pending/` e ledgers só na raiz do projeto; extensão `md` sensível à caixa; todo arquivo comum com evento é registrado para o Git antes dos filtros; diretório órfão pulado e contado; detecção de ledger pelo algoritmo de §9 (8 KiB, 64 linhas de frontmatter).
+  - **Verificação:** `notes/log.md` com conteúdo de ledger é indexado; `notes/_meta.md` não é; `X.MD` não é.
+
+- [ ] **T117:** Desvio registrado: fluxo de observações fora da 001
+  - **Papel:** analyst
+  - **depends_on:** []
+  - **Arquivos:** `specs/features/001-nucleo/spec.md`, `specs/features/002-captura-e-acesso/spec.md`
+  - **Fonte:** `docs/storage-and-retrieval.md` §11.3 (fluxo de observações, ligado por padrão)
+  - **Como:** registrar na 001 que a busca não tem o fluxo de observações e abrir a implementação na feature que traz as observações (002), com a regra de zerar a contribuição FTS da página votada.
+  - **Verificação:** task correspondente existe na 002.
+
+### Fase 6c: consolidação da passada 2 (2026-10-18)
+
+> Tasks que só a revisão da projetos-20 abriu. O restante foi incorporado como "Complemento" nas tasks T109, T110, T111 e T116 da Fase 6b. A numeração da Fase 6b não muda, porque o `plan.md` cita T113, T115 e T117.
+
+- [ ] **T118:** Remover a cópia do banco feita antes de migrar
+  - **Papel:** executor
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `internal/storage/open.go`, `internal/storage/open_test.go`
+  - **Wiki-Keywords:** abertura, migrações, snapshot, backup pré-migração
+  - **Fonte:** `docs/storage-and-retrieval.md` §2 ("Sem cópia do banco na abertura"); `plan.md` P-01 (correção da passada 2)
+  - **Como:** apagar `snapshotIfPending` e a chamada em `Open`. O único backup anterior a uma migração é o do diretório de dados inteiro, feito pela inicialização do servidor e só quando a migração OKF da wiki está pendente sem recibo válido (`docs/wiki-files-layer.md` §10.2 e §10.3). Esse backup fica para a feature de migrações de wiki (006).
+  - **Verificação:** abrir um banco com migração pendente não cria nenhum arquivo novo em `db/` além de `memory.sqlite`, `-wal` e `-shm`.
+
+- [ ] **T119:** Projetar o modelo de valores do frontmatter com tipos
+  - **Papel:** analyst
+  - **Dependências:** —
+  - **depends_on:** []
+  - **Paralelizável:** true
+  - **Arquivos:** `specs/features/001-nucleo/plan.md`, `internal/domain/page.go`
+  - **Wiki-Keywords:** frontmatter, YAML, tipos de valor, JSON
+  - **Fonte:** `docs/wiki-files-layer.md` §3.2 e §3.3; `docs/storage-and-retrieval.md` §5.1 (frontmatter guardado como JSON e comparado estruturalmente)
+  - **Como:** hoje `domain.Frontmatter` só guarda texto, lista de texto, mapeamento e lista de mapeamentos. Todo escalar vira texto, nulo é recusado e lista mista é recusada. A referência guarda o valor estruturado: booleano, inteiro, decimal, nulo, texto, lista com itens de qualquer tipo e mapeamento, com a ordem das chaves. Isso decide `pinned: true` (só o booleano fixa), `tags: [1, x]` (o item que não é texto é descartado, não recusado) e a comparação do caso A. Propor o tipo (por exemplo, um valor JSON ordenado), registrar a ADR no `plan.md` (combinar com quem mantém o plan) e listar as funções que hoje leem `textOf`.
+  - **Verificação:** ADR registrada no `plan.md` e lista de funções afetadas anexada à T111.
+
 ## Coordination Graph
 
 G₀ (round 0):

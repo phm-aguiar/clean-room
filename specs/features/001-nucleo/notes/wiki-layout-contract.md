@@ -2,6 +2,23 @@
 
 Fontes abreviadas: WFL = `docs/wiki-files-layer.md`; OKF = `docs/okf.md`; LOPS = `docs/lifecycle-ops.md`; DV = `docs/domain-vocabulary.md`; PLAN = `specs/features/001-nucleo/plan.md`; SPEC = `specs/features/001-nucleo/spec.md`; CONST = `.github/memory/constitution.md`; ARCH = `docs/architecture.md`; BKP = `docs/backup.md`; LEI = `docs/lifecycle-event-ingestion.md`.
 
+> **Auditoria de 2026-10-18, passada 2.** `docs/wiki-files-layer.md` §1, §1.1, §7, §8 e §9 foram
+> reescritos contra a referência e **vencem** esta nota. Correções que afetam o código:
+> - a escrita de página **não** anexa linha a `log.md` e **não** faz commit. O "commit git por evento"
+>   (seção (d)) e a linha de `log.md` (seção (c)) estão revogados (002/T080 e T089). Ledgers são só de
+>   eventos de hook. O commit com `checkpoint` na resposta é da ferramenta MCP de escrita
+>   (`memory_write_page: <caminho>`, `checkpoint` nulo quando nada mudou ou o commit falhou);
+> - commits automáticos só nos pontos de wiki §7, com escritas rastreadas por caminho e varredura completa
+>   nos casos do §7; nenhum commit sem mudança; autor `ai-memory <ai-memory@local>`. As mensagens de
+>   commit inventadas (ADR-25) estão revogadas;
+> - o identificador de arquivo devolvido pela escrita atômica **não** é usado pelo watcher (o item da
+>   seção (e) que diz o contrário está errado); em falha, o temporário é apagado;
+> - `index.md` não é criado pela escrita normal e não é ignorado pelo watcher: é página comum fora da
+>   migração OKF;
+> - diretório de projeto sem linha no banco é **órfão**: a reconciliação e o evento de diretório o pulam
+>   inteiro, sem criar escopo;
+> - formato do `_meta.md`: wiki §1.1.
+
 ## (a) Árvore de diretórios da wiki por escopo, com nomes reservados
 
 Árvore canônica (WFL §1):
@@ -56,7 +73,7 @@ LACUNA: a lista completa de diretórios de tipo (`concepts/ decisions/ gotchas/ 
   - Um conjunto em memória registra os escopos cujo manifesto já foi garantido na sessão (WFL §5.1).
 - Não é página de conceito. Na migração OKF recebe apenas `type: Scope Manifest`, quando não tem `type` (OKF 38, 89; WFL §10.2 passo 4).
 - Se o manifesto faltar, o `reindex` reporta o problema. A instrução é subir o servidor uma vez para o backfill escrevê-lo e só então rodar o `reindex` (LOPS 961-968).
-- O watcher o ignora (ver (e)). O `reindex_all` não ressuscita escopos purgados que têm marcador (WFL §5.4). O motivo está em `docs/assets/sql/V59__purged_scopes_tombstones.sql:6-9`: o `_meta.md` recriaria o escopo.
+- O watcher o ignora (ver (e)). O `reindex_all` não ressuscita escopos purgados que têm marcador (WFL §5.4). O motivo: o `_meta.md` recriaria o escopo (tabela `purged_scopes`, `docs/database-schema.md` §6).
 
 LACUNA: as chaves exatas do frontmatter de `_meta.md` não estão nas fontes lidas. Sabe-se que há nome humano, `type` (OKF) e, para projeto, caminho do repositório. Nome de campo, formato e se o manifesto do workspace é obrigatório na 001 não estão especificados. O PLAN §2.4 só cita `_meta.md` no projeto. Decisão a registrar em ADR (CONST proíbe tratar "a confirmar" como fato).
 
@@ -125,7 +142,7 @@ Parâmetros (WFL §8; PLAN P-08; SPEC edge case "Edição manual"): debounce de 
 Prefixo temporário:
 - `.ai-memory-tmp.` é o prefixo do arquivo temporário. Ele fica no mesmo diretório do destino (WFL §4; PLAN §2.4 e P-06: `.ai-memory-tmp.*`; CONST INV-10).
 - Escrita atômica: temp → sync dos dados → rename sobre o destino → fsync do diretório pai (melhor esforço; no-op no Windows). No Windows, os erros 32 e 33 repetem a troca até 5 vezes, com 10, 20, 30, 40 e 50 ms (WFL §4; PLAN P-06).
-- A escrita devolve o identificador do arquivo (inode no Unix; índice NTFS no Windows, ou 0 se o volume não expõe) para o watcher reconhecer as próprias escritas, além do prefixo (WFL §4; PLAN P-06 e P-08). A checagem de hash de conteúdo no índice também torna a reindexação idêntica um no-op (WFL §8.1 e §13 item 3).
+- A escrita devolve o identificador do arquivo (inode no Unix; índice NTFS no Windows, ou 0 se o volume não expõe) (**corrigido:** o watcher não usa esse identificador; só o prefixo do temporário e a regra de conteúdo idêntico. WFL §4 revisado). A checagem de hash de conteúdo no índice também torna a reindexação idêntica um no-op (WFL §8.1 e §13 item 3).
 
 Eventos ignorados (WFL §8.1):
 - caminhos internos do Git (inclusive metadados aninhados);

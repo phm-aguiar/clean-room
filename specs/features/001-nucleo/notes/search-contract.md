@@ -52,21 +52,21 @@ Fontes abreviadas: SR = docs/storage-and-retrieval.md; DB = docs/database-schema
 
 ## (d) prepare_fts5_query (SR §11.2; PLAN P-05)
 
-Objetivo: nunca produzir erro de consulta por causa do texto.
+> **Revisão de clean room (2026-10-18).** Esta seção foi reescrita. A fonte é `docs/storage-and-retrieval.md` §11.2, corrigido contra o comportamento de referência. A versão anterior desta nota e a decisão de 2026-10-18 que pôs no doc uma lista de 57 palavras inventada e uma degradação "token a token" estão **revogadas**.
 
-1. **Sintaxe explícita** é detectada se há aspas, parênteses, ou os operadores `OR`, `AND`, `NOT`, `NEAR` como palavras.
-2. **Consulta nua** (sem sintaxe explícita): remove stop words e une os termos com **`OR`** (não AND), deixando o BM25 ordenar, para evitar recall próximo de zero em linguagem natural.
-   - A lista é configurável; o padrão é uma lista embutida de **57 palavras em inglês**. A comparação ignora caixa, mas não diacríticos. Se a consulta só tem stop words, mantém todas.
-   - LACUNA: as 57 palavras não estão listadas nos docs lidos; precisam ser definidas ou buscadas em outro doc.
-3. **Dois-pontos sem coluna conhecida** (ex.: `pick: handoff`): o `:` vira espaço e o termo é citado. Só `title:` e `body:` são preservados como coluna.
-4. **Tokens com pontuação ASCII** são citados como frase literal (ex.: `current.md`). Um `*` final (prefixo) passa sem citação.
-5. **Validação e degradação:** a consulta candidata é testada por um analisador FTS5 real, em banco em memória com sonda por thread. Se passa, é usada. Se não, degrada para palavras citadas unidas por `OR`, sempre válido.
-6. Consulta vazia (só espaços) retorna vazio; o chamador pula a consulta.
-- LACUNA: o comportamento da sintaxe explícita (se passa direto à validação sem remover stop words e sem OR) é inferido do texto, não afirmado.
+Objetivo: nunca produzir erro de consulta por causa do texto. Resumo do contrato (o doc tem o detalhe):
+
+1. **Sintaxe explícita:** aspas, `(`, `)`, ou algum token **exatamente** `OR`, `AND`, `NOT` ou `NEAR` (sensível à caixa).
+2. **Palavras de parada** (só sem sintaxe explícita): comparadas no token bruto, antes de pontuação e coluna, em minúsculas Unicode e sem remover diacríticos. A lista padrão tem 57 palavras e está no doc. A chave de configuração ausente usa a padrão, e uma lista vazia explícita desliga o filtro. Se todos os tokens forem palavras de parada, ficam todos.
+3. **Por token:** coluna desconhecida (com `:`, sem aspas, sem começar exatamente por `title:`/`body:`) vira termos citados; coluna conhecida mantém a coluna e cita só o valor; pontuação ASCII (exceto `:`, ignorando um `*` final) obriga a citar.
+4. **Citação:** variante dividida `("a-b" OR "a b")`, com o `*` final movido para depois das aspas; aspas internas são dobradas e não geram variante.
+5. **Junção:** ` OR ` sem sintaxe explícita; um espaço com sintaxe explícita (sem filtro de palavras de parada).
+6. **Degradação:** se a sonda (tabela FTS5 `title, body` em memória, conexão reaproveitada) recusa, a consulta **inteira** vira saco de palavras citadas (com variante) unidas por ` OR `, sem `"()` e sem filtro. Frases e operadores não sobrevivem.
+7. Consulta vazia, ou sem nenhum termo depois do tratamento, devolve vazio.
 
 ## (e) Reforço de acesso (SR §8; DB §4 e §1; SPEC; TASKS T036)
 
-- **Throttle:** no máximo **1 por minuto por página e operador** (SPEC escopo "Busca"; TASKS T036; PLAN `Writer.BumpAccess`, via escritor único). LACUNA: SR/DB não detalham o mecanismo do throttle (onde fica o instante do último bump, se é por `page_access` ou memória). O schema de `page_access` não tem coluna de timestamp, então o throttle exigiria coluna nova ou estado em memória; é decisão de design a registrar. A única menção a "uma vez por minuto" em SR (linha 710) é sobre o campo de último uso de um token, não de página.
+- **Throttle:** no máximo **1 por 60 s por par (página, operador)**, com estado só em memória (SR §8, revisado em 2026-10-18; a LACUNA anterior está fechada). O anônimo é um operador próprio: **leitura anônima reforça o contador compartilhado** e só não grava linha em `page_access`.
 - **Efeito:** incrementa `pages.access_count` (INTEGER NOT NULL DEFAULT 0) e `pages.last_accessed_at` **somente em versões correntes** (SR §8; DB §1 colunas de decaimento).
 - **Tabela `page_access` (DB §4):** `page_id BLOB REFERENCES pages(id) ON DELETE CASCADE`, `actor TEXT NOT NULL`, `PRIMARY KEY (page_id, actor)`, `WITHOUT ROWID`. Uma linha por página e operador, sem duplicar. `actor` é a chave de identidade do operador em TEXT, não FK (DB §0 "Texto de dono"). Só é registrada se há ator identificado; se a página não existe mais como corrente, a linha por operador não é criada (SR §8).
 - A busca temporal `as_of` não incrementa contadores (SR §11.4).

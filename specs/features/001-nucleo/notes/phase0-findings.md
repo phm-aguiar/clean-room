@@ -2,6 +2,33 @@
 
 Feature 001-nucleo, task T007. Entradas: as 6 notas (T001 a T006), spec.md, plan.md, constitution.md, tech.md e tasks.md. Nenhum arquivo do projeto foi alterado por esta análise. Os IDs "ADR-nn" abaixo são locais à Fase 0. O discovery já usa ADR-01 a ADR-10, então, fora deste documento, cite como "F0-ADR-nn" para evitar colisão. Toda decisão marcada como "decisão nossa" vale pela constituição ("a confirmar" nunca é fato; decidir e registrar em ADR). Os valores sem origem nas notas dizem de onde vem a justificativa.
 
+## 0. Revisão das ADRs contra a referência (auditoria de 2026-10-18, passada 2)
+
+> As ADRs abaixo foram decididas quando os docs tinham lacunas. A auditoria comparou cada uma com o
+> comportamento de referência, agora descrito nos docs. Onde a tabela da seção 2 diverge desta, **vale
+> esta seção** (e o doc citado). As linhas originais ficam como histórico. Itens marcados "decisão do
+> autor" estão em tasks bloqueadas da `tasks.md`.
+
+| ADR | Veredito | O que a referência faz (fonte) |
+|---|---|---|
+| ADR-02 | **mantida** | `\` é recusado, não convertido. A "normalização POSIX" do plan §2.1 foi corrigida (DV §4.2). |
+| ADR-03 | **corrigida** | `ensure_portable` não faz parte do construtor de caminho: só a escrita de página a aplica, a caminho novo. A leitura, os links, a reindexação e o watcher usam só a validação básica (DV §4.2; wiki, escrita de página passo 1). |
+| ADR-05 | **revogada (decisão do autor, T108)** | Não há lista de nomes reservados na validação de caminho. `_meta.md`, `bootstrap.md`, ledgers e `_pending/` são excluídos pelo watcher e pela reindexação, não pela validação (DV §4.2; wiki §8). |
+| ADR-08 | **corrigida** | Na autoridade, o `kind` é usado como está (sem aparar, sem caixa: `Decision` ≠ `decision`) e, sem `kind`, vem do prefixo do caminho, senão `fact` (SR §11.5). |
+| ADR-10 | **revogada** | Título de página não tem teto. O teto de 80 vale só para título de observação (prompts §11.1; wiki §3, título). |
+| ADR-13 | **revogada** | Allowlist e padrões extras existem e valem na escrita de página (prompts §11.3; T093). |
+| ADR-17 | **corrigida** | Ordem de inserção preservada; chaves novas no fim. A conformidade OKF acrescenta, nesta ordem e só se faltarem: `type`, `description`, `stale_after`, `sources`, `generated` (com `by`, depois `at`). Antes dela a escrita grava `tier` e, se fixada, `pinned`. Estilo de emissão: lista compacta (`-` na coluna da chave), bloco literal `|` para texto com quebra, aspas duplas só quando necessário, datas sem aspas, `{}`/`[]` para vazio, sem dobra de linha (wiki §3, emissão). |
+| ADR-18 | **corrigida** | O arquivo **é** regravado mesmo com conteúdo idêntico (mesmos bytes, nova data de modificação); a herança de `generated.at` garante os mesmos bytes, e o evento resultante do watcher é absorvido pelo caso A. Emissão do bloco em LF, sem BOM; corpo com os fins de linha originais (wiki §3; §5.2 propriedades). |
+| ADR-19 | **mantida** | Link de corpo grava `references`. Relação desconhecida é ignorada com aviso (wiki §3, relações). |
+| ADR-21, ADR-22 | **revogadas** (já na 002/T080 e T089) | A escrita de página não escreve ledger. `log.md`/`log-AAAA-MM.md` são o ledger bruto de eventos de hook (wiki §9). |
+| ADR-23 | **corrigida** | Formato do `_meta.md` de workspace e de projeto em wiki §1.1. Escrito na primeira escrita do escopo no processo, melhor esforço (falha só gera aviso). |
+| ADR-24 | **revogada** (002/T089) | `index.md` só é criado pela migração OKF. Na operação normal ele é uma página comum: **não** é ignorado pelo watcher nem pela reindexação. |
+| ADR-25, ADR-26 | **revogadas** | Não há commit por escrita de página. Commits automáticos só nos pontos de wiki §7, com o adaptador de escritas rastreadas (varredura completa nos casos do §7); a ferramenta MCP de escrita faz o commit `memory_write_page: <caminho>`. Nenhum commit é criado sem mudança. |
+| ADR-27 | **corrigida** | Ignorados: metadados Git em qualquer nível, links e pontos de reparse, temporários, `_meta.md` em qualquer nível, `bootstrap.md` e `_pending/` só na raiz do projeto, ledgers por nome **e** conteúdo, e arquivos cuja extensão não é exatamente `.md` (em minúsculas). `index.md` **não** é ignorado (wiki §8). |
+| ADR-29 | **corrigida** | O throttle de reforço fica na camada que atende a leitura, não no escritor; a chave é (página, operador) e o anônimo é um operador próprio que incrementa o contador (SR §8; T099). |
+| ADR-31 | **revogada** | A lista de 57 palavras é a do doc, configurável (SR §11.2; T094). |
+| ADR-34 | **decisão do autor (T113)** | A referência usa `refinery_schema_history` (DB §0; nome de tabela é contrato). Com outro nome, bancos da referência e do Go não são intercambiáveis. |
+
 ## 1. Resumo executivo
 
 - As 6 notas apontam 40 lacunas e conflitos. Este documento decide todos, em 36 ADRs e 4 itens de dependências. Nenhum depende de resposta externa.

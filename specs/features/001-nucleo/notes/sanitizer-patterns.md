@@ -1,5 +1,19 @@
 # Nota: padrões de segredo e limites de sanitização
 
+> **Revisão de clean room (2026-10-18), prevalece sobre o resto desta nota.** A fonte de verdade agora é
+> `docs/prompts-schemas-and-sanitizer.md` §11, corrigido contra o comportamento de referência. Nesta nota:
+> - a seção (c) está **obsoleta**: os padrões válidos são os 27 da tabela do doc §11.2, na ordem dela (que
+>   começa por `bearer_token`, não por `private_key`). Não usar as propostas da seção (c);
+> - a D1 está **errada** nas faixas bidi: só U+202A–202E e U+2066–2069 são removidas. U+200B–200F,
+>   U+2060–2065 e U+FEFF **ficam** no texto;
+> - a decisão de 2026-10-18 da seção (b) ("teto < 64 bytes usa marcador com contagem") está **revogada**:
+>   abaixo de 64 bytes vale só a cabeça com reticências `…` dentro do teto, sem marcador, e texto vazio
+>   com teto < 3 (doc §11.1, passo 5);
+> - a D5 (idempotência por convergência) não é o comportamento de referência: a sanitização é de
+>   **passada única** (doc §11.1, "Passada única");
+> - as LACUNAS 1, 4, 5 e 6 estão fechadas pelo doc §11; a classe `\s`/`\d`/`\b` é Unicode (doc §11.2,
+>   notas de leitura), o que a nota não previa.
+
 Task T003, feature 001-nucleo. Esta nota é somente leitura e não reproduz segredos reais. Os padrões RE2 da seção (c) são propostas nossas, escritas do zero a partir da descrição textual dos docs. Não foi visto nem copiado código original.
 
 ## 0. Fontes lidas e achado principal
@@ -55,7 +69,7 @@ Pipeline (domain-vocabulary §7.1, ordem):
 - **Corpo:** sanitiza, depois aplica o teto de **16 KiB (16384 bytes)**.
   - O truncamento é de cabeça e cauda. O orçamento útil é o teto menos 48 bytes de marcador, dividido metade para a cabeça e metade para a cauda.
   - O marcador no meio tem a forma `\n...[truncated N bytes]...\n`, com N igual aos bytes omitidos.
-  - Se o teto for menor que 64 bytes, o corte é só de cabeça.
+  - Se o teto for menor que 64 bytes, o corte é só de cabeça. O marcador `\n...[truncated N bytes]...\n` entra no fim se couber dentro do teto; se não couber, corta-se só a cabeça, sem marcador. (Decisão de 2026-10-18.)
   - Nunca corta no meio de um caractere multibyte.
 - **Tipo-fronteira:** o tipo sanitizado tem valor interno privado e só a função sanitizadora o constrói. A escrita aceita só esse tipo e as operações internas de escrita não são acessíveis fora de `storage` (security-boundaries §7). Cobertura STRONG (estrutural), mais um cenário ponta a ponta e testes unitários da remoção.
 - **Reaplicação:** o servidor re-sanitiza o corpo, e o frontmatter de saída de hooks é re-sanitizado (admission-webhooks §2.1 passo 5). Em backup de assets MCP, arquivos não UTF-8 são copiados sem sanitizar (design-backup-agent-assets §5).

@@ -2,6 +2,28 @@
 
 Tarefa T004, feature 001-nucleo. Somente leitura. Fontes: `docs/okf.md`, `docs/wiki-files-layer.md` (§3, §5.2), `docs/domain-vocabulary.md` (§4.2, §6.6, §6.7, §6.8, §14), `docs/database-schema.md` (tabela `links`, linhas 188-210), `specs/features/001-nucleo/plan.md`, `.github/memory/constitution.md`.
 
+> **Auditoria de 2026-10-18, passada 2.** Esta nota foi escrita com os docs antigos. Os docs
+> `wiki-files-layer.md` §3 e §5 foram reescritos contra o comportamento de referência e **vencem** esta
+> nota. Correções que afetam o código:
+> - o fechamento `---` como **última linha do arquivo, sem quebra** é aceito (corpo vazio); o tipo de
+>   quebra (LF ou CRLF) é decidido pela cerca de abertura;
+> - o frontmatter guarda **tipos** (booleano, número, nulo, texto, lista, mapeamento), com a resolução
+>   de escalares do núcleo YAML 1.2 descrita no doc: só `true/True/TRUE` e `false/False/FALSE` são
+>   booleanos (`yes`, `on` são texto), datas são texto, `007` é texto, inteiro acima de 64 bits é erro,
+>   chave duplicada é erro. Um frontmatter cuja raiz não é mapeamento é aceito na leitura; na escrita, a
+>   conformidade OKF o troca por mapeamento vazio;
+> - `pinned` só fixa quando é o **booleano** `true`; não há herança da fixação da versão anterior
+>   (correção da decisão "herdar `pinned`" da 001/T080);
+> - a chave `tier` é sempre gravada com o tier do pedido de escrita (vence o frontmatter); na
+>   reindexação, o tier sai da chave `tier` (ausente → `semantic`; nulo, não texto ou desconhecido → erro);
+> - título: **pula** linhas dentro de bloco cercado (a linha da tabela (b) que diz o contrário está
+>   errada) e não tem teto;
+> - ordem de emissão e estilo YAML: ver `phase0-findings.md` §0, ADR-17;
+> - links: algoritmo completo no doc (links markdown com `<destino>`, destino com espaços, parênteses
+>   aninhados, título opcional, escape com `\`, **decodificação `%XX` uma vez**; wikilink precedido de
+>   `!` **é** link; relações só como lista de textos, relativas à raiz do projeto, sem decodificação);
+> - as lacunas 1 a 5 do fim desta nota estão **fechadas** pelo doc.
+
 ## (a) Estrutura do frontmatter YAML
 
 ### Reconhecimento do bloco (wiki-files-layer §3.1; okf "Leitura de frontmatter")
@@ -34,7 +56,8 @@ Tarefa T004, feature 001-nucleo. Somente leitura. Fontes: `docs/okf.md`, `docs/w
 | `abstract` | texto. Resumo de uma linha. Vazio ou não-texto é ignorado. Limite público: 1024 caracteres brutos, aparado. | wiki-files-layer §5.2; domain-vocabulary §6.6 |
 | `kind` | texto, até 64 caracteres, sem caractere de controle, aparado. Vazio significa ausente. | domain-vocabulary §6.6 |
 | `relations` | mapa de relação para alvos (ver (c)). Até 32 alvos no total, cada um com até 1024 caracteres e sem caractere de controle. | domain-vocabulary §6.6; wiki-files-layer §3.5 |
-| `pinned` | lido do frontmatter na escrita. Frontmatter de índice recebe a forma canônica (nível de retenção e fixação). | wiki-files-layer §5.2 passo 5 |
+| `pinned` | só o booleano `true` fixa (o texto `"true"` não). Fixação final = pedido **ou** `_slots/` **ou** `pinned: true`. Gravado como `pinned: true` quando fixada; `pinned: false` presente fica como está. Sem herança da versão anterior. | wiki-files-layer §5.2 passo 5 |
+| `tier` | na escrita, sempre sobrescrito pelo tier do pedido (posição mantida se existia, senão no fim). Na reindexação, lido daqui (ausente → `semantic`; nulo, não texto ou desconhecido → erro). | wiki-files-layer §5.2 passo 5 e reindex de página |
 | `last_modified_by` | bloco com identificador do autor, quando houver. Ator anônimo não gera bloco. | wiki-files-layer §5.2 passo 3 |
 | `okf_version` | `"0.2"`, só no `index.md` da raiz. O frontmatter permitido em `index.md` é só esse. | okf "Versão do formato" |
 
@@ -71,7 +94,7 @@ Fonte: wiki-files-layer §3.3, okf "Demais chaves" (linha `title`).
 
 Ordem de prioridade:
 1. Campo `title` do frontmatter, se for texto e não vazio após remover espaços das pontas.
-2. Primeira linha do corpo que começa com `# ` e tem texto depois (também após aparar). A busca é por linha e não pula blocos de código (okf).
+2. Primeira linha do corpo que começa com `# ` e tem texto depois (também após aparar). A busca é por linha e **pula** linhas dentro de blocos cercados (corrigido: a referência ignora `# ` em código cercado; wiki §3, título).
 3. Nome do arquivo sem o sufixo `.md`, sem o caminho de diretórios.
 
 Limites:
@@ -193,7 +216,7 @@ Fonte: okf "Chave type"; domain-vocabulary §14. As regras valem em ordem, e a p
 - CRLF: o frontmatter é reconhecido com LF ou CRLF. A emissão do bloco YAML usa LF (§3.2).
 - LACUNA: não está especificado como fica a quebra de linha do bloco emitido quando o arquivo original usava CRLF, nem se o corpo CRLF mais bloco LF gera arquivo com fins de linha mistos. O corpo mantém seus fins de linha originais. O Analyst deve decidir se isso afeta a regra de "bytes idênticos". Hipótese segura: reescrita sem mudança de conteúdo não toca o arquivo, então não há reescrita do bloco.
 - Escrita atômica (wiki-files-layer §4; plan P-06; INV-10): temporário `.ai-memory-tmp.*` no mesmo diretório, `Sync`, rename e fsync do diretório. No Windows, repete até 5 vezes para os códigos 32 e 33, com espera de 10 a 50 ms.
-- O watcher ignora as próprias escritas por prefixo do temporário e pelo identificador do arquivo. A checagem de hash de conteúdo no índice faz o reindex de conteúdo idêntico ser no-op (wiki-files-layer §8.1 e §13.3).
+- O watcher ignora o temporário pelo prefixo. O identificador do arquivo **não** é usado (corrigido). As próprias escritas são absorvidas pela checagem de conteúdo idêntico no índice (wiki-files-layer §4, §8.1 e §13.3).
 
 ## Gaps e itens "a confirmar" para o Analyst
 1. LACUNA: ordem canônica das chaves e estilo de emissão do YAML (aspas, indentação) não especificados.
