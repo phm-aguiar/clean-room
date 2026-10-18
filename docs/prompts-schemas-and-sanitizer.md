@@ -826,10 +826,17 @@ redigido e truncado, pronto para ser guardado.
 
 Os passos rodam nesta ordem, sobre cada campo de texto:
 
-1. **Remover sequências de escape de terminal.** Sequências de controle de formato CSI (ESC `[`
-   seguido de parâmetros e de um caractere final), sequências OSC (ESC `]` até BEL ou ESC `\`) e
-   sequências de dois caracteres (ESC seguido de um caractere no intervalo de `@` a `_`). São
-   removidas inteiras, sem deixar texto residual.
+1. **Remover sequências de escape de terminal.** Três formas, removidas inteiras, sem deixar texto
+   residual:
+   - CSI: ESC `[`, depois zero ou mais bytes de parâmetro restritos a dígitos, `;` e `?`, depois zero
+     ou mais bytes intermediários de espaço a `/`, e por fim um caractere final de `@` a `~`;
+   - OSC: ESC `]`, depois qualquer texto sem BEL e sem ESC, terminado por BEL ou por ESC `\`;
+   - dois caracteres: ESC seguido de um caractere de `@` a `Z` ou de `\` a `_`. O `[` fica **fora**
+     dessa faixa, porque ele só abre CSI.
+
+   Uma sequência que não fecha nenhuma dessas formas (CSI com parâmetro fora da lista, como `:` ou
+   `<`, ou OSC sem terminador) não é removida inteira: só o ESC cai no passo 2, e o resto (por
+   exemplo `[38:5:1m` ou `]0;título`) fica como texto.
 2. **Remover caracteres de controle.** Caracteres C0 exceto tab, LF e CR (`U+0000–0008`, `U+000B`,
    `U+000C`, `U+000E–001F`), DEL (`U+007F`), C1 (`U+0080–009F`) e sobrescritas bidirecionais
    (`U+202A–202E` e `U+2066–2069`). É feito **antes** dos padrões de segredo, para que um escape no
@@ -841,12 +848,26 @@ Os passos rodam nesta ordem, sobre cada campo de texto:
    a construção do sanitizador falhar, o que impede o início do serviço.
 5. **Truncar, sempre depois da redação.** Cortar antes faria um segredo partido escapar, porque o
    pedaço que sobra pode não casar com nenhum padrão.
-   - Título de observação: no máximo 80 caracteres (contando caracteres Unicode). Se cortar, o
-     último caractere é reticências `…`, e o total fica em 80.
-   - Corpo de observação, na camada de armazenamento: no máximo 16 KiB (16384 bytes), por
-     cabeça e cauda. Cada metade recebe metade do orçamento, descontando 48 bytes reservados para a
-     marca `\n...[truncated N bytes]...\n` que separa as duas partes. Se o orçamento for menor que 64
-     bytes, vale só a cabeça. O corte nunca separa um caractere UTF-8.
+   - Título de observação: no máximo 80 caracteres (contando caracteres Unicode). Se cortar, ficam
+     os 79 primeiros caracteres seguidos de reticências `…`, e o total fica em 80. O corte não
+     remove quebras de linha e pode cair dentro de um marcador recém-inserido (por exemplo
+     `[REDACTE…`). Isso é aceito: o segredo já foi removido antes do corte.
+   - Corpo de observação, na camada de armazenamento: no máximo 16 KiB (16384 bytes), medidos em
+     bytes UTF-8. Texto que já cabe no teto passa intacto. Acima do teto, o corte é por cabeça e
+     cauda:
+     - orçamento útil = teto − 48 bytes (reserva da marca); `metade` = orçamento útil ÷ 2, com
+       divisão inteira. Cabeça e cauda usam a **mesma** `metade`;
+     - a cabeça é o maior prefixo que cabe em `metade` bytes sem partir caractere (arredonda
+       **para dentro**);
+     - a cauda começa no último início de caractere que fica **em ou antes** da posição
+       `total − metade` (arredonda **para fora**: um caractere multibyte que atravessa essa posição
+       entra inteiro na cauda, que pode ficar até 3 bytes maior que `metade`);
+     - entre as duas vai a marca `\n...[truncated N bytes]...\n`, onde N é o número de bytes entre o
+       fim da cabeça e o início da cauda.
+   - Teto menor que 64 bytes (caso que o teto padrão de 16 KiB nunca atinge, mas que a função aceita):
+     vale só a cabeça, **sem** a marca de contagem. O texto é cortado em `teto − 3` bytes (sem partir
+     caractere) e recebe reticências `…` (3 bytes), que ficam dentro do teto. Com teto menor que
+     3 bytes, o resultado é texto vazio.
    - Excertos de eventos, cortados depois da redação, por tipo de evento:
      - prompt do usuário: 16 KiB;
      - resumo de compactação: 16 KiB;
@@ -860,6 +881,16 @@ Os passos rodam nesta ordem, sobre cada campo de texto:
 normalização antes da redação. A confirmar se algum passo a montante faz isso (não encontrado no
 código do sanitizador).
 
+**Passada única.** Cada campo passa uma vez pela sequência: remoção de controle, padrões na ordem
+e corte. O resultado do corte **não** volta para os padrões. Uma nova borda de palavra criada pelo
+corte (por exemplo, as reticências do título logo depois de um trecho que só então teria borda) não
+gera uma redação extra.
+
+**Páginas da wiki.** O corpo de uma página e cada texto do frontmatter passam só pelos passos 1 a 4:
+não há teto de tamanho para o corpo de página nem para o título de página. O teto de 80 caracteres
+e o de 16 KiB valem só para observações. As escritas de página usam o mesmo sanitizador configurado
+(padrões extras e allowlist do operador inclusos), e não um sanitizador só com os padrões embutidos.
+
 **Reaplicação.** A redação é idempotente para os casos cobertos pelos testes. Os valores que já
 viraram marcador `[REDACTED:...]` começam com `[`, que está fora da classe de caracteres de valor
 dos padrões de cabeçalho e de token. Nos padrões de atribuição de variável de ambiente, o valor é
@@ -870,8 +901,25 @@ confirmar por teste.
 
 Os padrões são aplicados na ordem da tabela. Notas de leitura:
 
-- `(?i)` torna a busca insensível a maiúsculas; `(?s)` faz o ponto casar com quebra de linha.
+- `(?i)` torna a busca insensível a maiúsculas, com dobra de caixa Unicode; `(?s)` faz o ponto
+  casar com quebra de linha.
 - Os padrões não usam lookahead, lookbehind nem referência a grupo anterior.
+- **As classes abreviadas são Unicode, não ASCII.** No comportamento de referência:
+  - `\s` casa qualquer caractere com a propriedade Unicode White_Space: além de tab, LF, VT, FF,
+    CR e espaço, também U+0085, U+00A0 (espaço não separável), U+1680, U+2000 a U+200A, U+2028,
+    U+2029, U+202F, U+205F e U+3000. Por consequência, `\S` e `[^\s]` param nesses caracteres;
+  - `\d` casa qualquer dígito decimal Unicode (categoria Nd), não só `0` a `9`;
+  - `\b` é borda de palavra Unicode: letras acentuadas, marcas combinantes e dígitos de qualquer
+    escrita contam como caracteres de palavra. Por isso `éAKIA…` não tem borda antes de `AKIA`.
+  Um motor de expressões em que essas classes são só ASCII precisa substituí-las por classes
+  explícitas equivalentes. Sem isso, um `Bearer` seguido de espaço não separável e de um token não
+  é redigido, e o token vaza.
+- Classes escritas por extenso (`[A-Za-z0-9]`, `[0-9A-Z]`) são só ASCII **apenas nos padrões sem
+  `(?i)`** (2 a 18 e 22). Sob `(?i)` (padrões 1, 19, 20, 21 e 23 a 27), a dobra de caixa simples do
+  Unicode se aplica também às classes e aos literais: `[A-Za-z]`, `k` e `s` casam ainda U+212A
+  (sinal Kelvin, que dobra para `k`) e U+017F (s longo, que dobra para `s`). Exemplo: no padrão 19,
+  `access-toKen` escrito com o sinal Kelvin no lugar do `k` casa como `access-token`. Uma
+  reimplementação precisa da mesma dobra, nem mais nem menos (sem dobra completa, como `ß` → `ss`).
 - Em cada célula, `\|` significa a barra de alternância `|`; a barra está escapada só para não
   quebrar a tabela.
 - `<SEGMENTO>` na linha de caminho é um dos trechos listados nas linhas 23 a 27.
@@ -912,6 +960,16 @@ Os padrões são aplicados na ordem da tabela. Notas de leitura:
   ocorrência que contém uma entrada da allowlist fica intacta, e o padrão continua valendo para o
   resto do texto.
 - Padrões extras aceitam a mesma sintaxe da tabela. Ficam no fim da ordem, com rótulo `custom`.
+- O comportamento de referência **não valida** o conteúdo das listas além de compilar os padrões.
+  Duas consequências, ambas armadilhas de configuração:
+  - uma entrada vazia na allowlist é subcadeia de qualquer ocorrência, então desliga **toda** a
+    redação;
+  - um padrão extra que casa texto vazio é aplicado em cada posição e insere `[REDACTED:custom]`
+    entre todos os caracteres.
+  Uma reimplementação que recuse essas entradas na construção (erro que impede o início do serviço)
+  diverge da referência. Esse desvio precisa ser uma decisão registrada.
+- O sanitizador só recebe texto Unicode válido. Bytes UTF-8 inválidos são tratados antes, na
+  decodificação da entrada, fora do sanitizador. Ele não tem regra própria para esses bytes.
 
 ### 11.4 Decisões de projeto
 

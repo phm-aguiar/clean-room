@@ -59,7 +59,18 @@ Da menor para a maior precedência:
 
 O ambiente que não é chave de configuração (diretório pessoal do usuário,
 `AI_MEMORY_HOME`, identificador de sessão do agente, chaves de provedores, diretório
-atual) é capturado **uma única vez**. Depois disso, não há novas leituras de ambiente,
+atual) é capturado **uma única vez**. O diretório pessoal é, nesta ordem: `AI_MEMORY_HOME`,
+`HOME`, e no Windows `USERPROFILE` (o Windows nativo muitas vezes não tem `HOME`). Para comparações
+de prefixo, ele é guardado com barras normais e sem barra final.
+
+Variáveis lidas como valor único, fora da regra de `__` (porque o formato delas não cabe nela):
+
+- `AI_MEMORY_SEARCH_FTS_STOPWORDS`: lista separada por vírgula que substitui
+  `[search.fts] stopwords`. Cada item é aparado e itens vazios são descartados. Variável ausente,
+  vazia ou só com espaços **não** muda a configuração (para desligar o filtro, use `stopwords = []`
+  no arquivo). Um valor só com vírgulas (`" , , "`) vira lista vazia explícita, que desliga o filtro;
+- `AI_MEMORY_ADMISSION_WEBHOOKS_JSON`: lista JSON de webhooks que substitui a do arquivo;
+- `AI_MEMORY_EMBEDDING_QUERY_PREFIX` e `AI_MEMORY_EMBEDDING_DOCUMENT_PREFIX`. Depois disso, não há novas leituras de ambiente,
 exceto as exceções documentadas: o diretório de backup e as variáveis de tempo dos
 hooks (seção 5).
 
@@ -73,6 +84,9 @@ depois:
 - `decay.observation_retention_days` deve ser maior ou igual a zero.
 - `decay.observation_prune_batch` deve ser maior que zero.
 - Limites do filtro de entropia são validados (faixas numéricas).
+- `search.fts.stopwords`: no máximo **2000** itens; cada item é aparado e não pode ficar vazio, ter mais
+  de **64** caracteres Unicode, nem ter espaço interno (um item com duas palavras nunca casaria com um
+  token). Ver [storage-and-retrieval.md](storage-and-retrieval.md) §11.2.
 - `consolidation.max_input_tokens` deve ser maior ou igual a **6000**.
 - `consolidation.max_output_tokens` deve ser maior ou igual a **1000**.
 - `llm_timeout_secs` deve ser maior ou igual a **1**.
@@ -131,8 +145,25 @@ O bearer **não** aparece na linha de comando do hook.
 
 ### 2.5 Diretório de dados
 
-- Padrão: diretório de dados local do usuário, conforme a plataforma.
-- O caminho é convertido para absoluto e canônico, e é registrado no início do servidor.
+- **Precedência:** `--data-dir` > `AI_MEMORY_DATA_DIR` > chave `data_dir` do `config.toml` > padrão.
+- **Padrão**, a pasta `ai-memory` dentro do diretório de dados local do usuário:
+  - **Windows:** `%LOCALAPPDATA%\ai-memory` (pasta conhecida "Local AppData", em geral
+    `C:\Users\<usuário>\AppData\Local\ai-memory`);
+  - Linux: `$XDG_DATA_HOME/ai-memory`, ou `~/.local/share/ai-memory`;
+  - macOS: `~/Library/Application Support/ai-memory`;
+  - se o sistema não informa esse diretório: `./ai-memory`, relativo ao diretório atual.
+- **Onde o `config.toml` é procurado:** em `--config`, se informado; senão em `<dir>/config.toml`, com
+  `<dir>` = `--data-dir`, ou `AI_MEMORY_DATA_DIR`, ou o padrão. A chave `data_dir` escrita **dentro**
+  do arquivo muda o diretório de dados, mas não muda onde o próprio arquivo foi procurado. Arquivo
+  ausente não é erro: valem os padrões.
+- **Canonicalização:** o caminho final é convertido para absoluto e canônico (links resolvidos). Se
+  ele ainda não existe, canonicaliza-se o diretório pai e o último componente é acrescentado; se nem
+  o pai existe, o caminho fica como foi dado. O resultado é registrado no log no início do servidor.
+  - **Windows:** a forma canônica tem o prefixo de caminho estendido `\\?\` (por exemplo
+    `\\?\C:\Users\me\AppData\Local\ai-memory`). Ela é usada internamente. Onde um caminho é
+    mostrado ao usuário ou gravado na configuração de outro programa (comandos de hook, por exemplo),
+    o prefixo é removido: `\\?\C:\…` vira `C:\…` e `\\?\UNC\servidor\…` vira `\\servidor\…`
+    (o `UNC` sem distinguir caixa). Outras formas com `\\?\` ficam como estão.
 - Layout: `wiki/`, `raw/`, `db/`, `models/`, `logs/`, o arquivo `config.toml`, a pasta
   `hook-spool/`, `auth.json` (credenciais OIDC do cliente), `client-projects.json`
   (registro local de checkouts), `autowire-state/` e o arquivo de trava `.serve.lock`.

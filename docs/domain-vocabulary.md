@@ -86,21 +86,33 @@ de um de workspace. Tipos:
 
 Comportamento comum:
 
-- Representação textual padrão do UUID; leitura por texto falha com "registro malformado"
-  se não for UUID válido.
-- Leitura de bytes exige exatamente 16 bytes (senão, registro malformado).
+- **Escrita como texto:** sempre a forma canônica, com hífens e hexadecimal em minúsculas
+  (`019e5633-4140-7dd0-9e2f-118825ca6355`).
+- **Leitura de texto:** aceita, sem distinguir caixa, as quatro formas usuais: com hífens
+  (36 caracteres), 32 dígitos hexadecimais sem hífen, entre chaves (`{…}`) e com prefixo
+  `urn:uuid:`. Não há aparo de espaços. Qualquer outra coisa falha com "registro malformado".
+- Leitura de bytes exige exatamente 16 bytes, em ordem big-endian (senão, registro malformado).
+  No banco, o identificador é gravado nesses 16 bytes.
 - Serialização transparente: o identificador aparece na API como o próprio texto do UUID.
 - Todo identificador é tratado como texto em JSON e em URL (`uuid` como string).
+- **Geração:** UUID versão 7 (RFC 9562): 48 bits de milissegundos desde a época Unix, depois
+  bits aleatórios. Identificadores gerados no mesmo processo saem em ordem crescente, inclusive
+  dentro do mesmo milissegundo.
 
 Casos especiais:
 
 - **`PageId` identifica uma versão da página**, não o caminho. Cada atualização gera um novo
   `PageId` (§6.3).
-- **`SessionId` vindo de um harness**: se o identificador nativo for um UUID, é usado como
-  está (em forma canônica). Qualquer outra string (Codex, OpenCode e similares) é convertida
-  de forma **determinística** em UUID v5 a partir de um namespace fixo. Assim, os POSTs dos
-  hooks e as buscas posteriores por identificador nativo usam a mesma chave. Qualquer
-  ferramenta offline que cruze transcrições por identificador nativo deve aplicar a mesma regra.
+- **`SessionId` vindo de um harness**: se o identificador nativo é lido como UUID (pelas
+  formas aceitas acima), ele é usado como está, em forma canônica. Qualquer outra string (Codex,
+  OpenCode e similares) é convertida de forma **determinística** em UUID versão 5 (SHA-1), com:
+  - namespace: o namespace padrão **OID** da RFC 9562, `6ba7b812-9dad-11d1-80b4-00c04fd430c8`;
+  - nome: os bytes UTF-8 do identificador nativo, exatamente como chegaram (sem aparar espaços
+    e sem mudar caixa).
+
+  Assim, os POSTs dos hooks e as buscas posteriores por identificador nativo usam a mesma chave.
+  Qualquer ferramenta offline que cruze transcrições por identificador nativo deve aplicar a
+  mesma regra. Outra escolha de namespace gera chaves incompatíveis com bancos existentes.
 
 ### 4.2 Caminho da página (`PagePath`)
 
@@ -111,12 +123,34 @@ Regras obrigatórias:
 
 - não vazio;
 - não começa com `/`;
-- sem prefixo de unidade de Windows (`C:/…`);
+- sem prefixo de unidade de Windows na forma letra ASCII, `:` e `/` (`C:/…`). A forma sem barra
+  (`C:notas.md`) não é recusada por esta regra em Linux; no Windows, o próprio sistema a lê como
+  prefixo de unidade e ela é recusada como caminho absoluto. Em todos os sistemas ela é recusada
+  depois por `ensure_portable`, por causa do `:`;
 - sem `\` como separador;
-- nenhum segmento vazio, `.` ou `..`.
+- nenhum segmento vazio, `.` ou `..` (o que também recusa `/` no fim e `//` no meio).
+
+Não há exigência de extensão `.md` nesta validação.
 
 Validação **separada e mais estrita**, `ensure_portable`: garante que o arquivo possa ser
-materializado em qualquer sistema operacional (nomes reservados do Windows, por exemplo).
+materializado em qualquer sistema operacional. É aplicada a cada segmento do caminho, nesta ordem, e
+o erro nomeia o caminho, o segmento e o motivo:
+
+1. o segmento tem no máximo **255 bytes** em UTF-8;
+2. sem os caracteres `<`, `>`, `:`, `"`, `|`, `?` e `*`;
+3. sem caractere de controle abaixo de U+0020;
+4. não termina em `.` nem em espaço (o Windows os remove ao criar o arquivo, e o nome gravado
+   divergiria do índice);
+5. o **radical** (o trecho antes do **primeiro** `.`, com espaços finais removidos) não é nome de
+   dispositivo do Windows, sem distinguir caixa: `con`, `prn`, `aux`, `nul`, `com1` a `com9`,
+   `lpt1` a `lpt9`, e também `com¹`, `com²`, `com³`, `lpt¹`, `lpt²` e `lpt³` (o Windows lê os
+   dígitos sobrescritos como porta). Assim `CON`, `con.md`, `CON .md` e `con.backup.md` são todos
+   recusados; `com0` e `lpt0` não;
+6. não é reservado pelo Git: `.git` em qualquer caixa, ou um apelido curto 8.3 de cinco caracteres
+   `git~1` a `git~4` (prefixo comparado sem distinguir caixa).
+
+Esta validação não tem lista de nomes de página reservados (como `index.md` ou `_meta.md`) nem de
+diretórios reservados: essas exclusões, quando existem, são feitas pelo chamador.
 Ela é aplicada **somente quando um caminho novo entra no sistema**, não na leitura de linhas
 já persistidas. Motivo: apertar a validação de leitura tornaria ilegível uma listagem inteira
 por causa de uma única página antiga. A regra é a mesma em todas as plataformas, de propósito:
@@ -125,31 +159,58 @@ uma wiki criada em Linux precisa ser utilizável no Windows com a mesma versão.
 **Chave de colisão de caminhos** (`portable_page_key`): dois caminhos com a mesma chave são o
 mesmo arquivo em sistemas que dobram caixa ou normalizam Unicode (macOS, Windows). A chave é
 obtida em duas etapas, nesta ordem: 1) minúsculas; 2) normalização Unicode NFC. A ordem
-importa: a letra `İ` minúscula vira `i` seguido de U+0307, que só se recompõe depois da
-conversão para minúsculas.
+importa: a normalização tem que ver o texto já em minúsculas.
+
+A conversão para minúsculas é a **completa** do Unicode, não a de um caractere por vez:
+
+- um caractere pode virar mais de um: `İ` (U+0130) vira `i` seguido de U+0307. Não existe forma
+  composta para esse par, então ele continua com dois caracteres depois da NFC. Uma conversão
+  simples, que leva `İ` a `i`, produz outra chave;
+- depende do contexto: `Σ` no fim de palavra vira `ς` (sigma final), e no meio vira `σ`. Uma
+  conversão sem contexto gera `σ` sempre, e a chave diverge.
 
 ### 4.3 Tipo de agente (`AgentKind`)
 
-Discriminador do agente de código que capturou uma observação ou handoff. Valores (texto no
-fio):
+Discriminador do agente de código que capturou uma observação ou handoff. São **27 valores**,
+incluindo `other`. A tabela dá o valor no fio (forma canônica, sempre a que é escrita) e os
+apelidos que a conversão tolerante também aceita.
 
-| Valor no fio | Valor no fio | Valor no fio |
-|---|---|---|
-| `claude-code` | `open-code` | `kimi-code` |
-| `codex` | `cursor` | `kiro-cli` |
-| `gemini-cli` | `claude-desktop` | `command-code` |
-| `openclaw` | `antigravity-cli` | `hermes` |
-| `omp` | `pi` | `pool` |
-| `crush` | `grok` | `zcode` |
-| `zero` | `devin` | `copilot-cli` |
-| `grizzybot` | `other` | |
+| Valor no fio | Apelidos aceitos na leitura |
+|---|---|
+| `claude-code` | `claude_code`, `claude` |
+| `codex` | — |
+| `open-code` | `opencode`, `opencode2`, `opencode-v2`, `open-code2` |
+| `cursor` | — |
+| `gemini-cli` | `gemini` |
+| `claude-desktop` | `claude_desktop` |
+| `openclaw` | `open-claw` |
+| `antigravity-cli` | `antigravity`, `agy` |
+| `omp` | `oh-my-pi` |
+| `pi` | — |
+| `crush` | — |
+| `grok` | — |
+| `zero` | — |
+| `devin` | — |
+| `kimi-code` | `kimi` |
+| `kiro-cli` | `kiro` |
+| `command-code` | `commandcode`, `cmdc`, `cmd` |
+| `hermes` | `hermes-agent` |
+| `pool` | `poolside` |
+| `zcode` | `zai` |
+| `copilot-cli` | `copilot_cli` |
+| `grizzybot` | `grizzy-bot` |
+| `droid` | `factory-droid`, `factory_droid` |
+| `muse` | `muse-code`, `musecode` |
+| `codebuddy` | `code-buddy` |
+| `ibm-bob` | `bob` |
+| `other` | qualquer texto não listado |
 
-Total: **23 valores**, incluindo `other`.
-
-- **Conversão tolerante** a partir de texto livre: aceita aliases (por exemplo `claude`,
-  `claude_code`, `agy`, `kimi`, `opencode`, `poolside`, `cmd`, `hermes-agent`,
-  `copilot_cli`). **Valor desconhecido vira `other`**, para que a ingestão nunca falhe por
-  causa de um agente novo ou de um erro de digitação.
+- **Conversão tolerante** a partir de texto livre: a comparação é **exata e sensível à caixa**,
+  sem aparar espaços (`Claude`, `CODEX` ou ` codex` viram `other`). **Valor desconhecido vira
+  `other`**, para que a ingestão nunca falhe por causa de um agente novo ou de um erro de
+  digitação.
+- A coluna de tipo de agente das sessões tem uma restrição `CHECK` com os valores no fio. Por isso,
+  cada novo tipo de agente exige migração do banco.
 - **Predicados de injeção**: definem se um agente consome a saída dos hooks como contexto.
   Eles existem porque a busca de handoff é **destrutiva** (marca o handoff como aceito).
   Buscar o handoff quando a saída será descartada perderia o handoff silenciosamente.
@@ -158,8 +219,9 @@ Total: **23 valores**, incluindo `other`.
 |---|---|---|
 | Injeta handoff no início de sessão | Todos, **exceto** `crush`, `grok`, `zero`, `kimi-code`, `hermes`, `pool`, `other` | Os demais buscam o handoff no hook de início. |
 | Injeta handoff no envio de prompt | Só `kimi-code` | Entrega no evento de envio do prompt. |
+| Injeta contexto no envio de prompt | Só `claude-code` e `codex` | A saída do hook de envio de prompt é lida como contexto por esses dois. |
 | Injeta handoff após uso de ferramenta | Só `grok` | Aceita o handoff no primeiro evento de ferramenta da sessão. |
-| Reusa o identificador de sessão após o fim | Só `grok` | Um reinício da mesma conversa reabre a sessão. Para os demais, sessão encerrada é definitiva. |
+| Reusa o identificador de sessão após o fim | `grok` e `kimi-code` | Um reinício da mesma conversa reabre a sessão. Para os demais, sessão encerrada é definitiva. |
 
 Para agentes sem injeção, o handoff continua disponível sob demanda pela ferramenta MCP
 de aceite de handoff.
@@ -174,9 +236,23 @@ Eventos do ciclo de vida, em forma canônica de texto (kebab-case):
 `session-start`, `user-prompt`, `pre-tool-use`, `post-tool-use`, `pre-compact`,
 `post-compaction`, `notification`, `stop`, `session-end`, `other`.
 
-A conversão aceita também a forma snake_case e a forma PascalCase dos mesmos eventos
-(`PostToolUse`, `session_start`, `UserPromptSubmit` para `user-prompt`). Valor desconhecido
-gera registro malformado.
+A conversão de texto é **exata e sensível à caixa** e aceita só estas grafias:
+
+| Valor canônico | Grafias aceitas |
+|---|---|
+| `session-start` | `session-start`, `session_start`, `SessionStart` |
+| `user-prompt` | `user-prompt`, `user_prompt`, `UserPromptSubmit` |
+| `pre-tool-use` | `pre-tool-use`, `pre_tool_use`, `PreToolUse` |
+| `post-tool-use` | `post-tool-use`, `post_tool_use`, `PostToolUse` |
+| `pre-compact` | `pre-compact`, `pre_compact`, `PreCompact` |
+| `post-compaction` | `post-compaction`, `post_compaction`, `PostCompaction` |
+| `notification` | `notification`, `Notification` |
+| `stop` | `stop`, `Stop` |
+| `session-end` | `session-end`, `session_end`, `SessionEnd` |
+| `other` | `other`, `Other` |
+
+Qualquer outra grafia (`UserPrompt`, `SESSION_START`, `PostCompact`) gera registro malformado.
+Diferente do tipo de agente, aqui não há valor de reserva.
 
 ### 5.2 Entrada de observação
 
@@ -272,11 +348,14 @@ afeta relevância.)
 
 Normalização de uma entidade:
 
-1. remove espaços no início e no fim;
-2. colapsa sequências de espaços internos em um só;
-3. converte para minúsculas;
-4. rejeita o resultado se for vazio, se contiver caractere de controle ou se passar de 64
-   caracteres.
+1. separa o texto em palavras por espaço em branco **Unicode** (o que remove espaços nas pontas);
+2. junta as palavras com um único espaço;
+3. converte para minúsculas, com a conversão Unicode completa;
+4. rejeita o resultado se for vazio, se contiver caractere de controle (categoria Unicode Cc, o que
+   inclui tab, LF e CR que ficassem dentro de uma palavra, mas eles já separam palavras no passo 1)
+   ou se passar de 64 caracteres. A contagem é em caracteres Unicode e inclui os espaços simples entre
+   palavras. Ela é feita antes e depois da conversão para minúsculas, porque a conversão pode aumentar
+   o número de caracteres.
 
 O processamento para assim que o limite é ultrapassado: uma entrada hostil enorme não causa
 alocação proporcional. A conversão para minúsculas torna o casamento de entidades **lexical**,
@@ -287,7 +366,9 @@ ordem** e corta em 10.
 
 Entidades derivadas do frontmatter: une a lista explícita `entities` (vem **primeiro**, para
 ganhar o limite) com a lista `tags`. É tolerante: campo ausente ou que não é lista não
-contribui com nada e nunca falha. A validação estrita fica na camada de escrita da wiki.
+contribui com nada e nunca falha, e itens da lista que não são texto são descartados. A
+validação estrita fica na camada de escrita da wiki: lá, `entities` com valor que não é lista
+nem nulo faz a escrita falhar; `tags` continua tolerante.
 
 ### 6.6 Metadados públicos de escrita
 
@@ -295,28 +376,52 @@ Campos aceitos pelas superfícies públicas de escrita de página:
 
 | Campo | Limite |
 |---|---|
-| `kind` | Até 64 caracteres, sem caractere de controle; aparado. Vazio = ausente. |
-| `entities` | Até 10 nomes, cada um até 64 caracteres brutos. A validação ocorre **antes** da normalização. |
+| `kind` | Até 64 caracteres Unicode brutos; aparado. Vazio (ou só espaços) = ausente. |
+| `entities` | Até 10 nomes, cada um até 64 caracteres brutos. A validação ocorre **antes** da normalização, e um nome que a normalização rejeitaria recusa o pedido inteiro. O que é gravado é a lista já normalizada (§6.5). |
 | `abstract` (resumo L0) | Até 1024 caracteres brutos; aparado. Vazio = ausente. |
-| `relations` | Até **32** alvos no total, cada um até 1024 caracteres, sem caractere de controle. |
+| `relations` | Mapeamento de relação (`causes`, `fixes`, `contradicts`) para lista de alvos. Até **32** alvos somando todas as relações, cada um até 1024 caracteres, **sem nenhum** caractere de controle. |
+| `applies_to` | Até 16 etiquetas de pilha, cada uma até 32 caracteres. Cada uma é aparada e posta em minúsculas ASCII; vazias são descartadas, repetidas viram uma. Uma etiqueta fora da lista de pilhas detectáveis é recusada com a lista conhecida na mensagem. Gravada em ordem alfabética. |
+| `enforced_by` | Até 256 caracteres; aparado. Vazio = ausente. |
+
+Em `kind`, `abstract`, `enforced_by`, `applies_to` e nos nomes de `entities`, um caractere de controle
+só é recusado quando **não** é espaço em branco: tab, LF e CR passam nessa checagem (no caso de
+entidades, a normalização os transforma em espaço). Em alvos de relação, qualquer caractere de
+controle recusa o pedido. Todo valor fora dos limites recusa o pedido inteiro com "registro
+malformado", com o nome do campo.
 
 Regras adicionais:
 
 - É **substituição completa**, não correção parcial: campos omitidos não herdam o frontmatter anterior.
 - Escopo, atribuição e controles de admissão **não podem** ser informados por este caminho.
-- Alvo de relação aceita as formas `caminho`, `projeto:caminho` e `workspace/projeto:caminho`.
-  Componentes de escopo não podem ter espaço nas bordas nem estar vazios; `.` e `..` são proibidos.
-- Se o último segmento do caminho não tem extensão, `.md` é acrescentado. Um caminho com outra
-  extensão é rejeitado. O caminho final precisa passar em `ensure_portable`.
+- `applies_to` e `enforced_by` só valem para **entradas de perfil**: uma escrita com escopo de perfil,
+  ou um caminho sob `profile/` no projeto `_global` ou num projeto de perfil. Fora disso, a presença de
+  qualquer um dos dois recusa a escrita, com mensagem que diz onde eles podem ser usados.
+- Uma chave de relação fora do vocabulário fechado recusa o pedido nesta superfície (o mapeamento só
+  aceita as três relações). Isso difere da leitura do frontmatter de um arquivo, que só ignora a chave
+  com aviso (§6.8).
+- Alvo de relação aceita as formas `caminho`, `projeto:caminho` e `workspace/projeto:caminho`. A
+  validação de cada alvo:
+  1. se há `:`, o trecho antes do **primeiro** `:` é o escopo. Ele tem no máximo dois componentes
+     separados por `/`. Nenhum componente pode ser vazio, ter espaço nas bordas ou ser `.` ou `..`;
+  2. o caminho (depois do `:`, aparado) não pode terminar em `/`, não pode ter último segmento igual a
+     `.md`, e, se o último segmento tem ponto, precisa terminar em `.md` (sensível à caixa);
+  3. o caminho, com `.md` acrescentado quando o último segmento não tem ponto, precisa passar na
+     validação de caminho e em `ensure_portable` (§4.2).
+
+  O alvo é gravado no frontmatter **como foi enviado**, sem o `.md` acrescentado: o acréscimo serve só
+  para validar. Quem lê o frontmatter normaliza de novo (§6.8).
 
 ### 6.7 TTL (`expires_at`)
 
-Aceita:
+O valor é aparado antes da leitura. Aceita:
 
-- instante RFC 3339 (com fuso), ou
+- instante RFC 3339 com deslocamento explícito (`Z` ou `±HH:MM`); um instante sem deslocamento não
+  é aceito; ou
 - data `YYYY-MM-DD`, que significa **fim desse dia em UTC** (23:59:59,999999).
 
-Valor que não é nenhum dos dois não é um TTL válido. A validação de TTL da wiki e a derivação
+Valor que não é nenhum dos dois não é um TTL válido. Na leitura do frontmatter de uma página:
+chave ausente, valor nulo ou texto vazio (depois de aparado) significa sem validade; valor que não é
+texto é erro; texto inválido é erro. A validação de TTL da wiki e a derivação
 de `stale_after` do formato OKF usam **a mesma função**, então não podem divergir sobre quando
 uma página expira.
 
@@ -344,8 +449,14 @@ pendentes** (sem destino resolvido) e resolvidos quando a página alvo existir.
 - `contradicts`: a página de origem contradiz o alvo (o relatório de lint mostra essas).
 
 Vocabulário fechado de propósito: relação em texto livre vira um conjunto de etiquetas que
-não pode ser consultado. Nome de relação desconhecido não é erro: o link fica como referência
-simples, sem relação.
+não pode ser consultado. Os nomes são comparados exatamente, em minúsculas. Na leitura do
+frontmatter de um arquivo, um nome de relação desconhecido **não é erro, mas também não vira
+link**: a chave é ignorada inteira e um aviso é registrado no log. Assim um erro de digitação não
+cria um tipo de aresta novo. A regra completa de leitura está em
+[wiki-files-layer.md](wiki-files-layer.md) §3.6. Na superfície pública de escrita (§6.6), a mesma
+chave recusa o pedido.
+
+Links sem relação são gravados com o tipo `references`.
 
 ### 6.9 Feedback (`FeedbackKind`)
 
@@ -436,7 +547,11 @@ fragmento curto demais para casar com um padrão, que então iria para o armazen
 redação. Como a redação ocorre antes do corte, um marcador `[REDACTED:…]` já está no lugar
 quando o limite é aplicado.
 
-**Teto de título**: **80 caracteres exibidos**, com reticências ao final quando cortado.
+**Teto de título**: **80 caracteres**, com reticências ao final quando cortado. "Caractere" aqui é
+ponto de código Unicode, não grafema: um emoji composto ou uma letra com marca combinante contam
+como vários. Texto com até 80 pontos de código passa intacto; acima disso ficam os 79 primeiros
+seguidos de `…`. O corte não remove quebras de linha (detalhes em
+[prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md) §11.1, passo 5).
 
 **Teto de corpo**: **16 KiB** (16 × 1024 bytes), com truncamento de **cabeça e cauda**:
 

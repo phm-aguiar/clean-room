@@ -26,7 +26,7 @@ Ideias de projeto:
 - **Captura automática** por hooks: o agente envia observações sanitizadas e limitadas para o
   endpoint `/hook`; o servidor transforma a sessão em páginas duráveis (*compilar, não recuperar*).
 - **Recuperação** por FTS5 + casamento lexical de entidades + vizinhos de link, fundidos por
-  RRF (Reciprocal Rank Fusion, constante k = 60, verificada na versão 2.6.2), com RRF vetorial
+  RRF (Reciprocal Rank Fusion, constante k = 60), com RRF vetorial
   opcional (se há embeddings) e *fallback* limitado para observações cruas quando nenhuma página
   compilada casa.
 - **LLM é opcional.** O modo zero-LLM captura, busca (FTS5) e escreve resumos por regras.
@@ -40,7 +40,7 @@ Ideias de projeto:
 | Componente | Responsabilidade | Documento |
 |---|---|---|
 | Domínio | tipos de domínio, identificadores, caminho de página, sanitização e identidade/autorização (sem I/O) | `domain-vocabulary.md` |
-| Armazenamento | SQLite, escritor único, leitor, busca híbrida RRF, decaimento, crença, credenciais | `storage-and-retrieval.md`, `database-schema.md` |
+| Armazenamento | SQLite, escritor único, leitor, busca híbrida RRF, decaimento, crença, credenciais | `storage-and-retrieval.md`, `database-schema.md`, `data-model.md` (diagramas) |
 | Wiki | escrita atômica de markdown, git, watcher, webhooks de admissão | `wiki-files-layer.md`, `admission-webhooks.md`, `okf.md` |
 | Ingestão de hooks | endpoint `/hook`, política de captura, síntese de sessão, handoff | `lifecycle-event-ingestion.md`, `marker-file.md` |
 | Cliente LLM | provedores, embeddings, reranker, autenticação, fallback | `llm-client.md`, `llm-providers.md`, `llm-provider-fallback.md`, `local-embeddings.md` |
@@ -91,10 +91,11 @@ Cada invariante nasceu de um defeito observado em outro sistema ou de um inciden
    `restore`, `reindex` e `uninstall --purge-data` consultam os processos do sistema (a guarda do
    uninstall só vale com `--purge-data`). `backup` continua online: o cliente pede ao servidor um
    snapshot do SQLite pela API de backup online, com o escritor ativo.
-10. **Escritas de arquivo atômicas** (arquivo temporário + rename + fsync); o watcher ignora as
-    próprias escritas pelo prefixo de nome dos arquivos temporários.
+10. **Escritas de arquivo atômicas** (arquivo temporário + rename + fsync). O watcher ignora os
+    arquivos temporários pelo prefixo de nome. A escrita já instalada pelo próprio servidor também
+    gera evento, mas é absorvida porque reindexar conteúdo idêntico não cria versão.
 11. **Diretório de dados absoluto e canônico**, registrado no log na inicialização.
-12. *(Entrada ausente nesta lista; ver a nota abaixo.)*
+12. *(Número sem invariante; ver a nota abaixo.)*
 13. **Caminho padrão zero-LLM**: o sistema funciona completo sem provedor.
 14. **A autenticação do provedor resolve antes da construção do cliente**; clientes de provedor
     consomem material de autenticação tipado e nunca leem variáveis de ambiente.
@@ -119,8 +120,9 @@ Cada invariante nasceu de um defeito observado em outro sistema ou de um inciden
     resolução de escopo, supersessão de página, identidade de sessão, aceitação de handoff, escritor
     ou filtros de dono precisa de teste multi-sessão explícito (ver `test-fixtures.md`).
 
-**Nota sobre a entrada 12.** A lista acima não tem a entrada 12. Ela não foi renumerada nem
-reconstruída aqui. A tabela de imposição abaixo marca o caso como **a confirmar**.
+**Nota sobre a entrada 12.** A numeração do projeto de origem pula o 12. O código de referência
+cita as invariantes 1, 2, 5, 6, 7, 9, 10, 13, 15 e 16 (e uma subdivisão 15a), e nenhuma 12. Não há
+comportamento a implementar sob esse número. A numeração foi mantida para não quebrar as citações.
 
 Regras de fronteira adicionais:
 
@@ -156,7 +158,7 @@ completa não foi verificada no código de referência.
 | 9 | Guarda de processos vivos na CLI (`reset`, `restore`, `reindex`, `uninstall` com purge). O backup usa snapshot online do armazenamento. |
 | 10 | Helper de escrita atômica da wiki (arquivo temporário, sincronização de dados, rename, sincronização do diretório) e aplicação de lote da wiki. O watcher ignora arquivos temporários pelo prefixo. |
 | 11 | Configuração e inicialização da CLI. O caminho é canonicalizado e registrado no log de nível informação na inicialização. **A confirmar:** caminho absoluto garantido só quando o caminho ou seu diretório pai existe. |
-| 12 | **A confirmar.** A entrada não aparece nesta lista. O projeto de origem a registra, mas o local de imposição no código não foi conferido. |
+| 12 | Não existe (ver a nota sobre a entrada 12). |
 | 13 | Consolidação (varredura, lint, curador) no componente de consolidação; síntese de sessão no componente de ingestão de hooks. |
 | 14 | Autenticação de provedores: material tipado resolvido na CLI antes de construir o cliente. Clientes não leem variáveis de ambiente (as leituras que existem no componente LLM estão em testes). |
 | 15 | Filtro de log padrão da CLI: o módulo que escreve o log é limitado ao nível de aviso, o que impede realimentação. |
@@ -188,8 +190,8 @@ completa não foi verificada no código de referência.
 | Servidor MCP (HTTP) | SDK MCP oficial da linguagem escolhida, se existir; senão, implementar o protocolo |
 | Banco SQLite | driver que inclua FTS5 e a API de backup online |
 | Migrações | ferramenta de migração versionada com arquivos `V<nn>__nome.sql` (esquema inicial: `V01__init.sql`) |
-| Commits da wiki | biblioteca git ou invocação do executável git |
-| Watcher de arquivos | notificação do sistema de arquivos com debounce próprio (referência: 300 ms, versão 2.6.2) e reconciliação periódica (referência: 30 s) |
+| Commits da wiki | biblioteca git embutida (a referência usa uma; no Windows, cai para o executável `git` em dois casos de erro). Qualquer escolha precisa reproduzir o comportamento de `wiki-files-layer.md` §7: autor fixo, ledgers fora do índice, nenhum commit quando a árvore não mudou e, no caminho normal, sem assinatura e sem hooks do usuário |
+| Watcher de arquivos | notificação do sistema de arquivos com debounce próprio (referência: 300 ms) e reconciliação periódica (referência: 30 s) |
 | Cliente HTTP de provedores | cliente HTTP da linguagem com TLS |
 | Configuração | leitura de TOML com variáveis `AI_MEMORY_*`, usando `__` como separador de níveis (comportamento do produto) |
 | CLI | framework de subcomandos |
@@ -262,17 +264,21 @@ roadmap 2.0, guia de migração 2.0, design de CI do Windows, casos de uso de ma
 macOS e completions de shell. Referências a eles dentro dos documentos de design são **históricas**:
 o conteúdo não está mais neste conjunto.
 
-Constantes numéricas (limites, timeouts, padrões) foram conferidas na versão 2.6.2 do código de
-referência e podem mudar entre versões. Confirme os valores que forem críticos.
+Constantes numéricas (limites, timeouts, padrões) foram escritas a partir da versão 2.6.2 e
+revisadas contra a **versão 3.1.1** do código de referência nos documentos usados pela feature 001
+(este, `domain-vocabulary.md`, `database-schema.md`, `storage-and-retrieval.md`,
+`wiki-files-layer.md`, `okf.md`, `typed-edges.md` e `prompts-schemas-and-sanitizer.md` §11). Nos demais
+documentos, os valores ainda são os da 2.6.2.
 
 ## 11. Limites desta documentação
 
 - Foi produzida lendo a implementação (módulos, tipos, funções e trechos centrais de fluxo), **não**
-  executando a suíte nem o servidor. As afirmações foram conferidas uma a uma no código da versão 2.6.2.
+  executando a suíte nem o servidor. As afirmações foram conferidas uma a uma no código da versão 2.6.2,
+  e os documentos do núcleo foram revisados de novo contra a versão 3.1.1 (ver seção 10).
 - Partes grandes e repetitivas estão descritas por **contrato e estrutura**, não linha a linha: o
   módulo de instalação de hooks (cerca de 14 mil linhas no total, incluindo testes e a renderização
   por agente), handlers administrativos individuais, parsers de transcrição por agente e a
   desinstalação. Para um detalhe fino, consulte a implementação de referência.
-- Constantes numéricas foram conferidas na versão 2.6.2; o changelog do projeto registra as alterações.
-- O esquema SQL está consolidado (estado final das 76 migrações) em [database-schema.md](database-schema.md); os arquivos de migração individuais não estão transcritos.
+- Constantes numéricas: ver a seção 10.
+- O esquema SQL está consolidado (estado final das 83 migrações da versão 3.1.1) em [database-schema.md](database-schema.md); os arquivos de migração individuais não estão transcritos.
 - Os argumentos de cada ferramenta MCP e as rotas `/admin/*` estão em [api-reference.md](api-reference.md). Os prompts de LLM, os schemas de saída e as regexes do sanitizador estão literalmente em [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md).

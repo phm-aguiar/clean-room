@@ -20,7 +20,7 @@
 |---|---|
 | Abertura | Criação do diretório de dados, pragmas, migrações, backfills e início do escritor e do pool de leitura. |
 | Escritor | Fila de comandos e thread única que executa todas as escritas. |
-| Esquema | Versões V01 a V76 (76 migrações), descritas em [esquema do banco](database-schema.md). |
+| Esquema | Versões V01 a V83 (83 migrações na versão 3.1.1), descritas em [esquema do banco](database-schema.md). As migrações 77 a 83 não tocam o núcleo da feature 001: colunas de recuperação em `ingest_keys` (77), novos tipos de agente no `CHECK` de `sessions` (78, 80, 81, 83), remoção de colunas legadas de token em `users` (79) e sessão nativa anterior em `managed_runs` (82). |
 | Escrita de páginas | Versionamento por supersessão, tombstones e exclusão. |
 | Sessões e observações | Admissão idempotente de eventos de ciclo de vida, encerramento e poda. |
 | Handoffs | Batões de continuidade entre sessões: publicação, seleção, aceite. |
@@ -42,12 +42,19 @@ Sequência de abertura (importa para reimplementar):
 1. Cria o diretório `db/` com permissão `0700` e o arquivo do banco com `0600`, **antes** de o
    SQLite escrever a primeira página (somente em sistemas Unix). Diretórios e arquivos já existentes
    mantêm as permissões atuais.
-2. Abre a conexão com modo WAL, `synchronous = NORMAL` e *busy timeout* de **5000 ms**.
+2. Abre a conexão com modo WAL, `synchronous = NORMAL` e *busy timeout* de **5000 ms**. Fixa também o
+   limite de tamanho do arquivo `-wal` depois de um checkpoint em **64 MiB** (`journal_size_limit`), só
+   na conexão de escrita.
+   Sem esse limite, o `-wal` fica no maior tamanho já atingido (uma transação grande o deixa do tamanho
+   do banco), e uma queda faz o próximo início reprocessar o arquivo inteiro. O limite não interrompe
+   uma transação em curso.
 3. Desliga a verificação de chaves estrangeiras **durante** as migrações (cada migração roda em
    transação, e migrações reconstroem tabelas), e religa ao final.
-4. Aplica as migrações. Se o banco tem uma migração aplicada que o binário não conhece, a abertura
-   falha com **erro de schema à frente** e o banco não é aberto. Um binário antigo nunca toca um
-   esquema novo.
+4. Aplica as migrações. Se o banco tem **qualquer** migração aplicada que o binário não conhece (não
+   só uma versão maior que a maior embutida: um buraco no meio também conta), a abertura falha com
+   **erro de schema à frente**, que nomeia a migração aplicada e a maior versão suportada, e o banco não
+   é aberto. Um binário antigo nunca toca um esquema novo. Uma migração já aplicada cujo conteúdo
+   mudou (soma de verificação divergente) é **tolerada**: o banco abre normalmente.
 5. Executa backfills síncronos, antes de o escritor existir e antes de o servidor aceitar tráfego:
    - índice de entidades, populado a partir do frontmatter existente;
    - janelas de validade das páginas (`valid_from`/`valid_to`), em lotes de **5000** páginas, com
@@ -56,6 +63,29 @@ Sequência de abertura (importa para reimplementar):
 6. Inicia o escritor e o pool de leitura com limite flexível (*soft cap*) de **4** conexões.
 
 Os dois handles (escritor e leitor) são baratos de clonar e podem ser compartilhados entre tarefas.
+
+**Sem cópia do banco na abertura.** A abertura do armazenamento **não** copia nem fotografa o banco antes
+de aplicar migrações. A proteção contra uma migração ruim é a transação de cada migração (uma falha
+reverte só aquela migração e a abertura falha) e, na inicialização do servidor, o backup verificado do
+diretório de dados feito **antes** de abrir o banco. Esse backup só é criado quando a wiki ainda tem
+arquivos fora da conformidade OKF (instalação antiga sendo atualizada) **e** não existe recibo de backup
+válido; numa instalação nova ou já conforme, nada é copiado (ver
+[camada de arquivos do wiki](wiki-files-layer.md), seção 10.2). Quem abre o armazenamento fora do
+servidor (testes, comandos administrativos) não ganha cópia nenhuma.
+
+**Fechamento ordenado** (na parada do processo):
+
+1. Fecha o pool de leitura: as conexões ociosas são descartadas e toda leitura iniciada depois disso
+   falha com erro de **leitor fechado**. Uma leitura já em curso não é interrompida nem aguardada; ela
+   termina na própria conexão, e essa conexão é descartada (não volta ao pool).
+2. Pede ao escritor um checkpoint do WAL no modo que trunca o arquivo `-wal`. É melhor esforço: se um
+   leitor ainda segura um instantâneo e bloqueia o checkpoint, ou se o checkpoint falha, só há um aviso
+   no log (o `-wal` será reprocessado no próximo início).
+3. O escritor fecha a conexão **antes** de responder, de modo que o retorno do pedido significa conexão
+   liberada, e para. Comandos enviados depois recebem **escritor fechado**.
+
+O fechamento espera atrás do que o escritor estiver executando; quem chama deve limitá-lo com um tempo
+máximo.
 
 ---
 
@@ -71,7 +101,22 @@ Padrão de cada método público:
 3. Aguarda a resposta. Se o canal de resposta for descartado sem resposta, retorna o mesmo erro.
 
 `Shutdown` encerra a thread e aguarda o término. A ocupação da fila é exposta (usada por
-*backpressure* e pelo status).
+*backpressure* e pelo status) como o par (comandos na fila, capacidade).
+
+O escritor processa **um comando por vez, na ordem de chegada**. Ele não agrupa comandos diferentes
+numa transação. O que vai junto numa transação é o trabalho de **um** comando (por exemplo, a escrita em
+lote de páginas ou um reforço de acesso com várias páginas). Quem precisa de atomicidade entre várias
+mudanças manda um único comando que faz todas.
+
+Detalhes que importam:
+
+- **Fila cheia:** o envio **espera** até abrir espaço. O armazenamento não tem tempo máximo nem recusa
+  por fila cheia; quem precisa responder rápido (por exemplo, a ingestão de hooks com 429) decide isso
+  na própria camada, olhando a ocupação.
+- **Encerramento descarta o que está na fila:** ao receber o pedido de parada (ou de fechamento, seção
+  2), o escritor para de aceitar envios e **descarta sem executar** todos os comandos ainda na fila,
+  inclusive os de quem já tinha garantido a vaga e estava enviando. Cada chamador desses recebe
+  **escritor fechado**, nunca uma espera infinita.
 
 Efeito: como há exatamente um escritor, escritas concorrentes não disputam o lock do banco entre si.
 Leituras usam o *busy timeout* de 5000 ms.
@@ -112,7 +157,7 @@ Toda linha de domínio carrega a identidade `(workspace_id, project_id, …)`. I
   (marca de tombstone), `valid_from`/`valid_to` e caminho normalizado para busca.
   Um **índice único parcial** em `(workspace_id, project_id, path)` com `is_latest = 1` garante uma
   única versão corrente por caminho.
-- **Busca textual:** índice FTS5 sobre título e corpo, com tokenizador `unicode61` que trata `/`, `_`
+- **Busca textual:** índice FTS5 sobre título, corpo e `path_search` (o caminho expandido em palavras), com tokenizador `unicode61` que trata `/`, `_`
   e `-` como parte do token e remove diacríticos. Mantido por gatilhos de inserção, remoção e
   atualização. Há índice análogo para observações e para eventos de workstream.
 - **Sessões (`sessions`):** tipo de agente restrito por *CHECK*. Por isso, cada novo tipo de agente exige
@@ -155,7 +200,17 @@ Toda escrita de página passa por uma única função, dentro de **uma** transa�
 
 **Caso A: versão corrente idêntica.** Mesmo hash de corpo, mesmo frontmatter **ignorando** `generated.at`,
 mesmo título, mesmo tier e mesmo `pinned`. Não cria versão. Registra apenas a evidência contra o id
-vigente (reconsolidação reafirma a página) e devolve esse id.
+vigente (reconsolidação reafirma a página) e devolve esse id. **Não grava auditoria.**
+
+`generated.at` é o campo `at` **dentro** do mapeamento `generated` (`generated: {by, at}`). Ignorá-lo
+significa comparar os dois frontmatters depois de remover só esse campo interno; `generated.by` continua
+na comparação. A comparação é entre valores estruturados (a ordem das chaves não conta). Se o frontmatter
+guardado da versão corrente não puder ser lido como JSON, ele vale como vazio, então a comparação dá
+diferente e a escrita segue para o caso B.
+
+Se a nova versão não traz `generated.at`, o armazenamento o carimba com o instante da escrita, em UTC com
+precisão de segundos (`AAAA-MM-DDTHH:MM:SSZ`), mas só quando o mapeamento `generated` existe. Um valor já
+presente (carimbado ou herdado pela camada da wiki) é mantido, para que arquivo e linha fiquem iguais.
 
 **Caso B: versão corrente mudou (supersessão).**
 - A versão antiga recebe `is_latest = 0` e `valid_to = agora`.
@@ -164,6 +219,10 @@ vigente (reconsolidação reafirma a página) e devolve esse id.
   e `generated.at` carimbado (se ausente).
 - Em seguida: substitui os links, reatribui entidades, repara links de entrada pendentes (inclusive
   os de outros projetos), grava as evidências e registra auditoria da ação de supersessão.
+
+Ações de auditoria gravadas pelo upsert (valor da coluna de ação, observável no log de auditoria):
+`supersede_page` (caso B), `create_page` (caso C sem tombstone) e `resurrect_tombstoned_page` (caso C com
+tombstone). A linha leva workspace, projeto, o id da **nova** versão e o autor, quando há.
 
 **Caso C: página nova.**
 - Antes de inserir, verifica colisão de caminho: se outra página **viva** do mesmo projeto tem a mesma
@@ -292,6 +351,17 @@ manuais não são afetados. A leitura manual não tem essa restrição.
 - **Reforço de acesso:** incrementa `access_count` e `last_accessed_at` **somente** em versões correntes.
   Se há ator identificado, registra também o acesso por operador (uma linha por página e operador, sem
   duplicar). Quando a página não existe mais como corrente, o registro por operador não é criado.
+  - **Sem ator identificado (anônimo, o caso padrão de usuário único), o contador compartilhado é
+    incrementado mesmo assim.** Só a linha por operador é omitida.
+  - Várias páginas de uma leitura são reforçadas numa única transação. Id desconhecido é ignorado, sem
+    erro, e não derruba o lote.
+  - **Throttle** (fora do armazenamento, na camada que atende a leitura): no máximo um reforço por
+    **60 s** para cada par (página, operador). O anônimo é um operador próprio para esse fim. O estado é
+    só em memória e se perde no reinício. Um par que ainda está na janela é pulado **sem** renovar o
+    instante, para que uma página consultada sem parar ainda receba um reforço por janela. Entradas
+    vencidas são descartadas a cada chamada.
+  - O reforço é disparado em segundo plano, depois da resposta: falha só gera aviso no log e nunca chega
+    a quem leu. Leitura que terminou em erro não reforça nada.
 - **Feedback:** insere o registro de feedback, calcula a nova saliência e atualiza a página, tudo numa
   transação, com auditoria. A saliência pertence à **versão**: uma supersessão recomeça do valor padrão.
 - Valores de feedback (ver seção 12): `helpful` soma um passo; `not_helpful` subtrai um passo; `stale` e
@@ -331,32 +401,68 @@ movimento e reorganização de sessões e compactação (recuperação de págin
 
 - Pool de conexões somente-leitura com limite flexível de **4**. Conexões são abertas **sob demanda**. Ao
   devolver uma conexão, ela só volta ao pool se o pool estiver abaixo do limite. Caso contrário, é fechada.
+- O limite de 4 vale só para conexões **ociosas** guardadas. **Não** há limite de leituras simultâneas:
+  com o pool vazio, cada leitura abre uma conexão nova. Nenhuma leitura espera por conexão.
+- A conexão é aberta em modo somente leitura (o próprio SQLite recusa escrita nela). Nenhuma outra
+  configuração é aplicada além do *busy timeout*.
 - Cada leitura roda em pool de bloqueio separado, para não prender o runtime assíncrono. Pânico dentro da
-  leitura vira **erro de pânico no pool**.
+  leitura vira **erro de pânico no pool**, e a conexão usada nessa leitura é descartada (não volta ao
+  pool). Um erro comum devolvido pela leitura **não** descarta a conexão.
 - Conexões de leitura usam *busy timeout* de 5000 ms.
 - A configuração de ranking (seção 11.4) e a lista de palavras de parada são parte do handle. Clones feitos
   depois de uma alteração herdam a alteração.
 
 ### 11.2 Consulta FTS segura (`prepare_fts5_query`)
 
-Entrada: texto livre de usuário ou agente. Objetivo: **nunca** produzir erro de consulta por causa do texto.
+Entrada: texto livre de usuário ou agente, mais a lista de palavras de parada ativa. Objetivo: **nunca**
+produzir erro de consulta por causa do texto.
 
-1. **Sintaxe explícita** é detectada se há aspas, parênteses, ou os operadores `OR`, `AND`, `NOT` ou `NEAR`
-   como palavras.
-2. **Consulta nua** (sem sintaxe explícita):
-   - remove palavras de parada, usando a lista configurável (padrão: lista embutida de **57 palavras** em
-     inglês). A comparação ignora caixa, mas não diacríticos. Se a consulta só tem palavras de parada, elas
-     são mantidas todas;
-   - une os termos com **`OR`**, não com `AND`, e o ranking BM25 ordena. Isso evita recall próximo de zero
-     em consultas em linguagem natural.
-3. **Dois-pontos sem coluna conhecida** (ex.: `pick: handoff`) são neutralizados: o dois-pontos vira espaço
-   e o termo é citado. Só `title:` e `body:` são preservados como coluna.
-4. **Tokens com pontuação ASCII** são citados como frase literal (ex.: `current.md`). Um `*` final, o
-   operador de prefixo, passa sem citação.
-5. **Validação:** a consulta candidata é testada por um analisador FTS5 real, em banco em memória com uma
-   sonda por thread. Se passa, é usada. Se não, degrada para um conjunto de palavras **citadas e unidas por
-   `OR`**, que é sempre válido.
-6. Consulta vazia (só espaços) retorna vazio. O chamador deve pular a consulta nesse caso.
+"Token" aqui é um trecho separado por espaço em branco Unicode. Todas as regras abaixo trabalham sobre
+esses tokens brutos.
+
+1. **Sintaxe explícita** existe se o texto contém aspas (`"`), `(` ou `)`, ou se algum token é
+   **exatamente** `OR`, `AND`, `NOT` ou `NEAR`, em maiúsculas. `or`, `Or` ou `NOT,` não contam.
+2. **Palavras de parada** (só sem sintaxe explícita):
+   - a comparação é feita sobre o token bruto, **antes** de qualquer tratamento de pontuação ou de
+     coluna. Por isso `the,`, `que?`, `title:the` e `the*` nunca são removidos;
+   - token e lista são comparados em minúsculas com a conversão Unicode completa. Diacríticos não são
+     removidos: `à` e `a` são palavras diferentes;
+   - lista padrão, usada quando a configuração não define a chave: **57 palavras** em inglês:
+     `a, an, and, are, as, at, be, been, but, by, can, could, did, do, does, for, from, had, has, have,
+     how, i, if, in, is, it, its, me, my, of, on, or, our, she, should, so, that, the, their, them, they,
+     this, to, was, we, were, what, when, where, which, who, why, will, with, would, you, your`;
+   - lista configurada pelo operador substitui a padrão. Lista vazia explícita desativa o filtro;
+   - se todos os tokens forem palavras de parada, nenhum é removido.
+3. **Tratamento de cada token** (vale com e sem sintaxe explícita). Um token gera um ou mais termos:
+   - **Coluna desconhecida:** token com `:`, sem aspas, que não começa exatamente com `title:` ou
+     `body:` (comparação sensível à caixa: `Title:x` é coluna desconhecida). Cada `:` vira espaço e cada
+     pedaço resultante vira um termo **citado** (regra de citação abaixo). Ex.: `pick:handoff` gera
+     `"pick"` e `"handoff"`;
+   - **Coluna conhecida** (`title:` ou `body:`) com valor não vazio que precisa de citação: a coluna é
+     mantida e só o valor é citado. Ex.: `title:ai-memory` vira `title:("ai-memory" OR "ai memory")`;
+   - **Precisa de citação** um token que não começa e termina com aspas e que tem algum caractere de
+     pontuação ASCII diferente de `:`, ignorando **um** `*` final. Letras acentuadas e dígitos não são
+     pontuação. Token que não precisa de citação passa como está.
+4. **Regra de citação** de um termo:
+   - se o termo contém aspas, cada `"` é dobrado e o termo inteiro vai entre aspas, sem variante;
+   - se termina em `*` e o resto tem pelo menos uma letra ou dígito, o `*` sai de dentro das aspas e vai
+     para depois de cada fechamento (`ai-mem*` vira `("ai-mem"* OR "ai mem"*)`);
+   - a **variante dividida** troca cada pontuação ASCII por espaço e junta os pedaços com um espaço. Se
+     ela é vazia ou igual ao termo, sai só `"termo"`; senão sai `("termo" OR "variante")`. A variante
+     existe porque o índice de conteúdo mantém `/`, `_` e `-` dentro do token, enquanto o índice de
+     caminho os troca por espaço: só as duas formas juntas casam com as duas superfícies.
+5. **Junção:** sem sintaxe explícita, os termos são unidos com ` OR ` (o BM25 ordena, o que evita recall
+   próximo de zero em linguagem natural). Com sintaxe explícita, os termos são unidos por um espaço, na
+   ordem original, e as palavras de parada não são removidas.
+6. **Validação e degradação:** a candidata é testada por um analisador FTS5 real, numa tabela em
+   memória com as colunas `title` e `body`. A conexão de sonda é aberta uma vez e reaproveitada (uma por
+   thread de leitura). Se a candidata passa, é usada. Se não passa (ou se a sonda não pôde ser aberta),
+   a consulta **inteira** é refeita como saco de palavras: em cada token bruto, `"`, `(` e `)` viram
+   espaço; cada pedaço resultante passa pela regra de citação do item 4 (com a variante dividida); os
+   pedaços são unidos com ` OR `. Nessa degradação não há remoção de palavras de parada nem tratamento
+   de coluna, e frases e operadores da consulta original **não** são preservados.
+7. Consulta vazia (só espaços), ou sem nenhum termo depois do tratamento, devolve texto vazio. O
+   chamador deve pular a consulta nesse caso.
 
 ### 11.3 Busca híbrida (`hybrid_search`)
 
@@ -369,7 +475,10 @@ Com limite 0, a janela é 0. A janela é larga porque a autoridade é aplicada *
 **Passo 2: fluxos de candidatos.** Todos restritos a versões correntes e não expiradas, exceto quando
 `include_superseded` é verdadeiro:
 
-- **Texto (FTS):** consulta da seção 11.2, com trecho e rank BM25.
+- **Texto (FTS):** consulta da seção 11.2 sobre `pages_fts`, ordenada pelo rank BM25 padrão do FTS5
+  (sem pesos por coluna), limitada à janela de candidatos. O trecho é o `snippet` da coluna `body`, com
+  marcas `<mark>` e `</mark>`, reticências `…` e janela de **24** tokens. Cada candidato traz também o
+  que a autoridade precisa (seção 11.5).
 - **Entidades:** a consulta é tokenizada. Tokens com **3 a 64** caracteres, no máximo **12** tokens, sem
   repetição. Termos compostos com `-` ou `_` também geram suas partes. Um token casa uma entidade se o nome
   é igual, começa com o token, ou contém o token logo após espaço, `-` ou `_`. O peso de cada página é a
@@ -379,10 +488,22 @@ Com limite 0, a janela é 0. A janela é larga porque a autoridade é aplicada *
   dimensão)`. Vetores de outra configuração são ignorados. A similaridade é o **produto escalar**. Os
   top-k são selecionados e depois ordenados.
 - **Vetor de abstract** (opt-in, desligado por padrão): mesma lógica sobre o vetor do abstract.
-- **Grafo:** a partir das sementes (união dos fluxos anteriores, sem repetição), expande vizinhos por links
-  **nas duas direções**. Links pendentes (sem destino) não são percorridos. O vizinho não pode ser semente.
-  Ordem: posição da semente, direção (saída antes de entrada), instante de atualização desc., caminho asc.
-  O tipo de aresta (`causes`, `fixes`, `contradicts`) é informativo e não altera o ranking.
+- **Grafo:** sementes = páginas do fluxo FTS, depois do fluxo vetorial, do vetor de abstract e do
+  fluxo de entidades, nessa ordem, sem repetição (a posição de cada semente é a ordem dessa lista). Expande
+  vizinhos por links **nas duas direções**. Links pendentes (sem destino) não são percorridos. Só entram
+  vizinhos do **mesmo workspace e projeto** da busca: links entre projetos não são seguidos aqui. O vizinho
+  não pode ser semente. Ordem: posição da semente, direção (saída antes de entrada), instante de
+  atualização desc., caminho asc. Uma página que aparece por mais de uma semente conta só na primeira
+  posição. O fluxo para ao chegar à janela de candidatos. O tipo de aresta (`causes`, `fixes`,
+  `contradicts`) é informativo e não altera o ranking.
+- **Observações** (ligado por padrão, chave de ajuste `observation_stream`): procura a consulta da seção
+  11.2 em `observations_fts`, só nas observações do projeto, em ordem de rank BM25, lendo até
+  `min(janela × 4, 1000)` linhas. As linhas são agrupadas por sessão, na ordem em que cada sessão aparece
+  pela primeira vez; cada sessão guarda o trecho da sua melhor observação (`snippet` do corpo, janela de
+  **16** tokens) e até 3 identificadores de observação. Cada sessão vira um **voto** para a página
+  `sessions/<id da sessão>.md` do projeto, se ela existe como versão corrente e não expirada. Sessões
+  sem página são puladas. O fluxo para ao chegar à janela de candidatos. Uma sessão que o filtro de dono
+  esconde do chamador ainda vota, mas sem trecho e sem identificadores.
 
 **Passo 3: fusão RRF.** Para cada página `d`:
 
@@ -392,20 +513,43 @@ score(d) = Σ sobre os fluxos de 1 / (60 + posição_no_fluxo(d))
 
 A posição é contada a partir de 1. Depois, `rank = −score`, na convenção do FTS5: **menor é melhor**.
 
-**Passo 4: títulos.** Páginas que chegaram sem título (somente pelo vetor) recebem título e descritor.
+Regra do fluxo de observações: uma página que recebeu voto do fluxo de observações tem contribuição
+**zero** do fluxo FTS (a posição FTS dela continua ocupada, mas não soma). Assim a mesma sessão não é
+contada duas vezes. Se a página entrou pela FTS, o trecho mostrado é o da FTS; se não, e o voto trouxe
+trecho, o trecho mostrado é o da observação e, quando a página não tinha título, o título vem do voto.
+
+**Passo 4: títulos.** Páginas que chegaram sem título (somente pelo vetor, ou por voto sem trecho)
+recebem título e descritor. O descritor não substitui um trecho de observação já escolhido.
 
 **Passo 5: autoridade.** Cada página recebe um fator de autoridade, limitado a **[0.55, 1.50]**.
-Os ajustes são somados a partir de 1.0 (ver tabela na seção 11.5).
+Os ajustes são somados a partir de 1.0 (ver tabela na seção 11.5). Os dados de autoridade das páginas
+que não vieram da FTS são lidos depois, num único acesso. Uma página cujos dados de autoridade não são
+encontrados (removida entre os passos, por exemplo) fica sem fator: o rank dela não é ajustado.
 
 **Passo 6: aplicação do fator.** Se o rank é `≤ 0` (vindo da fusão), multiplica por `fator`. Se é `> 0`,
 divide por `fator`. Em ambos os casos, **fator maior sempre significa melhor posição**.
 
-**Passo 7: ordenação e corte.** Ordena por rank e, em empate, por caminho. Trunca em `limit`. Se
-`include_superseded` é verdadeiro, marca quais resultados são versões superseded.
+**Passo 7: ordenação e corte.** Ordena por rank e, em empate, por caminho (comparação de bytes). Trunca
+em `limit`. Se `include_superseded` é verdadeiro, marca quais resultados são versões superseded.
+
+**Vários escopos numa consulta:** cada escopo é buscado separadamente com o mesmo limite. Com um escopo
+só, o resultado é o dele, sem mudança. Com vários, os resultados são unidos; uma página que aparece em
+mais de um mantém o melhor rank; a união é ordenada por rank, depois caminho, depois id, e cortada em
+`limit`.
 
 **Explicação:** a variante explicada devolve também rank e pontuação por fluxo, contribuição RRF, entidades
 casadas, origem do grafo (semente, direção e aresta), fator de autoridade, confiança, quantidade de
 evidências e intenção (ver seção 11.5).
+
+### 11.3.1 Recurso a observações cruas (`raw_hits`)
+
+Feito pela camada que atende a consulta (a ferramenta MCP de busca), não pela busca híbrida. Quando a
+busca de páginas devolve **nenhum** resultado, procura-se a mesma consulta (preparada pela seção 11.2) nas
+observações do escopo, por FTS em `observations_fts`, em ordem de rank BM25, com o mesmo limite da
+consulta e trecho de 24 tokens. O filtro de dono vale: entram só observações de sessões sem dono ou do
+próprio chamador (quando a implantação distingue operadores). Com vários escopos explícitos, a busca é
+feita em cada um, os resultados são juntados, ordenados por rank e cortados no limite. Se houver
+qualquer página, `raw_hits` vem vazio.
 
 ### 11.4 Busca temporal (`as_of`)
 
@@ -418,6 +562,18 @@ Busca com instante `T`:
 Ver [validade temporal](temporal.md) e [janelas de ingestão de página](design-page-ingestion-windows.md).
 
 ### 11.5 Autoridade e sinais de ranking
+
+O **tipo** da página, usado nas três primeiras linhas da tabela, é:
+
+1. o valor de `kind` no frontmatter, convertido para texto (um `kind: 5` vale `"5"`), quando presente e
+   não nulo;
+2. senão, pelo prefixo do caminho, comparado **sem distinguir maiúsculas** (letras ASCII):
+   `_rules/` → `rule`, `_slots/` → `slot`, `sessions/` → `session`, `decisions/` → `decision`,
+   `gotchas/` → `gotcha`, `concepts/` → `concept`, `procedures/` → `procedure`, `notes/` → `note`,
+   `profile/` → `preference`;
+3. senão, `fact`.
+
+O nível vem da coluna `tier` e a fixação, da coluna `pinned`.
 
 | Sinal | Ajuste |
 |---|---|
@@ -440,7 +596,13 @@ Tetos (aplicados depois dos ajustes, sem excluir a página):
 - tag `superseded`: no máximo **0.65**;
 - tag `historical`: no máximo **0.80**.
 
-Tags são normalizadas (espaços removidos, caixa minúscula, `_` vira `-`).
+Tags vêm da lista `tags` do frontmatter. Itens que não são texto são ignorados. Cada tag é normalizada
+assim: espaços removidos **só das pontas** (espaços internos ficam), letras ASCII em minúsculas e `_`
+trocado por `-`. Cada ajuste e cada teto valem **no máximo uma vez** por página, por presença: `canonical`
+e `source-of-truth` juntos somam +0.20 uma vez só, e `active` repetido soma +0.05 uma vez só.
+
+Ordem de cálculo: soma os ajustes a partir de 1.0, aplica o menor teto presente e depois limita o resultado
+a [0.55, 1.50]. Os dois caminhos de prefixo (`_lint/` e `investigations/`) são exclusivos.
 
 **Roteamento de recall de sessão** (opt-in, desligado por padrão). Se a consulta tem marcador léxico de
 recall de sessão em chinês, inglês ou português (ex.: "上次", "last time", "what did we", "sessão anterior",
@@ -556,21 +718,46 @@ Propriedades:
 `ScopeResolver`, por requisição, só empresta handles. Funções auxiliares: buscar escopo existente sem criar,
 criar escopo explícito e criar escopo global.
 
-Regras:
+Nomes de workspace e de projeto recebidos são **aparados**; texto vazio depois de aparado conta como
+ausente. Um nome de projeto com exatamente uma `/` e texto dos dois lados (`acme/api`) pode ser um rótulo
+`workspace/projeto` passado no campo de projeto: veja abaixo.
 
-- **Leitura, busca, embedding, retenção e operações destrutivas** usam **busca sem criação**. Escopo
-  explícito que não existe **falha fechado** (erro de não encontrado).
-- **Leitura sem escopo** nunca falha. Degrada pelo ponteiro de projeto ativo, pela semente de startup e,
-  por último, pelo padrão do servidor. Por isso o resultado informa **de onde** veio o escopo.
-- **Escrita** é a única que pode criar workspace e projeto.
-- **Escrita sem escopo e sem ponteiro resolvido** é recusada (escrita ambígua), para não gravar no padrão
-  silenciosamente.
-- Workspace e projeto vêm **juntos**: informar só um é erro de entrada.
-- **Origem da resolução** (`ScopeSource`): `Explicit`, `Session`, `SharedSlot`, `StartupSeed`, `Default`,
-  `DefaultAfterMismatch`. São "fallback" a semente de startup e o padrão após divergência. São "inferidas"
-  tudo, exceto explícito e sessão. Essas classificações alimentam avisos.
-- Erros de escopo se dividem em **entrada inválida** (equivalente a 400) e **não encontrado** (equivalente a 404).
-- Nomes de projetos de perfil são reservados para escrita de perfil.
+**Leitura e operações sobre escopo existente** (busca, leitura, embedding, retenção, remoção, feedback,
+lint, aceite de handoff): **nunca criam** workspace nem projeto. O nível de acesso exigido (leitura ou
+escrita) é o da operação, não o formato dos argumentos.
+
+| Argumentos | Resultado |
+|---|---|
+| workspace e projeto | Procura o workspace pelo nome e o projeto pelo nome dentro dele. Se não acha e o projeto é um rótulo `ws/proj`, tenta esse par; se o par também falha, devolve o erro da primeira tentativa. Inexistente: erro de **não encontrado**. Origem: `Explicit`. |
+| só workspace | Erro de entrada: workspace e projeto precisam vir juntos. |
+| só projeto | Procura o projeto no workspace do ponteiro de projeto ativo do chamador; se não acha (ou não há ponteiro), no workspace padrão do servidor. Nenhum dos dois: erro de projeto não encontrado no workspace ativo nem no padrão. Origem: `Explicit`. |
+| nenhum | Usa o projeto do ponteiro de leitura do chamador. Sem ponteiro, usa o projeto padrão do servidor. **Nunca falha** por falta de escopo. A origem diz de onde veio (tabela de origens abaixo). |
+
+O ponteiro de leitura inclui, além do ponteiro do chamador, a **semente de startup** (o projeto
+reconstruído do histórico até chegar o primeiro evento de hook depois de um reinício). O ponteiro de
+escrita não inclui a semente.
+
+**Escrita**: única que pode criar workspace e projeto.
+
+| Argumentos | Resultado |
+|---|---|
+| só workspace | Erro de entrada. |
+| nenhum | Ponteiro de projeto ativo do chamador resolvido: usa esse projeto. Ponteiro que **diverge** do chamador: **recusa** com erro de escrita ambígua, cuja mensagem pede escopo explícito ou a instalação dos hooks. Sem ponteiro algum (chamador anônimo ou legado): usa o projeto padrão do servidor. |
+| projeto (com ou sem workspace), rótulo `ws/proj` | Procura um projeto com esse nome exato (no workspace dado, ou no ativo, ou no padrão). Se não existe, usa o par do rótulo, **sem criar** nenhum dos dois. |
+| projeto (com ou sem workspace), nome comum | Workspace: o dado (criado se não existe), ou o do ponteiro ativo, ou o padrão. Projeto: resolvido pelo nome no workspace (com as chaves de compatibilidade da seção 14.3, inclusive promoção de nome) e **criado** se não existe. Nomes reservados de perfil de outro usuário são recusados. |
+
+Toda resolução passa pela autorização por projeto (seção 14.2). Uma recusa vira erro de **proibido**.
+
+- **Origem da resolução** (`ScopeSource`), com o texto usado nos avisos: `Explicit` (`explicit`),
+  `Session` (`session`), `SharedSlot` (`shared_slot`), `StartupSeed` (`startup_seed`), `Default`
+  (`default`) e `DefaultAfterMismatch` (`default_after_mismatch`). São "fallback" a semente de startup e o
+  padrão após divergência. São "inferidas" todas, exceto explícita e sessão. Na leitura sem argumentos, a
+  origem vem do ponteiro: ponteiro de sessão → `Session`, slot compartilhado → `SharedSlot`, semente →
+  `StartupSeed`, ponteiro divergente → `DefaultAfterMismatch` (e o escopo usado é o padrão), sem ponteiro
+  → `Default`.
+- Erros de escopo se dividem em **entrada inválida** (equivalente a 400: par incompleto, nome ambíguo,
+  escrita ambígua, entradas vazias numa lista de escopos, lista acima do máximo), **não encontrado**
+  (equivalente a 404) e **proibido** (equivalente a 403).
 
 ### 14.2 Autorização por projeto
 

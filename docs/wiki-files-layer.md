@@ -43,6 +43,48 @@ Regras:
   reindexação reconstrua os escopos a partir do disco (ver `ReindexSummary` na seção 5).
 - Autor e e-mail dos commits automáticos são fixos: nome `ai-memory` e e-mail
   `ai-memory@local`. Não vazam a identidade Git do usuário.
+- Os nomes de diretório são a forma canônica do UUID (minúsculas, com hífens). Na leitura da árvore
+  (observador, reindexação), um diretório que não é UUID válido é ignorado.
+- A raiz da wiki é criada na primeira abertura, se não existir, e o repositório Git é inicializado
+  nela (seção 7).
+
+### 1.1 Manifestos de escopo (`_meta.md`)
+
+Cada diretório de workspace e cada diretório de projeto tem um `_meta.md` só com frontmatter e corpo
+vazio. Formato exato (emitido pelas regras da seção 3.3):
+
+```text
+<wiki>/<workspace_id>/_meta.md
+---
+workspace: <nome do workspace>
+type: Scope Manifest
+---
+```
+
+```text
+<wiki>/<workspace_id>/<project_id>/_meta.md
+---
+project: <nome do projeto>
+repo_path: <caminho do checkout>          (só se existe)
+identity: <identidade do repositório>     (só se existe; vem junto com identity_source)
+identity_source: <origem da identidade>   (só se existe)
+canonical_name: <chave canônica>          (só se derivável da identidade)
+legacy_name: <nome legado>                (só se derivável da identidade)
+type: Scope Manifest
+---
+```
+
+- As chaves saem nessa ordem; `type` é sempre a última. Chaves sem valor são omitidas.
+- A escrita do manifesto é idempotente: se o arquivo já tem exatamente esses bytes, não é tocado.
+  Um manifesto que é link simbólico ou ponto de reparse é recusado.
+- O manifesto é garantido junto com a primeira página do escopo (seção 5.2, passo 7) e por um
+  preenchimento idempotente em toda inicialização do servidor, para árvores antigas ou manifestos
+  apagados à mão.
+- A leitura (reindexação) exige `workspace` (texto) no do workspace e `project` (texto) no do projeto.
+  `identity` e `identity_source` vêm juntos ou não vêm. Se `canonical_name` ou `legacy_name` estão
+  presentes, precisam ser iguais aos derivados da identidade. Qualquer violação é erro que cita o
+  caminho do arquivo.
+- O observador e a reindexação nunca tratam `_meta.md` como página, em qualquer profundidade.
 
 ---
 
@@ -66,89 +108,286 @@ Regras:
 
 ## 3. Markdown: leitura, emissão, títulos e links
 
-### 3.1 Frontmatter
+### 3.1 Frontmatter: reconhecimento do bloco
 
-- Só é reconhecido o **bloco canônico** no início do documento: uma linha `---`, o
-  conteúdo YAML, e uma linha `---` de fechamento seguida de quebra de linha. As
-  quebras podem ser **LF ou CRLF** (um editor no Windows com conversão automática de
-  fim de linha grava CRLF; ignorar isso faria o bloco virar corpo e duplicaria o
-  frontmatter na migração OKF).
-- Um **BOM UTF-8** no início é descartado antes de tudo. Se permanecesse no corpo, ocultaria
-  o primeiro título e seria regravado depois do bloco de frontmatter.
-- Um bloco sem fechamento, ou sem quebra de linha depois do fechamento, não é
-  frontmatter: o documento inteiro é tratado como corpo. Um bloco vazio (duas linhas
-  `---` consecutivas) também não é reconhecido.
-- Frontmatter que existe mas não é YAML válido gera erro de YAML (seção 11).
-- O corpo mantém suas quebras de linha originais em qualquer caso.
-- A leitura usa o parser YAML diretamente, em vez de um extrator de frontmatter de
-  terceiros, porque esses extratores perdem comentários e a ordem das chaves. Como
-  consequência, a reemissão não preserva comentários do frontmatter original.
+Algoritmo, sobre o texto do arquivo:
 
-### 3.2 Emissão
+1. Um **BOM UTF-8** (U+FEFF) no início é descartado antes de tudo, haja ou não frontmatter. Se
+   permanecesse no corpo, ocultaria o primeiro título e seria regravado depois do bloco.
+2. O texto precisa começar **exatamente** com `---\n` ou `---\r\n`. Qualquer outra coisa (espaço
+   antes, `--- ` com espaço depois, `----`) significa sem frontmatter: o documento inteiro é corpo.
+3. A quebra da linha de abertura define a quebra esperada no fechamento. O bloco termina na
+   **primeira** ocorrência, depois da abertura, de uma quebra de linha seguida de `---` e da mesma
+   quebra da abertura (`\n---\n` quando a abertura foi LF, `\n---\r\n` quando foi CRLF). O corpo
+   começa logo depois dessa sequência.
+4. Se essa sequência não existe, o bloco ainda é aceito quando o texto **termina** em `\n---`, sem
+   quebra final (arquivo só de frontmatter salvo por um editor que não põe quebra no fim). O corpo é
+   vazio.
+5. Sem fechamento, o documento inteiro é corpo.
+6. Do conteúdo do bloco são removidos os `\r` finais, e o resto vai para o leitor YAML (§3.2).
+   Linhas internas com CRLF são aceitas pelo leitor.
 
-- Se o frontmatter está ausente, nulo ou é um objeto vazio, o documento sai sem
-  bloco. Caso contrário, sai o bloco YAML (com quebras LF) seguido do corpo.
+Consequências que um reimplementador precisa reproduzir:
 
-### 3.3 Título
+- Quebras **LF ou CRLF** são aceitas (um editor no Windows com conversão automática de fim de linha
+  grava CRLF, e o Git com `core.autocrlf=true` faz o mesmo no checkout). Sem isso, o bloco viraria
+  corpo e a migração OKF gravaria um segundo frontmatter acima dele.
+- Abertura LF com fechamento CRLF (ou o contrário) **não** é reconhecida, exceto no caso do item 4.
+- `---\n---\n` (duas linhas seguidas) **não** é bloco: o texto depois da abertura começa com `---`,
+  sem a quebra antes. O documento inteiro é corpo.
+- `---\n\n---\n` **é** bloco, com YAML vazio: o frontmatter lido é nulo e o corpo é o que vem depois.
+- Uma linha `---` dentro de um valor de bloco do YAML encerra o frontmatter ali.
+- Frontmatter que existe mas não é YAML válido gera erro de YAML (seção 11), com linha e coluna.
+- O corpo mantém suas quebras de linha originais, byte a byte.
+- Comentários do frontmatter não sobrevivem a uma reemissão.
+
+### 3.2 Leitura do YAML
+
+O frontmatter vira um valor JSON (objeto, lista, texto, número, booleano ou nulo). As regras abaixo
+são as de uma leitura YAML "estilo 1.2 com compatibilidade". Outra biblioteca YAML lê vários valores
+de outro jeito, e a regra de idempotência da escrita (§5.2) depende de o valor lido ser exatamente
+este.
+
+**Escalares sem aspas e sem tag:**
+
+| Texto | Valor |
+|---|---|
+| vazio, `~`, `null`, `Null`, `NULL` | nulo |
+| `true`, `True`, `TRUE` / `false`, `False`, `FALSE` | booleano |
+| `yes`, `no`, `on`, `off`, `y`, `n` e outras grafias | **texto** |
+| inteiro decimal com sinal opcional (`42`, `+42`, `-7`) | número inteiro |
+| `0x…`, `0o…`, `0b…` (prefixo em minúsculas, sinal opcional) | inteiro em base 16, 8 ou 2 |
+| `0X1F`, `0O17` (prefixo em maiúsculas) | **texto** |
+| zero à esquerda seguido só de dígitos (`007`, `+08`, `-01`) | **texto** |
+| separador de dígitos (`1_000`) | **texto** |
+| inteiro que não cabe em 64 bits (com sinal ou sem sinal) | **erro** (página recusada) |
+| número decimal ou com expoente (`0.92`, `1e3`) | número de ponto flutuante |
+| decimal que estoura (`1e999`) | **texto** |
+| `.inf`, `.Inf`, `.INF`, `-.inf` e variações, `.nan`, `.NaN`, `.NAN` | nulo (JSON não tem infinito nem NaN) |
+| `+.nan` | texto |
+| datas e instantes (`2026-10-12`, `2026-10-12T01:08:40Z`) | **texto**, sem conversão |
+| `1:20` (sexagesimal) | texto |
+
+**Com aspas ou estilo de bloco:** sempre texto (`'123'` vira o texto `123`).
+
+**Tags:**
+
+- `!!str`, `!!timestamp`, `!!binary` e outras tags do núcleo que não são as quatro abaixo: o valor
+  fica como texto, sem conversão;
+- `!!bool`, `!!int`, `!!float`, `!!null`: o texto precisa ser válido para o tipo (pelas regras
+  acima), senão é erro;
+- tag local (`!foo valor`): vira um objeto de uma chave, `{"!foo": valor}`. O conteúdo é lido sem a
+  tag (`!foo [1, 007]` vira `{"!foo": [1, "007"]}`).
+
+**Estrutura:**
+
+- Chave repetida num mapeamento é **erro**, com linha e coluna. A comparação é pelo valor YAML da
+  chave (`1` e `"1"` são chaves diferentes para essa checagem, embora ambas virem o texto `1`).
+- Chaves que são texto, booleano ou número viram texto (`true`, `1`). Chave de outro tipo é erro.
+- Âncoras e aliases são expandidos. `<<` é uma chave comum (não há mescla de mapeamentos).
+- Mais de um documento YAML no bloco é erro.
+- Profundidade máxima de 128 contêineres aninhados, contando o mapeamento de topo. Um alias conta a
+  profundidade em que ele é expandido.
+- No máximo 250 000 nós no total, contando as expansões de alias (proteção contra "bomba" de aliases).
+  Acima disso é erro, recusado rápido.
+- Um escalar de bloco (`|` ou `>`) que é o último valor do frontmatter perde a quebra de linha final,
+  porque o bloco termina sem quebra antes do `---`: `b: |\n  last` lido no fim vale `"last"`, enquanto
+  o mesmo valor no meio do bloco vale `"last\n"`.
+- A ordem das chaves é preservada como no arquivo.
+
+Se o frontmatter lido não é um mapeamento (uma lista ou um texto solto, por exemplo), as camadas de
+escrita o trocam por um mapeamento vazio antes da conformidade OKF.
+
+### 3.3 Emissão
+
+- Frontmatter ausente, nulo ou mapeamento vazio: o documento sai **sem** bloco, só com o corpo.
+- Caso contrário: `---\n`, o YAML, `\n` se o YAML não terminou em quebra, `---\n`, e o corpo
+  exatamente como está. O bloco usa sempre LF, mesmo que o corpo use CRLF.
+- Regras do YAML emitido:
+  - chaves na **ordem de inserção** (a ordem lida do arquivo, com chaves novas no fim);
+  - escalares simples, sem aspas, sempre que a leitura de §3.2 devolveria o mesmo texto. Isso inclui
+    datas, instantes, texto não ASCII e texto longo, que ficam numa linha só (nunca dobrados);
+  - **aspas duplas** quando o texto, sem aspas, seria lido como outro tipo ou outra estrutura: `""`,
+    `"true"`, `"null"`, `"123"`, texto com `: ` ou ` #`, texto que começa com `#` ou `@`. Isso vale para
+    chaves e valores;
+  - texto com quebra de linha sai como bloco literal `|`, com indentação de 2 espaços;
+  - listas saem com `- ` na mesma coluna da chave dona; um item que é mapeamento continua nas linhas
+    seguintes com 2 espaços (`- kind: observation\n  id: …`);
+  - mapeamento vazio sai como `{}` e lista vazia como `[]`.
+
+Casos dourados (texto do arquivo → leitura → emissão, igual byte a byte):
+
+```text
+---
+kind: decision
+confidence: 0.92
+pinned: false
+created_at: 2026-10-12T01:08:40Z
+status: yes
+tags:
+- backend
+- 日本語
+summary: |
+  First line.
+  Second line.
+evidence:
+- kind: observation
+  id: 019e5633-4140-7dd0-9e2f-118825ca6355
+  at: 2026-07-18T09:35:52Z
+- kind: page
+  path: decisions/0001.md
+relations: {}
+aliases: []
+---
+# Body
+```
+
+```text
+frontmatter {"key: colon": "a # b", "#hash": "@at", "123": "true", "": "null", "plain": "2026-10-12"}
+emite:
+---
+"key: colon": "a # b"
+"#hash": "@at"
+"123": "true"
+"": "null"
+plain: 2026-10-12
+---
+```
+
+```text
+frontmatter {"lit": "one\ntwo\n", "fold": "folded text\n", "strip": "keep"}
+emite:
+---
+lit: |
+  one
+  two
+fold: |
+  folded text
+strip: keep
+---
+```
+
+### 3.4 Título
 
 Ordem de prioridade:
 
-1. campo `title` do frontmatter, se for texto e não vazio após remover espaços das pontas;
-2. primeira linha do corpo que começa com `# ` e tem texto depois (também após remover espaços);
-3. nome do arquivo sem o sufixo `.md` (sem o caminho de diretórios).
+1. campo `title` do frontmatter, se for texto e não vazio após remover espaços das pontas
+   (o valor usado é o aparado);
+2. primeira linha do corpo que começa com `# ` e tem texto depois (também após remover espaços),
+   **fora de blocos de código cercados** (regra de cerca em §3.5). Uma linha `# ` dentro de um bloco
+   cercado (comentário de shell ou de Python) não é título. A linha de título precisa começar na
+   coluna 1, sem espaço antes do `#`. As linhas são separadas por LF, e um CR final é descartado;
+3. nome do arquivo sem o sufixo `.md` (o último segmento do caminho; `.md` é sensível à caixa).
 
-### 3.4 Links
+Um título explícito passado por quem chama vence os três e passa pelo higienizador. O título de
+página **não tem teto de tamanho**: o limite de 80 caracteres é só de observação. O título derivado
+não passa pelo higienizador de novo, mas é tirado de corpo e frontmatter já higienizados.
 
-**Ignorado como link:**
+### 3.5 Links do corpo
 
-- conteúdo de blocos cercados por três ou mais crases ou tis; o fechamento precisa usar
-  o mesmo caractere e pelo menos o mesmo tamanho, e não pode ter texto depois;
-- trechos de código inline (entre crases): uma sequência de crases só fecha com
-  outra sequência de mesmo tamanho na mesma linha; sem fechamento, as crases são texto.
-  Trechos que continuam na linha seguinte não são vistos;
-- imagens (link precedido de `!`);
-- URLs com esquema (contêm `://`) e esquemas `mailto`, `data`, `javascript`,
-  `vbscript`, `tel` e `file`;
-- âncora pura (`#...`), destinos com barra invertida, destinos vazios;
-- destinos que apontam para diretório (terminam em barra);
-- destinos cujo último segmento tem ponto mas não termina em `.md`.
+O corpo é lido linha a linha (separadas por LF; CR final descartado).
 
-**Reconhecido:**
+**Cerca de código** (CommonMark §4.5, simplificada):
 
-- wikilinks `[[caminho]]` e `[[caminho|rótulo]]`;
-- wikilinks com escopo: `[[projeto:caminho]]` (mesmo workspace) e
-  `[[workspace/projeto:caminho]]` (outro workspace);
-- `[[_global:caminho]]`: forma reservada do projeto de preferências, que fica no
-  workspace padrão (e não no workspace da página de origem), a menos que o escopo
-  explícito `workspace/_global` seja usado;
-- links markdown `[rótulo](destino)`. O destino é lido até no máximo 512 bytes; um
-  título opcional entre aspas é descartado.
+- uma linha abre ou fecha cerca se tem no máximo 3 espaços no início e depois uma sequência de pelo
+  menos três crases ou três tis;
+- uma abertura com crases cujo resto da linha (o "info") contém outra crase **não** é cerca (é uma
+  linha com código inline);
+- dentro de uma cerca, só fecha uma linha com o mesmo caractere, sequência de tamanho maior ou igual
+  à da abertura e nada além de espaço depois;
+- linhas de cerca e linhas dentro da cerca são ignoradas inteiras. Uma cerca nunca fechada vai até o
+  fim do corpo. Blocos de código indentados (4 espaços) **não** são reconhecidos.
 
-**Normalização:**
+**Código inline:** numa linha fora de cerca, cada trecho de código inline é trocado por espaços
+(o mesmo número de caracteres) antes da extração. Uma sequência de N crases abre um trecho que só
+fecha com outra sequência de exatamente N crases na mesma linha. Sem fechamento na linha, as crases
+são texto comum. Trocar por espaços, em vez de cortar, mantém intacto um link cujo rótulo é código
+(`` [`foo`](foo.md) ``).
 
-- Antes de resolver, são descartados a consulta (`?...`) e a âncora (`#...`) do destino.
-- Destino sem extensão recebe `.md` no final.
-- Destino que começa com barra ou é wikilink é relativo à raiz do projeto; os demais são
-  relativos ao diretório da página de origem (com resolução de `..`).
-- Resultados são deduplicados e ordenados (saída estável).
-- Destinos que não formam um caminho de página válido são descartados silenciosamente.
+**Wikilinks:** cada `[[…]]` da linha, da esquerda para a direita. Um `!` antes do `[[` não muda
+nada: `![[x]]` também é extraído como link. O fechamento é o primeiro `]]`
+depois do `[[`. Um `[[` sem `]]` encerra a busca na linha.
 
-### 3.5 Relações tipadas
+1. Se há `|`, o texto antes do primeiro `|` é o alvo (o resto é rótulo). O alvo é aparado.
+2. **Escopo:** se o alvo não contém `://` e não começa (sem distinguir caixa) com `mailto:`, `data:`,
+   `javascript:`, `vbscript:`, `tel:` ou `file:`, e tem `:`, o trecho antes do **primeiro** `:`
+   (aparado) é o escopo quando não é vazio e só tem letras ou dígitos Unicode, `-`, `_`, `/` e `.`.
+   Com `/`, o que vem antes do primeiro `/` é o workspace e o resto é o projeto (ambos aparados). Sem
+   `/`, é só o projeto. Projeto vazio desfaz o escopo (o alvo inteiro vira caminho). Projeto `_global`
+   sem workspace recebe o workspace `default`. O caminho é o resto depois do `:`, aparado.
+3. O caminho passa pela normalização abaixo, como **relativo à raiz do projeto**.
 
-- Lidas da chave `relations` do frontmatter, com a mesma gramática de alvo dos wikilinks.
-- O vocabulário é **fechado**: `causes` (causa), `fixes` (corrige), `contradicts` (contradiz).
-  Chave fora desse vocabulário é ignorada com aviso, para que um erro de digitação não
-  crie um tipo de aresta novo.
-- Alvo que não nomeia uma página (diretório, `.md` sem nome, extensão diferente de `.md`)
-  é ignorado com aviso.
-- Valores de log vindos do frontmatter são truncados a 200 bytes, por serem entrada
-  não confiável.
+**Links markdown** `[rótulo](destino)`: a linha é varrida uma vez, da esquerda para a direita,
+mantendo uma pilha de `[` abertos.
 
-### 3.6 Conjunto de links da página
+- `\` escapa o caractere seguinte (um `\!` não marca imagem; um `\[` não abre rótulo).
+- Um `[` precedido de `!` não escapado abre o rótulo de uma **imagem**.
+- Um `]` fecha o último rótulo aberto. Se vem logo seguido de `(`, o destino é lido. Destino de link
+  comum (não imagem) vai para a normalização como **relativo ao diretório da página**, ou à raiz do
+  projeto se começa com `/`. Imagens são ignoradas. Depois de um link comum, os rótulos abertos são
+  descartados (imagem pode estar dentro do rótulo de um link; link não pode estar dentro de outro).
+- Leitura do destino, a partir do `(` e limitada aos primeiros **512 bytes** (cortando numa fronteira
+  de caractere):
+  - espaços no início são pulados;
+  - `<…>`: o destino é o que está entre `<` e o primeiro `>`, e depois dele precisa vir o fechamento
+    descrito abaixo;
+  - senão, o destino vai até o `)` que fecha (parênteses internos balanceados são permitidos). Um
+    destino sem `<>` **pode** conter espaços quando não há título depois (`[x](my page.md)`). Em cada
+    início de sequência de espaço (no máximo 8 tentativas), testa-se se o resto é um título opcional
+    seguido de `)`. Se for, o destino termina ali;
+  - fechamento: espaços opcionais, então `)`; ou, depois de pelo menos um espaço, um título entre
+    `"…"`, `'…'` ou `(…)` (com `\` escapando o delimitador; um `(` não escapado dentro de título em
+    parênteses invalida), espaços opcionais e `)`. O título é descartado;
+  - sem fechamento válido, não há link.
+- O destino de link markdown passa por **decodificação percentual, uma vez**, depois de cortar
+  consulta e âncora: cada `%XX` com dois dígitos hexadecimais vira o byte; `%` sem dois hexadecimais
+  fica literal; um byte de controle ASCII decodificado, ou bytes que não formam UTF-8 válido, descartam
+  o link. Wikilinks **não** são decodificados.
 
-Todo caminho de escrita grava o **conjunto completo** de links de saída: os links do
-corpo somados às relações do frontmatter. Há uma única função de extração para isso,
-para que um novo ponto de escrita não esqueça a parte tipada.
+**Normalização do alvo** (comum aos dois tipos):
+
+1. corta o que vem depois do primeiro `|`; apara; remove `<` e `>` das pontas;
+2. vazio ou começando com `#` (âncora pura): descartado;
+3. corta no primeiro `#` ou `?` e apara;
+4. (link markdown) decodificação percentual, como acima;
+5. descartado se vazio, se contém `://` ou `\`, ou se começa (sem distinguir caixa) com `mailto:`,
+   `data:`, `javascript:`, `vbscript:`, `tel:` ou `file:`;
+6. descartado se o último segmento é vazio (termina em `/`) ou é exatamente `.md`;
+7. se o último segmento tem `.`, precisa terminar em `.md` exatamente (`.MD` e `.markdown` são
+   descartados). Se não tem `.`, recebe `.md`;
+8. resolução: parte de uma lista vazia (raiz do projeto) ou dos segmentos do diretório da página;
+   segmentos vazios e `.` são ignorados, `..` remove o último segmento e, **se não houver segmento a
+   remover, descarta o link**; os demais são acrescentados. Resultado vazio é descartado;
+9. o resultado precisa passar na validação de caminho (§4.2 do vocabulário). `ensure_portable` não é
+   aplicado aqui.
+
+Os links do corpo são deduplicados pela tripla (workspace, projeto, caminho) e ordenados por ela,
+com ausente antes de presente e texto em ordem de bytes.
+
+### 3.6 Relações tipadas (frontmatter)
+
+- Lidas da chave `relations`. Se não é mapeamento, nada é lido (sem aviso).
+- Para cada chave, na ordem do arquivo:
+  - nome fora do vocabulário fechado (`causes`, `fixes`, `contradicts`, exatos e em minúsculas): a chave
+    é ignorada inteira, com aviso no log. Um erro de digitação não cria um tipo de aresta novo;
+  - valor que não é lista: ignorado sem aviso. Itens da lista que não são texto: ignorados sem aviso.
+- Cada alvo de texto usa a mesma regra de escopo dos wikilinks (§3.5, passo 2). O caminho é aparado e:
+  - não nomeia página (termina em `/`, último segmento `.md`, ou último segmento com `.` que não
+    termina em `.md`): ignorado com aviso;
+  - último segmento sem `.`: recebe `.md`;
+  - falha na validação de caminho: ignorado com aviso.
+- Diferente dos links do corpo, aqui **não** há corte de `#` ou `?`, nem resolução de `.` e `..`, nem
+  decodificação percentual: o caminho é usado como escrito.
+- Valores de texto vindos do frontmatter e copiados para o log são cortados em 200 bytes (com
+  reticências dentro do limite), por serem entrada não confiável.
+
+### 3.7 Conjunto de links da página
+
+Todo caminho de escrita grava o **conjunto completo** de links de saída: os links do corpo (§3.5)
+seguidos das relações do frontmatter (§3.6), por uma única função de extração, para que um novo ponto
+de escrita não esqueça a parte tipada. O armazenamento descarta repetições pela chave
+(workspace, projeto, caminho, relação), mantendo a primeira. Um mesmo alvo pode aparecer uma vez como
+`references` (do corpo) e uma vez com a relação tipada.
 
 ---
 
@@ -156,11 +395,23 @@ para que um novo ponto de escrita não esqueça a parte tipada.
 
 Gravar um arquivo substituindo o anterior segue estas etapas:
 
+0. cria os diretórios que faltam até o destino;
 1. cria um arquivo temporário **no mesmo diretório** do destino, com prefixo
-   `.ai-memory-tmp.`;
+   `.ai-memory-tmp.` seguido de um sufixo aleatório. No Unix, o temporário nasce com permissão
+   **0600** (só o dono). Como a troca é por renomeação, o arquivo final fica com essa mesma
+   permissão, inclusive quando substitui um arquivo que tinha outra;
+   O sufixo aleatório tem 6 caracteres alfanuméricos. No Windows não há bits de permissão: o arquivo
+   herda as permissões (ACL) do diretório. O temporário nasce com o atributo `TEMPORARY`, que é trocado
+   para `NORMAL` antes da troca.
 2. escreve o conteúdo e sincroniza os dados do temporário com o disco;
-3. troca o temporário pelo destino (renomeação sobre o arquivo existente);
-4. sincroniza o diretório pai, em modo de melhor esforço.
+3. troca o temporário pelo destino (renomeação sobre o arquivo existente; no Windows, renomeação
+   com substituição do destino existente) e sincroniza de novo os dados do arquivo já renomeado;
+4. sincroniza o diretório pai, em modo de melhor esforço: se o diretório não abre ou a sincronização
+   falha, o erro é ignorado em silêncio e a escrita conta como feita. **No Windows este passo não faz
+   nada na prática:** abrir um diretório como arquivo comum falha, e a falha é ignorada.
+
+Falha em qualquer etapa de 0 a 3 é erro da escrita. Se a falha ocorre antes da troca, o temporário é
+apagado.
 
 Detalhes:
 
@@ -172,8 +423,10 @@ Detalhes:
   persistir, o erro original é propagado.
 - **Em outras plataformas** nenhum erro é considerado transitório.
 - A gravação devolve um identificador do arquivo gravado (número de inode no Unix;
-  índice de arquivo NTFS no Windows, com valor zero quando o volume não expõe esse
-  índice). O observador usa esse identificador para reconhecer as próprias escritas.
+  índice de arquivo NTFS no Windows). Se o identificador não pode ser lido, ou o volume não o
+  expõe (FAT), o valor é zero, não erro. **Nenhum componente usa esse identificador hoje:** o
+  observador não distingue as próprias escritas. Ele ignora os temporários pelo prefixo e absorve a
+  escrita já instalada pela regra de conteúdo idêntico (seção 13, item 3).
 
 ---
 
@@ -210,17 +463,30 @@ Ordem fixa:
    pela API normal.
 2. **Higienização do corpo.** O corpo passa pelo higienizador, qualquer que seja o
    chamador (consolidação por LLM, CLI, MCP), como defesa em profundidade.
-3. **Fixação e autoria.** Caminhos de slot são marcados como fixados. Se o ator não é
-   anônimo, o frontmatter recebe o bloco `last_modified_by` (com identificador do autor,
-   quando houver). Ator anônimo não gera bloco.
+3. **Fixação e autoria.** Um caminho que começa com `_slots/` é sempre fixado. Se o ator tem
+   nome de usuário não vazio, o frontmatter recebe a chave `last_modified_by`, um mapeamento com
+   `username` e, quando conhecidos, `name` e `email`, nessa ordem. A chave é substituída se já
+   existia (mantendo a posição) ou acrescentada no fim. Frontmatter nulo vira mapeamento antes
+   disso; frontmatter que é outro tipo (lista, texto) fica como está e não recebe a chave. Ator
+   anônimo não gera bloco.
 4. **Cadeia de admissão** (se configurada). Os nomes humanos de workspace e projeto
    são resolvidos para o contexto e os webhooks **bloqueantes** são executados em
    ordem. Eles podem alterar frontmatter e corpo, ou rejeitar a escrita.
-5. **Nova higienização e normalização.** O corpo e as strings do frontmatter são
-   higienizados de novo, porque webhooks são entrada externa. O campo `pinned` também
-   é lido do frontmatter. Frontmatter de índice recebe a forma canônica (nível de
-   retenção e fixação) e a conformidade OKF para o disco.
-6. **Derivações.** Título (explícito, ou pela regra da seção 3.3), links (seção 3.6),
+5. **Nova higienização e normalização.** O corpo e **todo valor de texto** do frontmatter, em
+   qualquer profundidade (mapeamentos e listas), são higienizados de novo, porque webhooks são
+   entrada externa. Chaves não são higienizadas. Depois:
+   - **fixação final** = pedido de fixação **ou** caminho de slot **ou** `pinned: true` no
+     frontmatter (só o booleano conta: o texto `"true"` não fixa);
+   - **forma canônica:** a chave `tier` recebe o nível passado por quem chama (que **vence** o valor
+     do frontmatter; a chave mantém a posição se existia, senão vai para o fim). Se a página é fixada,
+     `pinned: true` é gravado. Um `pinned: false` presente fica como está. Não há herança de fixação
+     da versão anterior: o frontmatter enviado é a verdade;
+   - **conformidade OKF** ([okf.md](okf.md)): preenche as chaves deterministas que faltam;
+   - **`generated.at`:** se o arquivo atual no disco existe, é legível e tem o mesmo corpo e o mesmo
+     frontmatter (comparados sem `generated.at`), o `generated.at` dele é herdado. Senão, recebe o
+     instante atual em UTC, `AAAA-MM-DDTHH:MM:SSZ`. É isso que faz uma reescrita idêntica gerar os
+     mesmos bytes.
+6. **Derivações.** Título (explícito, ou pela regra da seção 3.4), links (seção 3.7),
    validade, entidades e resumo. Esses valores são calculados depois da cadeia, para
    que alterações de webhooks entrem neles:
    - `expires_at`: ausente, nulo ou vazio significa sem validade. Aceita data e hora
@@ -234,9 +500,17 @@ Ordem fixa:
    - `abstract`: texto do frontmatter, usado como resumo de uma linha. Vazio ou que não
      é texto é ignorado.
 7. **Emissão e trava.** O markdown é emitido. Em seguida são adquiridas a guarda
-   compartilhada de mutação e a trava da página. Dentro dessas guardas o confinamento é
-   verificado de novo, e são garantidas as linhas do projeto e do workspace e o
-   manifesto `_meta.md`.
+   compartilhada de mutação e a trava da página, nessa ordem. Dentro dessas guardas o
+   confinamento é verificado de novo, e confere-se que o projeto **existe** no índice e pertence ao
+   workspace. A escrita **não cria** linhas de escopo: projeto inexistente é erro de não encontrado
+   ("o projeto não existe"), e projeto de outro workspace também ("não pertence ao workspace", com o
+   workspace dono). Quem cria escopo é a resolução de escrita
+   ([storage-and-retrieval.md](storage-and-retrieval.md) §14.1). Depois são garantidos os
+   manifestos `_meta.md` (seção 1.1). Os manifestos são garantidos uma vez por escopo durante a
+   vida do processo; uma falha ao escrevê-los só gera aviso e não interrompe a escrita.
+   Numa escrita condicional (só se a versão atual for a esperada, ou só se o caminho não existir),
+   a condição é conferida aqui, antes de tocar no disco, e de novo dentro da transação do índice.
+   Se ela não vale, nada é escrito e quem chama recebe a versão atual.
 8. **Instalação do arquivo.** O arquivo é gravado guardando o conteúdo anterior, para
    rollback. Isso acontece **antes** da gravação no índice: o markdown nunca fica atrás
    do banco.
@@ -254,7 +528,12 @@ Ordem fixa:
 
 Propriedades observáveis:
 
-- Reescrever conteúdo idêntico não altera os bytes do arquivo nem cria uma nova versão.
+- Reescrever conteúdo idêntico não cria uma nova versão e não muda os bytes do arquivo. O arquivo
+  ainda é regravado (mesmo conteúdo, nova data de modificação), o que gera um evento para o
+  observador, absorvido pela mesma regra de conteúdo idêntico. A evidência da escrita é registrada
+  contra a versão atual.
+- A escrita **não faz commit** no Git. Os caminhos tocados ficam registrados para o próximo commit
+  automático (seção 7).
 - Criar uma página cujo caminho coincide com o de outra página viva do mesmo projeto,
   após converter para minúsculas e normalizar Unicode (forma composta), é recusado,
   mesmo que os dois caminhos sejam diferentes no sistema de arquivos. O erro cita os
@@ -315,11 +594,22 @@ checkpoints recentes e checkpoint de linha de base para atualização (ver seç�
 
 - `restore_page_from_checkpoint`: lê a página na revisão indicada pelo histórico Git e a
   regrava pelo caminho normal.
-- `reindex_page`: reindexa uma página a partir do disco.
-- `reindex_all`: reconstrói o índice inteiro a partir do disco. Pula escopos e sessões
-  purgados que têm marcador (não os ressuscita) e pula pares de caminhos que só diferem
-  por caixa ou Unicode (contados em `skipped_collisions`). O resumo (`ReindexSummary`)
-  informa workspaces, projetos, páginas e os contadores de pulos.
+- `reindex_page`: reindexa uma página a partir do disco (seção 5.5).
+- `reindex_all`: reconstrói o índice inteiro a partir do disco:
+  1. valida a árvore inteira (seção 12);
+  2. percorre os diretórios `<workspace_id>/<project_id>/` com dois UUIDs válidos;
+  3. pula escopos purgados (tombstone de escopo): não os ressuscita;
+  4. na primeira vez que vê um workspace, lê o `_meta.md` dele e garante a linha do workspace
+     **com o identificador do diretório**; depois lê o `_meta.md` do projeto e garante a linha do
+     projeto com o identificador do diretório, o nome, o caminho do checkout e a identidade
+     (seção 1.1). Manifesto ausente ou inválido é erro que interrompe a reconstrução;
+  5. percorre as páginas do projeto (mesmas exclusões da varredura da seção 8.2), pula páginas de
+     sessões purgadas (`sessions/<id>.md` com a sessão na lista de purgadas) e reindexa cada uma;
+  6. uma página que colide com outra já indexada (só difere por caixa ou Unicode) é pulada e contada
+     em `skipped_collisions`. **Qualquer outro erro de página interrompe a reconstrução inteira.**
+
+  O resumo (`ReindexSummary`) informa workspaces, projetos, páginas, `skipped_purged`,
+  `skipped_purged_sessions` e `skipped_collisions`.
 - `backfill_scope_manifests`: cria o `_meta.md` de escopos que não o têm.
 - `repair_date_only_stale_after`: converte validades só com data para o instante de fim
   do dia, no formato OKF.
@@ -330,6 +620,29 @@ reporta a alteração ao Git.
 **Admissão:** `preflight_admission` consulta a cadeia **antes** de trabalho caro (por
 exemplo, antes de chamar um modelo de linguagem), sem gravar nada. `authorize_operation`,
 `notify_operation_observers` e `dispatch_purge` seguem a regra da seção 6.
+
+### 5.5 Reindexação de uma página a partir do disco
+
+Usada pelo observador (seção 8) e pela reconstrução (`reindex_all`). A restauração de checkpoint não
+usa este fluxo: ela regrava a página pelo fluxo da seção 5.2. Difere da escrita da seção 5.2 em pontos
+que mudam o resultado:
+
+1. Recusa caminhos em `_pending/` (propostas não são indexadas).
+2. Sob a guarda compartilhada e a trava da página, lê o arquivo do disco como texto UTF-8 e interpreta
+   o frontmatter (seção 3). Arquivo que não é UTF-8 válido, ou frontmatter inválido, é erro.
+3. **Não** passa pelo higienizador, **não** roda webhooks e **não** reescreve o arquivo: o markdown do
+   disco é a fonte da verdade, e o observador nunca escreve no disco.
+4. Derivações a partir do próprio arquivo:
+   - **nível:** chave `tier` do frontmatter; ausente vale `semantic`. Um texto que não é nível válido,
+     ou um valor que não é texto, é erro;
+   - **fixação:** caminho de slot ou `pinned: true` (booleano);
+   - título, links, validade e entidades pelas mesmas regras da seção 5.2 (validade e `entities`
+     inválidos são erro);
+   - sem autor e sem evidência.
+5. Grava no índice pelo mesmo upsert ([storage-and-retrieval.md](storage-and-retrieval.md) §5.1). A
+   conformidade OKF do upsert vale só para a linha do índice, não para o arquivo.
+6. Com embedder configurado, só gera embedding se o upsert criou uma versão nova. Uma reindexação que
+   não muda nada (a reconciliação passa por todas as páginas a cada 30 s) não gera embedding.
 
 ---
 
@@ -440,11 +753,44 @@ Execução sequencial, na ordem da configuração. Cada webhook vê a saída do 
 - **Leitura em corrida.** Se um arquivo muda enquanto é lido para o commit (um escritor
   fora da trava), o commit tenta de novo: até 4 tentativas, com 25 ms de espera entre
   elas. Se ainda falhar, os caminhos continuam registrados para o próximo commit.
+- **O que um commit faz** (caminho normal):
+  1. inicializa o repositório na raiz da wiki na primeira abertura, se `.git` não existe;
+  2. prepara o índice: só os caminhos registrados, ou a árvore inteira na varredura completa. Na
+     varredura completa e num diretório registrado, arquivos ignorados pelo `.gitignore` do repositório
+     ficam de fora, como no `git add` padrão. Um **arquivo** registrado individualmente entra mesmo
+     que o `.gitignore` o ignore. Um caminho registrado que não existe mais sai do índice. Caminhos com
+     um componente reservado do Git (`.git` em qualquer caixa, `git~1` a `git~4`) nunca entram;
+  3. **ledgers nunca entram no índice** (seção 9, por nome **e** conteúdo, em qualquer profundidade).
+     Um ledger que uma versão antiga commitou sai do índice; o arquivo fica no disco e as versões antigas
+     continuam no histórico. Não se usa `.gitignore` para isso, porque o nome sozinho também esconderia
+     uma página comum com nome de ledger;
+  4. grava o arquivo de índice do Git em toda tentativa, mesmo sem commit, para que outras ferramentas
+     não vejam páginas como "preparadas e não preparadas" ao mesmo tempo;
+  5. se a árvore resultante é igual à do `HEAD`, **não há commit**. Num repositório sem `HEAD`, um
+     índice vazio também não gera commit (nada de commit inicial vazio);
+  6. o commit tem autor e committer `ai-memory <ai-memory@local>`, data atual, um único pai (o `HEAD`,
+     quando existe) e atualiza o `HEAD`. No caminho normal (biblioteca embutida), o commit não é
+     assinado e não executa hooks do Git. No fallback do Windows, por usar o executável, hooks e
+     assinatura que o usuário configurou no repositório podem rodar;
+  7. se a gravação da árvore falha porque o índice aponta para um objeto que não existe mais, o índice é
+     esvaziado, a árvore inteira é preparada de novo e a gravação é repetida uma vez.
 - `commit_all` devolve nenhum identificador de commit quando não há mudança.
-- **Fallback.** Se o acesso pela biblioteca Git embutida falha porque o repositório não
-  foi encontrado, ou (só no Windows) porque um caminho não pôde ser resolvido, o
-  adaptador tenta o comando `git` do sistema, depois das mesmas validações de
-  confinamento. Erro de dono do repositório (*owner*) **nunca** aciona o fallback.
+- Mensagens fixas usadas pelo próprio wiki: `okf-migration: conform wiki to OKF v0.2` (migração) e
+  `okf: repair date-only stale_after on existing pages` (reparo). As demais mensagens vêm de quem chama
+  o commit.
+- **Fallback (só no Windows).** No Windows, se a biblioteca Git embutida falha ao abrir o
+  repositório para commit porque ele não foi encontrado, ou porque um caminho não pôde ser
+  resolvido, o adaptador tenta o executável `git` do sistema, depois das mesmas validações de
+  confinamento. A inicialização do repositório tem o mesmo fallback (`git init -q`). Erro de dono do
+  repositório (*owner*) **nunca** aciona o fallback. **Fora do Windows não há fallback:** o erro
+  original é devolvido.
+- **Como o executável é chamado no fallback:** com `-C <raiz da wiki>`, sem as variáveis de ambiente
+  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY` e
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`. O commit usa `-c user.name=ai-memory -c user.email=ai-memory@local
+  commit -q -m <mensagem>`. Antes, os ledgers rastreados saem do índice (`rm --cached --force`) e o
+  resto entra com `add -A` usando os ledgers como exclusões. As listas de caminhos vão pela entrada
+  padrão, porque uma lista longa não cabe na linha de comando do Windows. Se `diff --cached --quiet`
+  diz que não há mudança, nenhum commit é feito.
 - Leituras de histórico: lista dos checkpoints recentes (mais novos primeiro), contagem
   de commits e leitura do conteúdo de um arquivo em uma revisão. Esta última é a base da
   restauração de página.
@@ -469,12 +815,28 @@ Dois mecanismos complementares.
   página e reindexa. As próprias escritas do wiki são absorvidas por uma checagem de hash
   de conteúdo no índice: reindexar um conteúdo idêntico não faz nada, e o ciclo termina.
 - Remoção: só registra o caminho no Git, para que o próximo commit o inclua. Não mexe
-  no índice (ver 8.3).
-- Criação de diretório dentro de um projeto: reindexa o projeto inteiro.
-- **Ignorados:** caminhos internos do Git (inclusive metadados aninhados), links simbólicos
-  e pontos de reparse, arquivos temporários do wiki, `_meta.md`, `bootstrap.md`, ledgers
-  `log*.md` (por nome **e** conteúdo, seção 9), caminhos em `_pending/` e arquivos que não
-  são markdown.
+  no índice (ver 8.3). Temporários e caminhos internos do Git não são registrados.
+- Evento de criação, modificação ou genérico **sobre um diretório** dentro de um projeto
+  (qualquer um desses tipos, não só criação): reindexa o projeto inteiro, mas só se o projeto já
+  tem linha no índice (um diretório sem escopo conhecido é ignorado, com mensagem de depuração).
+  No Windows, editar um arquivo numa subpasta costuma gerar também um evento de modificação da
+  pasta pai, e isso dispara a reindexação do projeto; ela é barata porque conteúdo idêntico não cria
+  versão.
+- Todo arquivo comum que gera evento (exceto temporários e internos do Git) é registrado no Git
+  **antes** dos filtros abaixo. Por isso um ledger ou um arquivo que não é markdown também chega ao
+  próximo commit (onde o ledger é então excluído pela regra da seção 7).
+- **Ignorados para indexação**, com o alcance de cada regra:
+  - caminhos com componente reservado do Git (`.git`, `git~1` a `git~4`), em qualquer nível;
+  - links simbólicos e pontos de reparse (seção 12);
+  - arquivos cujo nome começa com `.ai-memory-tmp.`, em qualquer nível;
+  - arquivos cuja extensão não é exatamente `md` (sensível à caixa: `.MD` não é markdown);
+  - eventos fora de `<workspace_id>/<project_id>/…`, ou com caminho de página inválido;
+  - `_pending` e tudo sob `_pending/`, **só na raiz do projeto**;
+  - `_meta.md` **em qualquer nível**;
+  - `bootstrap.md` **só na raiz do projeto**;
+  - `log.md` e `log-AAAA-MM.md` **só na raiz do projeto**, e só quando o conteúdo é de ledger
+    (seção 9). Com esse nome mas conteúdo de página comum, o arquivo é indexado. Em subdiretórios,
+    esses nomes são sempre páginas comuns.
 - A página de uma sessão **purgada** não volta por evento: se o caminho é `sessions/<id>.md`
   e a sessão está na lista de purgadas, o evento é ignorado. Se a consulta falhar, o evento
   é processado mesmo assim, porque um erro transitório não deve parar a indexação.
@@ -490,8 +852,13 @@ Dois mecanismos complementares.
 - O primeiro disparo ocorre no início e é descartado, para que a reconciliação não rode
   logo no boot.
 - Diretórios ocultos (nome começando com ponto) **não** são pulados.
-- Ignora links simbólicos, arquivos temporários, `_pending/` no nível da raiz, `_meta.md`,
-  `bootstrap.md` e ledgers.
+- Ignora links simbólicos e pontos de reparse (sem entrar neles), arquivos temporários,
+  `_pending/` na raiz do projeto, `_meta.md`, `bootstrap.md` e ledgers, com o mesmo alcance da
+  seção 8.1. Um diretório que some durante a varredura é pulado (e marca a varredura como parcial
+  para a seção 8.3).
+- Um diretório de projeto sem linha de projeto no índice (órfão) é pulado inteiro, sem reindexar
+  nenhuma página e sem escrever `_meta.md`, e contado em `skipped_orphans`. A reconciliação, como a
+  escrita, não cria escopos.
 - Contador de falhas consecutivas: ao chegar a **5**, registra um erro de nível alto com
   o marcador `watcher_degraded` (o índice pode estar fora de sincronia com o disco).
   A reconciliação continua tentando a cada 30 s. Ao voltar a funcionar, registra a
@@ -533,13 +900,21 @@ manutenção do arquivo de configuração.
 
 Um arquivo só é tratado como ledger se o **nome casa e o conteúdo também**:
 
-- o nome deve ser `log.md` ou `log-AAAA-MM.md` exatamente;
-- o conteúdo deve **abrir** com uma entrada de log. Se o arquivo começa com um bloco de
-  frontmatter, o bloco precisa ser fechado (dentro de um limite de linhas) e a primeira
-  linha não vazia depois dele deve ser a entrada. Linha vazia antes da primeira entrada
-  já decide que não é ledger.
-- Só os primeiros 8 KiB são lidos para essa decisão. Um arquivo com entrada de log
-  depois desse ponto não é reconhecido como ledger.
+- **nome:** exatamente `log.md`, ou `log-` seguido de 4 dígitos, `-`, 2 dígitos e `.md`. Comparação
+  sensível à caixa (`LOG-2026-09.md` não casa). Mês e ano não são validados, só os dígitos.
+  Não casam: `log.md.bak`, `log-2026-9.md`, `log-2026-09-01.md`, `log-2026.md`.
+- **conteúdo**, decidido sobre os primeiros **8 KiB** do arquivo:
+  1. se o arquivo encheu os 8 KiB, o trecho é cortado na última quebra de linha (uma linha lida pela
+     metade não decide nada). Se não há quebra nesse trecho, o resultado é "não é ledger";
+  2. trecho que não é UTF-8 válido: não é ledger. Arquivo ausente ou ilegível: não é ledger;
+  3. se a primeira linha (sem espaços à direita) não é `---`, o arquivo é ledger se essa linha começa
+     com `## [`. Uma primeira linha vazia já significa "não é ledger";
+  4. se a primeira linha é `---`, procura-se a linha `---` de fechamento (comparada sem espaços à
+     direita) nas **64** linhas seguintes. Sem fechamento nesse limite: não é ledger;
+  5. depois do fechamento, a primeira linha que não é só espaço decide: é ledger se começa com `## [`.
+     Linhas vazias entre o frontmatter e a entrada são permitidas. Sem essa linha: não é ledger.
+- As linhas são separadas por LF, com CR final descartado. Um BOM no início faz a primeira linha não
+  ser nem `---` nem `## [`.
 
 Sem essa checagem, uma página comum com nome parecido seria tratada como ledger, ou cada
 acréscimo ao ledger superaria uma "página" de vários megabytes. A mesma regra é usada
@@ -652,9 +1027,14 @@ um link simbólico (ou ponto de reparse no Windows) colocado dentro do wiki nunc
 uma leitura ou escrita para fora da raiz. O erro é sempre o de confinamento, com caminho e
 motivo.
 
-- **Detecção de link.** Um item é "tipo link" se for um link simbólico ou, no Windows, se
-  tiver o atributo de ponto de reparse. A verificação usa os metadados do próprio item,
-  sem seguir o link.
+- **Detecção de link.** Um item é "tipo link" se for um link simbólico (fora do Windows) ou, no
+  Windows, se tiver o atributo de ponto de reparse (`FILE_ATTRIBUTE_REPARSE_POINT`, valor `0x400`).
+  A verificação usa os metadados do próprio item, sem seguir o link. No Windows, o teste é só pelo
+  atributo: links simbólicos, junções e **qualquer outro ponto de reparse** contam. Isso inclui os
+  arquivos e pastas de provedores de nuvem que usam pontos de reparse (por exemplo, o OneDrive com
+  arquivos sob demanda). Um diretório de dados dentro de uma pasta sincronizada assim tem as páginas
+  recusadas pelo confinamento. O padrão do diretório de dados no Windows fica fora dessas pastas
+  ([cli.md](cli.md) §2.5).
 - **Caminho relativo à árvore.** O caminho precisa ser normalizado: não vazio, sem
   componentes `..`, `.`, raiz ou prefixo de unidade. A raiz é verificada, e então cada
   ancestral existente é percorrido: cada um deve ser diretório e não pode ser link.
