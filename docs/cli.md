@@ -325,17 +325,17 @@ entrada padrão. Ordem de processamento:
      nem mesmo prompts.
    - A decisão pode resultar em descartar o evento, substituir o corpo por apenas
      metadados, ou manter o evento com um campo indicando a política aplicada.
-   - `--check-capture` imprime a decisão, sem capturar. Serve para diagnóstico.
+    - `--check-capture` imprime a decisão em JSON (sem capturar, sem usar spool ou rede), com 15 campos fixos (`version`, `capture_mode`, `marker_present`, `admits_capture`, `policy_admits_capture`, `event_admits_capture`, `policy_state`, `tool_family`, `path_count`, `disposition` [que reporta `"drop"` também quando a disposição interna é `MetadataOnly`], `extraction_state`, `scope`, `scope_resolution`, `server_profile`, `server_resolution`) e `external_capture: true` opcional. Serve para diagnóstico.
 5. **Montagem da requisição:** diretório atual, identificadores do marcador do
    repositório (espaço, projeto, estratégia de nome de projeto, descarte de capturas de
    subagentes, escopo padrão, briefing), identificador de sessão e identificador de
    execução gerenciada (variável `AI_MEMORY_RUN_ID`). Agentes sem identificador estável
    de sessão usam estado persistido em disco.
-6. **Chave de ingestão (UUID) gerada uma única vez** e incluída no item da fila. Toda
-   nova tentativa reenvia a mesma chave, o que torna a ingestão idempotente.
-7. **Escrita na fila local**, instantânea, em arquivo com permissão `0600`. A
-   autenticação é guardada por item: token estático embutido, credencial OIDC resolvida
-   e renovada na drenagem, ou anônimo.
+6. **Chave de ingestão (UUID) gerada uma única vez** e incluída na query string da `url` gravada no item da fila (`ingest_key=<uuid>`). Toda
+   nova tentativa reenvia a mesma URL, o que torna a ingestão idempotente.
+7. **Escrita na fila local**, instantânea, em arquivo temporário `.json.tmp` renomeado para `{created_ms:013}-{pid}-{seq:016x}-{recovery_key}.json` (com permissão `0600` em Unix). O JSON do item contém `{ url, body, created_ms, auth_mode, token?, attempts, profile? }`. A
+   autenticação é guardada por item (`auth_mode`): token estático embutido (`static_token`), credencial OIDC resolvida
+   e renovada na drenagem (`oidc_at_drain`), ou anônimo (`anonymous`).
 8. **Drenagem incremental:** em evento de uso de ferramenta pós-execução, se a fila tiver
    pelo menos **32** itens (configurável), drena-se com orçamento de **250 ms**. A fila
    não cresce indefinidamente, e a chamada de ferramenta nunca espera a rede por muito
@@ -343,12 +343,11 @@ entrada padrão. Ordem de processamento:
 9. **Início de sessão:** dispara a importação de histórico em segundo plano na primeira
    vez em um checkout. Drena a fila com orçamento de **3 s**. Só para agentes que
    injetam na sessão o que é impresso na saída padrão do início de sessão, faz
-   `GET /handoff` com timeout de **3 s** e imprime o envelope que o agente espera.
+   `GET /handoff` com timeout de **3 s** e imprime o envelope que o agente espera (para Claude Code: `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}` quando há contexto, ou `{}` quando vazio).
    Atenção: essa leitura de handoff é **destrutiva** no servidor. Agentes que não
-   injetam esse conteúdo recebem o handoff sob demanda, por ferramenta MCP. A confirmar:
-   o agente Kimi recebe o handoff no primeiro prompt.
+   injetam esse conteúdo recebem o handoff sob demanda, por ferramenta MCP. O agente Kimi recebe o briefing opt-in no primeiro prompt (`UserPromptSubmit`).
 10. **Fronteiras** (`stop`, `pre-compact`, `session-end`): dispara um drenador em segundo
-    plano (`hook-drain`), com saídas descartadas, trava exclusiva da fila e orçamento de
+    plano (`hook-drain`), com entrada/saída padrão nulas, saída de erro em `logs/hook-drain.log`, trava exclusiva de sistema operacional na fila (`.drain.lock`) e orçamento de
     **5 min**.
 11. Sempre responde sucesso ao agente.
 
@@ -358,18 +357,20 @@ Diretório: `<diretório de dados>/hook-spool/`.
 
 | Parâmetro | Valor |
 |---|---|
-| Máximo de tentativas por evento | **8** (padrão, sobrescrevível por variável de ambiente) |
+| Máximo de tentativas por evento | **8** (padrão em `[hook_spool].max_attempts` ou `AI_MEMORY_SPOOL_MAX_ATTEMPTS`; `0` desativa descarte por tentativas) |
 | Idade máxima | **7 dias**. Eventos mais antigos são descartados. |
-| Máximo de arquivos na fila | **10 000**. Ao exceder, os **mais antigos ainda não entregues** são descartados na inserção. |
+| Máximo de arquivos na fila | **10 000** (coordenado por `<data_dir>/hook-spool.capacity.lock`, espera de até 50 ms). Ao atingir 10 000 arquivos, a fila existente é preservada e o **novo evento recebido é descartado** na inserção (com aviso em stderr). |
 | Lote de envio | Até **256 itens** e **8 MiB** por lote. Sempre pelo menos 1 evento. |
+
+No início da drenagem, arquivos `.json.tmp` órfãos com mais de **5 minutos** (300 000 ms) são inspecionados: se tiverem até 10 MiB, JSON válido e `created_ms` idêntico ao prefixo do nome, são recuperados (renomeados para `.json`); caso contrário, são apagados.
 
 Envio: `POST /hook/batch`. A resposta de confirmação indica quais itens foram aceitos e
 qual falhou (com compatibilidade para o formato antigo de confirmação). Apenas os itens
-confirmados são apagados. Os que falharam têm o contador de tentativas incrementado.
+confirmados são apagados. Os que falharam (`5xx`, `401` após retentativa ou `failed_index`) têm o contador de tentativas incrementado; erros `4xx` permanentes (exceto `401`, `408`, `429`) descartam o item imediatamente.
 
 - Em lote recusado por **401**, a drenagem repete **uma vez** com o token atual que lhe
-  foi entregue. Isso cobre token rotacionado após a captura.
-- Respostas de limitação de taxa (429) não consomem tentativas.
+  foi entregue (`AI_MEMORY_AUTH_TOKEN` ou `<data_dir>/auth-token`). Isso cobre token rotacionado após a captura.
+- Respostas de limitação de taxa (**429**), timeout de requisição (**408**) e erros de rede não consomem tentativas.
 - Endereços gravados nos itens são reapontados para o `server_url` atual antes do envio.
 - Um status de saúde da fila (contagens, idade, tentativas, **sem conteúdo**) alimenta
   os comandos `status` e `doctor`.
@@ -555,15 +556,64 @@ Comandos de navegação sobre este fluxo: `show`, `continue`, `resume`, `workstr
 - **`install-instructions`:** insere o trecho de instruções (por exemplo, em arquivos
   de instruções do agente) entre marcadores HTML. É idempotente.
 - **`install-skills`:** instala habilidades gerenciadas (Agent Skills).
-- **`mcp-bridge`** (oculto): ponte stdio com sessão para o servidor HTTP do Claude Code.
-  Envia o identificador de sessão do agente no cabeçalho `X-Memory-Actor-Session-Id`.
-  **Falha fechado** se não houver identificador de sessão.
+- **`mcp-bridge`** (oculto): ponte stdio para o servidor HTTP, em dois modos. Com sessão (padrão;
+  `--agent claude-code|muse`) envia o identificador de sessão do agente no cabeçalho
+  `X-Memory-Actor-Session-Id` e **falha fechado** se ele faltar. Com `--no-session-id` não envia
+  identidade de sessão (clientes estáticos). Detalhes em `mcp-install.md`.
+- **`auth enable`:** exige bearer no servidor desta instalação e reaponta os clientes (ver `users.md`,
+  "Local root bearer token file"); opção `--no-mcp`.
 - **`uninstall`:** operação inversa simétrica. Remove **só** o que pertence ao
   ai-memory. Sem `--apply`, é simulação. Com `--purge-data`, apaga dados após
   verificar que nenhum processo ai-memory está ativo.
 - **`doctor`:** compara, por agente, as sessões locais com as sessões capturadas pelo
   servidor. Avisa quando um agente rodou no computador mas nenhuma sessão foi capturada,
-  com o comando exato para corrigir.
+  com o comando exato para corrigir. Contrato completo:
+  - **Opções:** `--workspace`, `--project` (padrão: escopo do diretório atual, pelo marcador),
+    `--since-days` (padrão **30**; 0 = toda sessão em disco conta como recente) e `--json`.
+    Com `--workspace` e `--project` ambos não vazios, o marcador é ignorado (`bypassed_explicit_scope`);
+    um mapa de rotas do diretório pessoal inválido encerra com `invalid home route map; doctor did not
+    query a fallback server scope`.
+  - **Só leitura.** Nunca abre o banco: o lado capturado vem de `GET /admin/sessions/by-agent`, o lado
+    local é a listagem somente leitura dos adaptadores de transcrição (14 harnesses: Claude, Codex,
+    OpenCode, OpenCode 2, Pi, Crush, OMP, Kimi, Command Code, Kiro v2, Kiro v3, Grok, Antigravity,
+    Copilot), no máximo **1 000** sessões por harness; harness com loja ausente ou ilegível contribui
+    com zero. Variantes do mesmo agente (Kiro v2/v3, OpenCode V1/V2) somam numa linha.
+  - **Veredito por agente (conservador):** "não capturado" só quando há sessão local **recente** e
+    **zero** capturadas. Uma sessão capturada prova que o hook funciona; histórico só antigo não é
+    acionável; contagem parcial nunca é lacuna (um `--resume` pode mapear vários arquivos a uma sessão).
+    Linhas de agentes que não rodaram aqui nem capturaram nada são omitidas; ordem: não capturados
+    primeiro, depois alfabética.
+  - **Servidor inacessível:** `capture coverage: unavailable (the server did not answer; captured counts
+    are unavailable)`, as contagens capturadas viram "indisponível" (`?`), e há o aviso de que os eventos
+    estão sendo enfileirados. Escopo ambíguo no servidor: `server scope is ambiguous; …`. Escopo
+    inexistente (404) conta como zero capturadas. Outro erro encerra o comando.
+  - **Seções do relatório:** conexão (identidade `GET /identity` ou "unavailable", postura de
+    autenticação, aviso se `AI_MEMORY_CAPTURE_OWNER` está ativo, diagnóstico da coordenada do projeto
+    `GET /admin/project-coordinate` com candidato canônico/legado e mensagens do marcador); saúde da
+    captura (fila de hooks cheia ou com eventos pendentes e idade do mais antigo `Ns|Nm|Nh|Nd`; confiança
+    dos hooks do Codex — só consulta o Codex se há hooks do ai-memory instalados; plugins do marketplace
+    para Claude Code e Codex com versão defasada, hooks duplicados em arquivo de configuração, habilidades
+    duplicadas, servidor MCP duplicado, `disableAllHooks`/`allowManagedHooksOnly` e hooks pulados por
+    falta de confiança; arquivo do Muse (hooks ligados ou não, entrada MCP sob `mcpServers` ou
+    `mcp_servers`, mapas conflitantes, `schema_version` ausente); resíduos do agentmemory — só detecta,
+    nunca altera); janela recente; entrada de logon do Windows que aponta para um executável que não
+    existe mais; marcador com seção `[capture]` inválida (falha fechada: o conteúdo de ferramentas de
+    arquivo e shell vira só metadados e as exclusões `ignore_paths` **não** valem até corrigir); memória
+    nativa do Claude Code (`projects/<projeto>/memory/`, achada pelo conteúdo, a partir da raiz do
+    repositório) com contagem de arquivos e estado `excluded`, `not excluded`, `metadata only` ou
+    `marker invalid`, mais a nota de que uma instalação por scripts não aplica a política de captura;
+    cobertura por agente (`✓`, `⚠` ou `?`, com `<n> local (<m> recent) → <k> captured`); sessões com
+    eventos de várias fontes de captura ("misturadas"; não prova captura duplicada).
+  - **Frases finais:** sem linhas e sem problema, `No local harness sessions found for this project and
+    nothing captured yet.`; tudo capturado, `✓ Every harness that ran in this project recently is
+    captured on the server.`; faltando, `⚠ <n> harness(es) ran here recently with no captured sessions:
+    <lista>.` seguido de `Install the hook(s) above, then re-run `ai-memory doctor` to confirm.` (com dono
+    externo de captura ativo, a orientação é verificar o produtor externo e a política do repositório).
+  - **JSON:** objeto com `workspace`, `project`, `server`, `since_days`, `rows[]`
+    (`agent`, `local_total`, `local_recent`, `captured`, `uncaptured`, `mixed_capture_sessions`),
+    `capture_coverage_problem`, `uncaptured[]`, `marker_capture_problem`, `capture_owner_active`,
+    `identity`, `auth_posture`, `project_coordinate`, `native_memory[]`, `spool`, `server_unreachable`,
+    `codex_hooks`, `agentmemory_residue[]`, `plugins[]`, `muse` e, só quando há problema, `windows_logon`.
 - **`backfill`** (também automático no primeiro início de sessão de um projeto **vazio**):
   reexecuta o histórico nativo do agente pelo mesmo endpoint de lote de hooks. Como a
   entrada é a mesma da captura ao vivo, a sanitização também é a mesma. Usa a data e hora
@@ -580,13 +630,13 @@ parênteses.
 | Família | Comandos |
 |---|---|
 | Servidor | `serve`, `init`, `generate-auth-token` |
-| Operação e diagnóstico | `status`, `list-projects`, `doctor`, `audit-contamination`, `llm-test`, `auth` (`login`, `logout`, `status`), `completions` |
+| Operação e diagnóstico | `status`, `list-projects`, `doctor`, `audit-contamination`, `llm-test`, `auth` (`login`, `logout`, `status`, `enable`), `completions` |
 | Páginas da wiki | `search`, `read-page`, `write-page`, `delete-page`, `restore-page`, `checkpoints` |
 | Manutenção | `forget-sweep`, `lint`, `curator`, `compact`, `reclaim-ledger-versions`, `embed`, `reindex`, `reorg`, `commit` |
 | Aprendizado | `auto-improve`, `auto-improve-report`, `pending-writes` (`list`, `show`, `diff`, `approve`, `reject`), `bootstrap`, `backfill`, `repair-backfill-timestamps`, `finalize-session` |
 | Continuidade | `run`, `show`, `continue`, `resume`, `workstreams`, `rename-workstream`, `workstream-search`, `handoffs`, `message` (`send`, `list`, `pop`, `cancel`) |
 | Ciclo de vida | `backup`, `backup-agents`, `restore`, `restore-agents`, `reset`, `export-okf`, `purge-project`, `purge-session`, `rename-project`, `move-project`, `move-session`, `uninstall`, `upgrade` |
-| Usuários e credenciais | `user` (`add`, `add-human`, `list`, `expire`, `revive`, `rotate-token`, `reset-password`, `disable`, `enable`, `patch`, `grant`, `revoke`, `grants`), `api-key` (`add`, `list`, `rotate`, `revoke`), `project` (`access`, `grants`), `profile` (`status`, `list`, `show`, `forget`, `review`, `rebuild`, `apply`), `server` (`add`, `list`, `remove`) |
+| Usuários e credenciais | `user` (`add-human`, `list`, `reset-password`, `disable`, `enable`, `patch`, `grant`, `revoke`, `grants`; os comandos `add`, `expire`, `revive` e `rotate-token` da série 1.x foram removidos), `api-key` (`add`, `list`, `rotate`, `revoke`), `project` (`access`, `grants`), `profile` (`status`, `list`, `show`, `forget`, `review`, `rebuild`, `apply`), `server` (`add`, `list`, `remove`) |
 | Integração | `install-hooks`, `install-mcp`, `install-instructions`, `install-skills`, `setup-agent`, `hook` (oculto), `hook-drain` (oculto), `mcp-bridge` (oculto) |
 
 Regras de implementação dos comandos:
@@ -618,6 +668,32 @@ Regras de implementação dos comandos:
     mais antigo**. Se todos forem rejeitados, é erro.
   - Um registro com instante ilegível é pulado, sem invalidar os demais.
   - Lança em modo nu, repassando `--yolo`, `--true-yolo` e `--fresh`.
+
+- **`finalize-session`:** gera um fim de sessão sintético para agentes sem evento de fim.
+  - **Seleção:** lista as sessões abertas do escopo (`GET /admin/open-sessions`, parâmetros
+    `workspace`, `project`, `agent`, `all`, `all_owners`, `include_ended`, `session_id`). Escopo
+    inexistente (404) significa "nada a finalizar", não erro. Sem `--all` nem `--session-id`, só a
+    sessão aberta mais recente do agente; `--all` e `--session-id` são excludentes; `--reopen` exige
+    `--session-id` e também casa a sessão já encerrada. `--agent` aceita qualquer agente que o
+    armazenamento reconheça (padrão `codex`), não só os que têm instalador.
+  - **Envio:** para cada sessão, um lote de **um** item (`POST /hook/batch`) com evento `session-end`,
+    agente, `cwd` (o da sessão, senão o do host ou o atual), escopo e, com `--all-owners`,
+    `all_owners=true`. Erro de transporte ou status de falha encerra o comando
+    (`server returned <status>: <corpo>`); confirmação diferente de 1 item aceito também
+    (`server accepted <n> of 1 synthetic session-end events`). Sessões já finalizadas antes do erro
+    permanecem finalizadas.
+  - **Antigravity CLI:** seus hooks ao vivo não trazem evento de prompt, então, **antes** do
+    `session-end`, o comando reenvia os prompts da própria sessão a partir do histórico local
+    (mesmas chaves de ingestão do backfill, logo sem duplicar), só se o diretório for admitido pelo
+    modo de captura e **não** com `--all-owners` (prompts de outros donos não estão nesta máquina).
+    Falha é só aviso e o fim de sessão segue (`ai-memory: could not replay the prompts of session <id>
+    (<erro>); finalizing without them`; sem diretório pessoal: `ai-memory: no home directory; session
+    <id> is finalized without its prompts`).
+  - **Efeito local:** apaga o id de sessão guardado pelos hooks do agente (por exemplo ZCode, que não
+    tem evento de fim) em `<dados>/hook-state/<agente>-session-id`.
+  - **Saída:** `No open <agente> sessions matched <ws>/<proj>` ou `Finalized <n> <agente> session(s) for
+    <ws>/<proj>` seguido de uma linha `  - <id>` por sessão; com `--json`, `{workspace, project, agent,
+    finalized[]}`.
 
 - **`repair-backfill-timestamps`:** corrige datas de início e fim de sessões que uma
   importação antiga gravou com a data da própria importação, em vez do tempo real do

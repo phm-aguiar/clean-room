@@ -610,8 +610,28 @@ recall de sessão em chinês, inglês ou português (ex.: "上次", "last time",
 configurável (padrão **0.25**). O resultado continua dentro de [0.55, 1.50]. Esse roteamento é marcado na
 explicação como intenção `session_recall`.
 
+*Penalidade devolvida:* só páginas de tipo `session` a têm. Valor = 0,15 (tipo) + a penalidade de tier, quando negativa
+(0,08 para `episodic`, 0,03 para `working`, 0 nos demais). Fator roteado = `limitar([0,55; 1,50], fator + penalidade devolvida + bônus)`.
+O `explain` traz `intent = "session_recall"` e `intent_boost` = fator roteado ÷ fator não roteado.
+
+*Lista completa de marcadores* (comparação sobre a consulta em minúsculas Unicode):
+
+- **Chinês, por substring simples:** 之前, 上次, 上回, 上一次, 那次, 那回, 前几天, 前天, 昨天, 那天, 上周, 上星期, 上个月,
+  的会话, 次会话, 个会话, 会话里, 会话中, 历史会话, 当时我们, 我们当时. ("会话" sozinho não conta: só nesses quadros de recall.)
+- **Inglês, por palavra inteira:** `last time`, `last session`, `previous session`, `earlier session`, `that session`,
+  `the session where`, `yesterday`, `the other day`, `last week`, `when we`, `we did`, `did we`, `what did we`,
+  `how did we`, `back then`, `earlier we`, `previously`.
+- **Português, por palavra inteira:** `última sessão`, `ultima sessao`, `última sessao`, `ultima sessão`, `sessão anterior`,
+  `sessao anterior`, `onde paramos ontem`, `decisão anterior`, `decisao anterior`. ("sessão", "antes", "ontem" ou "anterior"
+  isolados não contam; "penúltima sessão" e "decisão anteriormente" também não.)
+- **Casamento por palavra inteira:** a consulta em minúsculas é transformada trocando por espaço todo caractere que não seja
+  alfanumérico ASCII nem letra não ASCII, e recebe um espaço em cada ponta; o marcador casa se ` marcador ` (com espaços) aparece nesse texto.
+  Assim "know" não dispara "now" e "(DECISÃO ANTERIOR)," dispara.
+
 **Peso de crença** (opt-in, padrão **0.0**, ou seja, desligado): soma `peso × confiança` ao fator, ainda
-dentro do limite. Versões superseded nunca recebem esse bônus.
+dentro do limite. Versões superseded nunca recebem esse bônus. A confiança só é calculada quando há `explain` ou peso positivo;
+com os dois desligados nenhuma consulta de evidência é feita. A contagem de contradições vivas considera apenas arestas
+`contradicts` cujo alvo resolve para uma página **atual e não expirada**.
 
 **Limites documentados:** o ranking é projetado para que a relevância continue primária. Até o melhor sinal
 de autoridade fica em no máximo 1.5× e o pior em 0.55×. Nenhum sinal exclui a página.

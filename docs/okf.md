@@ -43,8 +43,9 @@ Um diretório de escopo de projeto é um pacote. O diretório da wiki é separad
 
 O pacote é um tarball gzip cuja raiz contém:
 
-- **`index.md` gerado**: frontmatter `okf_version: "0.2"` e corpo com um título fixo, seguido de uma lista de links, um por diretório de primeiro nível do projeto, em ordem alfabética. O corpo não tem prosa fora da lista.
-- **Demais arquivos `.md`** do projeto, com caminho relativo à raiz do projeto, com a reescrita descrita em [Reescrita de links](#reescrita-de-links-no-pacote).
+- **`index.md` gerado**, byte a byte: `---\nokf_version: "0.2"\n---\n\n# Bundle index — concept files by directory\n\n` seguido de uma linha ``- [<dir>/](<dir>/)`` + `\n` por **diretório de primeiro nível** do projeto, em ordem alfabética (ordem de bytes do nome), e nada mais. A lista inclui todo diretório de primeiro nível existente, tenha ou não arquivos `.md` (inclusive vazio ou só com arquivos que o pacote exclui), **exceto `_pending`**. O corpo não tem prosa fora da lista. (O `index.md` escrito pela migração é diferente; ver a Migração.)
+- **Demais arquivos `.md`** do projeto, com caminho relativo à raiz do projeto, separador `/` em qualquer sistema, com a reescrita descrita em [Reescrita de links](#reescrita-de-links-no-pacote). Isso inclui `_meta.md` (manifesto), que precisa ter `type` e vai no pacote. O `index.md` é a primeira entrada; a ordem das demais no original segue a ordem de leitura do diretório (não definida); uma reimplementação deve ordenar por caminho. Cada entrada é um arquivo comum, modo `0644`, data de modificação zero, só entradas de arquivo (sem entradas de diretório), tarball gzip com cabeçalhos GNU.
+- Entrega pela rota: resposta 200 com `Content-Type: application/gzip`, `Content-Disposition: attachment; filename="okf-bundle.tar.gz"`, corpo em fluxo a partir de um arquivo temporário. Falha de validação: HTTP **422** com `{"error": "<mensagem>"}`; workspace ou projeto inexistente: erro de requisição (a rota não cria escopo).
 
 Excluídos do pacote:
 
@@ -92,7 +93,7 @@ O manifesto `_meta.md` recebe `type: Scope Manifest` quando não tem `type`, ind
 
 | Chave | Origem | Regra |
 |---|---|---|
-| `title` | frontmatter existente | Mantido. Na exportação, se ausente ou vazio, é derivado nesta ordem: `title` do frontmatter; primeira linha do corpo que começa com `# ` (a busca é por linha e não pula blocos de código); nome do arquivo sem `.md`. |
+| `title` | frontmatter existente | Mantido. Na exportação, se ausente ou vazio, é derivado nesta ordem: `title` do frontmatter (aparado, não vazio); primeira linha do corpo que começa com `# ` (com espaço), aparada e não vazia, **fora de blocos de código cercados** (uma linha `# ` dentro de cerca é comentário de código, não título; a regra de cerca é a de CommonMark usada na extração de links); nome do arquivo sem `.md`. |
 | `description` | `summary` | Preenchido só se ausente e se `summary` não estiver vazio. Na exportação, se ausente, usa `summary` e, na falta dele, `abstract`. |
 | `tags` | frontmatter existente | Mantido. A conformidade não o altera. |
 | `generated` | ver [Proveniência](#proveniência-e-validade) | `by` e `at`. |
@@ -112,13 +113,15 @@ Nenhum `status` é gravado pelo ai-memory; a ausência de `status` equivale ao p
 - Se a página trouxer `generated_by_model`, esse valor vira `generated.by`.
 - Caso contrário, vale `process:ai-memory/<versão do build>`.
 - Um `generated.by` já presente não é sobrescrito. Se `generated` existir mas não for um mapeamento, é substituído por um mapeamento com `by`.
-- a confirmar: se algum produtor de páginas grava `generated_by_model`. Na revisão do código não foi encontrado produtor dessa chave; apenas o leitor.
+- Confirmado: nenhum produtor do original grava `generated_by_model`; só o leitor existe. Na prática `generated.by` é sempre `process:ai-memory/<versão>`, salvo valor já presente.
 
 ### `generated.at`
 
 - Formato: UTC com segundos, `AAAA-MM-DDTHH:MM:SSZ`.
 - A conformidade de frontmatter não preenche `generated.at`, porque ele muda por versão.
 - Ao escrever uma página: se o conteúdo mudou, `generated.at` recebe o instante da escrita. Se o conteúdo não mudou, mantém o valor anterior. "Conteúdo" é o corpo e o frontmatter sem `generated.at`.
+  - No arquivo: depois de conformar, o valor de `generated.at` é **sempre** substituído: pelo do arquivo atual quando corpo e frontmatter (sem `generated.at`) são iguais aos do arquivo em disco, senão pelo instante atual. Um `generated.at` trazido pelo chamador, portanto, não sobrevive à escrita pela camada wiki.
+  - Na linha do banco: o `generated.at` já presente no frontmatter conformado é mantido; só se ausente recebe o instante da escrita (a camada wiki o define antes, para arquivo e linha ficarem iguais).
 - Na migração, a linha do banco recebe o `updated_at` da própria linha, em segundos UTC. Um arquivo cuja linha não foi reescrita recebe a data de modificação do arquivo, em segundos UTC.
 
 ### `sources`
@@ -131,7 +134,7 @@ Nenhum `status` é gravado pelo ai-memory; a ausência de `status` equivale ao p
 
 Criado só quando a página não tem `stale_after` e tem `expires_at` analisável:
 
-- data e hora com deslocamento de fuso (RFC 3339): copiada literalmente;
+- data e hora com deslocamento de fuso (qualquer instante que o leitor de instantes RFC 3339 aceite): copiada **literalmente**, sem aparar espaços;
 - data pura `AAAA-MM-DD`: vira o fim desse dia em UTC, `AAAA-MM-DDT23:59:59.999999Z`;
 - qualquer outro valor: nenhum `stale_after` é criado.
 
@@ -169,12 +172,14 @@ ai-memory export-okf --project <nome> -o <arquivo.tar.gz>
 ### Regras no servidor
 
 - Falha se o projeto ainda não tem diretório de wiki.
-- Toda página `.md` que não esteja nas exclusões precisa ser conforme; a conformidade aqui exige apenas `type` não vazio (ao contrário da migração, que também exige `generated.at`). Se alguma não for, a exportação inteira falha com erro que identifica a página e orienta a rodar o servidor uma vez para migrar. Nenhum arquivo é entregue.
+- Toda página `.md` que não esteja nas exclusões precisa ser conforme; a conformidade aqui exige apenas `type` não vazio (ao contrário da migração, que também exige `generated.at`). Se alguma não for, a exportação inteira falha com a mensagem `page <caminho relativo> is not OKF-conformant; run the server once to migrate before exporting` (o caminho vem na grafia do sistema operacional, com `\` no Windows). Frontmatter ilegível conta como não conforme; arquivo que não é UTF-8 válido falha a exportação com erro de leitura. Nenhum arquivo é entregue.
+- A cópia de cada página no pacote é **reserializada** (frontmatter emitido de novo, corpo com os links reescritos); a ordem das chaves e a formatação YAML podem diferir do arquivo original, e só o significado do frontmatter é garantido.
+- Preenchimento na cópia: `title` quando ausente ou vazio; `description` quando ausente ou vazia (de `summary` não vazio, senão `abstract` não vazio).
 - A exportação não altera nada no diretório da wiki. A cópia do pacote recebe apenas os ajustes de título, descrição e links descritos aqui.
 
 ### Reescrita de links no pacote
 
-- Links internos `[[alvo]]` e `[[alvo|rótulo]]` que apontam para o próprio projeto viram links markdown relativos ao arquivo de destino, com o rótulo como texto do link. Sem rótulo, o texto do link é o próprio alvo. O `.md` é acrescentado quando necessário, e âncoras (`#`) e queries (`?`) são preservadas.
+- Links internos `[[alvo]]` e `[[alvo|rótulo]]` que apontam para o próprio projeto (sem qualificador, ou com `projeto:` igual ao nome do projeto exportado e sem workspace) viram links markdown `[texto](destino)` com destino **relativo ao diretório da página de origem** (`..` para subir, `/` como separador). O alvo é relativo à raiz do projeto, ganha `.md` quando necessário e tem `..`/`.` colapsados; âncora (`#`) e query (`?`) são separadas antes e coladas de volta ao destino. O texto do link é o rótulo aparado (se não vazio); sem rótulo, é o alvo exatamente como escrito (aparado, com qualificador se houver). No texto, `\`, `[`, `]`, `(` e `)` recebem `\` antes. Quando o projeto exportado é `_global`, o qualificador `_global:` também é local. O varrimento é por linha, preserva o fim de linha, e `[[` sem `]]` na mesma linha fica intacto.
 - Links para outro projeto ou outro workspace ficam como `[[...]]` literal, porque não há equivalente relativo entre pacotes.
 - Conteúdo dentro de blocos de código cercados ou de código inline não é alterado.
 - Alvos vazios ou malformados ficam intactos.
@@ -186,24 +191,30 @@ ai-memory export-okf --project <nome> -o <arquivo.tar.gz>
 
 1. **Cópia de segurança antes do schema do banco.** Antes de o banco de dados ser aberto (o que avança o schema), o servidor toma a cópia se o wiki tiver páginas não conformes e não houver um recibo com cópia ainda presente. Se a cópia falhar, o servidor não sobe.
 2. **Abertura do banco e migrações de schema.** Só depois disso roda a migração de conformidade OKF.
-3. **Verificação de pendências.** Se nenhuma linha do banco nem nenhum arquivo precisa de conformidade, a migração termina sem efeito, sem cópia e sem commit. É o caso de instalação nova ou de loja já conforme.
+3. **Verificação de pendências.** Se nenhuma linha do banco nem nenhum arquivo precisa de conformidade, a migração termina sem efeito, sem cópia, sem commit e **sem criar `index.md`**. É o caso de instalação nova ou de loja já conforme. Duas definições distintas de "precisa":
+   - **linha do banco** (só versões atuais): precisa se conformar o frontmatter muda qualquer chave (`type`, `description`, `stale_after`, `sources`, `generated.by`) **ou** não há `generated.at`. Frontmatter ilegível no banco conta como vazio;
+   - **arquivo**: precisa se não tem `type` não vazio ou, exceto `_meta.md`, não tem `generated.at`. A varredura é a da etapa 7.
+   Por isso o gatilho da cópia da etapa 1 (só arquivos) pode ser mais estreito que o da migração (arquivos ou linhas).
 4. **Cópia verificada.** Reaproveita a cópia da etapa 1 se ela existir e estiver presente. Caso contrário, cria uma. Se a cópia não puder ser criada ou verificada, a migração aborta antes de tocar em qualquer dado e é tentada de novo no próximo início.
-5. **Checkpoint.** Commit com o estado atual do wiki, antes de qualquer alteração.
+5. **Checkpoint.** Abre (ou inicializa) o repositório git do wiki, confere a árvore do git e faz commit com a mensagem `pre-okf-migration checkpoint` do estado atual, antes de qualquer alteração.
 6. **Passo do banco.** Para cada versão atual de página não conforme, o frontmatter é conformado no lugar: mesmo id, mesma versão, `updated_at` e corpo intocados, e `generated.at` derivado do `updated_at`. Versões históricas não são tocadas.
 7. **Passo dos arquivos.** Para cada arquivo `.md` não conforme, o frontmatter é conformado e o corpo fica intacto. Um arquivo é não conforme quando não tem `type` não vazio ou, exceto para `_meta.md`, quando não tem `generated.at`. `_meta.md` recebe apenas `type`. A reescrita é feita só se o conteúdo mudou.
-8. **`index.md` por projeto.** Cada projeto sem `index.md` na raiz recebe um, com `okf_version` e a listagem dos diretórios.
+8. **`index.md` por projeto.** Cada diretório `<workspace>/<projeto>` da wiki (qualquer um, inclusive os que a migração não tocou) sem `index.md` na raiz recebe um, escrito por substituição atômica, com exatamente: `---\nokf_version: "0.2"\n---\n\n# Bundle index\n\nConcept files live in these directories:\n\n` e uma linha ``- [<dir>/](<dir>/)`` + `\n` por **subdiretório direto** do projeto (todos, inclusive `_pending`), em ordem alfabética. Um `index.md` existente nunca é alterado.
 9. **Um único commit**, com a mensagem `okf-migration: conform wiki to OKF v0.2`.
 10. **Registro** da migração como aplicada.
 
-Ao varrer os arquivos, a migração ignora `index.md` em qualquer nível, ignora registros de ledger pelo critério de conteúdo, e ignora `_pending` apenas na raiz do projeto (em níveis mais fundos, `_pending` é varrido). Já a exportação ignora `_pending` em qualquer nível.
+Ao varrer os arquivos, a migração ignora `index.md` em qualquer nível, ignora registros de ledger pelo critério de conteúdo (nome `log.md` ou `log-AAAA-MM.md` em qualquer nível **e** conteúdo de ledger), ignora o diretório `.git`, e ignora `_pending` apenas na raiz do projeto, isto é, no caminho `<workspace>/<projeto>/_pending` (em níveis mais fundos, `_pending` é varrido). Considera só arquivos com extensão exatamente `md`. Arquivo que não é UTF-8 válido é ignorado em silêncio. Arquivo cujo frontmatter não é YAML válido conta como sem frontmatter (não conforme) e, ao conformar, todo o conteúdo bruto vira corpo. A reescrita preserva o corpo byte a byte (um BOM inicial é descartado, não movido para o corpo; fins de linha CRLF do bloco de frontmatter são aceitos) e usa escrita atômica. O `generated.at` de um arquivo vem do `updated_at` da linha reescrita no passo do banco (segundos UTC), senão da data de modificação do arquivo (segundos UTC), senão de 1970-01-01T00:00:00Z. Os arquivos `_meta.md` recebem apenas `type: Scope Manifest` (se faltar). Já a exportação ignora `_pending` em qualquer nível.
+
+**Ordem do boot do servidor (completa):** trava de instância única; cópia prévia (só arquivos não conformes e sem recibo válido; lê `AI_MEMORY_BACKUP_DIR` sem tratar valor vazio como ausente neste ponto, ao contrário da migração, que ignora valor vazio ou só com espaços); abertura do banco e migrações de esquema; correção de caminhos de repositório; validações de credenciais; migrações da wiki; preenchimento dos manifestos `_meta.md` ausentes (falha vira aviso); reparo de `stale_after` (falha vira aviso); checkpoint de linha de base da atualização; início do observador. O `okf_migrated` do status é verdadeiro quando algum nome em `wiki_migrations` contém `okf`.
 
 ### Cópia de segurança
 
 - **Destino:** o valor de `AI_MEMORY_BACKUP_DIR`, quando definido. Sem ele, dentro de contêineres, a pasta `backups/` dentro do diretório de dados. Fora de contêineres, a pasta pessoal do usuário. O destino não pode ser a raiz do diretório de dados.
 - **Arquivo:** `ai-memory-backup-okf-v0.2-AAAAMMDD-HHMMSS.tar.gz`.
-- **Conteúdo:** todo o diretório de dados, exceto a própria cópia, o arquivo temporário do recibo e os arquivos de trava do servidor. Links simbólicos ou pontos de reparse fazem a cópia falhar.
+- **Conteúdo:** todo o diretório de dados, exceto a própria cópia, **a subárvore do diretório de destino quando ele fica dentro do diretório de dados**, o arquivo temporário do recibo (`pre-migration-backup.json.tmp`) e os arquivos de trava do servidor (qualquer arquivo cujo nome começa com `.serve.lock`, inclusive `.serve.lock.holder`; no Windows a trava exclusiva obrigatória impediria a leitura do próprio arquivo, então ele é pulado por nome). O recibo `pre-migration-backup.json`, se existir, entra na cópia. Só entradas de arquivo (sem entradas de diretório), com caminhos relativos ao diretório de dados. Antes de criar o arquivo, a árvore `wiki/` e depois todo o diretório de dados são inspecionados: qualquer link simbólico ou ponto de reparse (inclusive junção do Windows) faz a cópia falhar sem criar arquivo.
+- **Nome e destino:** o instante do nome é UTC (`%Y%m%d-%H%M%S`); o rótulo é `okf-v0.2`. O diretório de destino é criado se faltar (falha se o caminho existe como arquivo ou não pode ser criado, sem recuo para outro destino) e comparado em forma canônica com o diretório de dados (igual = erro).
 - **Verificação:** o arquivo é relido. O número de entradas tem de bater com o número de arquivos gravados, e o tamanho tem de ser maior que zero. Se não bater, o arquivo é apagado e a migração aborta.
-- **Recibo:** `pre-migration-backup.json` na raiz do diretório de dados, com caminho do arquivo, tamanho em bytes, número de entradas, instante de criação em UTC, rótulo e espaço livre no destino (pode ser nulo). É gravado por substituição atômica.
+- **Recibo:** `pre-migration-backup.json` na raiz do diretório de dados (JSON indentado) com `archive_path` (absoluto), `size_bytes`, `entries`, `created_at` (`AAAA-MM-DDTHH:MM:SSZ`, UTC), `label` e `dest_free_bytes` (espaço livre no destino em bytes, nulo se ilegível, nunca falha a cópia). É gravado em arquivo temporário e renomeado sobre o definitivo.
 - **Reuso:** um recibo existente, com arquivo ainda presente, é reaproveitado. Uma cópia válida nunca é sobrescrita.
 
 ### Trava contra formato mais novo
@@ -245,7 +256,7 @@ O reparo não é uma nova migração registrada. Registrar um nome novo faria bu
 
 ## Importação
 
-Não há comando de importação. Para trazer um pacote de outra ferramenta, desempacote os arquivos de conceito no diretório do projeto na wiki e deixe a reindexação ingerir (automática ou com o comando `reindex`). a confirmar: que a ingestão automática pega arquivos desempacotados sem reindexação manual.
+Não há comando de importação. Para trazer um pacote de outra ferramenta, desempacote os arquivos de conceito no diretório do projeto na wiki e deixe a reindexação ingerir (automática ou com o comando `reindex`). Confirmado: o observador de arquivos (eventos com atraso de 300 ms) e a reconciliação a cada 30 s indexam arquivos `.md` novos de um projeto que já tem linha no índice; um diretório de projeto sem linha é ignorado.
 
 ## Verificação
 

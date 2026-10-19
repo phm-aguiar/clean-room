@@ -10,13 +10,14 @@
 | Importação só quando a loja do projeto está vazia (no escopo do chamador) | Implementado |
 | Comando manual `backfill` com `--dry-run`, `--force`, `--session`, `--max-sessions`, `--json`, `--quiet` | Implementado |
 | Importação por replay pelo ingresso de captura ao vivo | Implementado (caminho B) |
-| Limites de sessões, de eventos totais e de tamanho de lote | Implementado (parcial, ver Limites) |
-| Trava (lease) de importação única por projeto | Proposta. Substituída por sentinela local, sem trava de concorrência |
+| Limites de sessões, de eventos totais e de tamanho de lote (itens e bytes) | Implementado (parcial, ver Limites) |
+| Trava de disparo (um só processo automático por diretório) | Implementado: marcador "em andamento" com trava de arquivo e dono (ver §1). Não há trava de importação no servidor |
+| Chaves de ingestão válidas para o replay (deduplicação no servidor) | Implementado |
+| Aplicação das exclusões de captura (`ignore_paths`) e do modo de captura ao backfill | Implementado (ver §4 e §11) |
 | Cursor incremental por sessão | Proposta |
 | Verificação de vazio no próprio handshake de início de sessão | Proposta |
 | Aviso do resultado na sessão seguinte | Proposta |
 | Opt-out por marcador de projeto | Proposta |
-| Aplicação de exclusões de captura (`ignore_paths`) ao backfill | Requisito, não implementado |
 | Restrição do automático em servidor multiusuário | Questão em aberto, não implementada |
 
 ## Problema
@@ -46,22 +47,34 @@ A parte difícil (ler a transcrição nativa, sanitizar e gravar no armazenament
 
 ### 1. Gatilho no início de sessão
 
-No início de sessão, quando nenhum dono externo de captura está declarado no ambiente, o hook verifica se existe a **sentinela local** do diretório de trabalho atual. Se não existir, dispara um processo de backfill destacado, sem herdar a entrada e saída do hook, e retorna sem esperar. O hook não consulta o servidor para isso e não importa nada.
+No início de sessão, quando nenhum dono externo de captura está declarado no ambiente, o hook verifica se existe a **sentinela local** do diretório de trabalho atual. Se não existir, tenta **reivindicar o marcador "em andamento"** do diretório; só quem o reivindica dispara um processo de backfill destacado, sem herdar a entrada e saída do hook, e retorna sem esperar. O hook não consulta o servidor para isso e não importa nada. Um hook que não emite nada (modo de captura que não admite o diretório, ou perfil de servidor do marcador recusado) também não dispara backfill.
+
+O processo disparado é, em termos de linha de comando, `backfill --auto --quiet --inflight-claim <token>` mais **um** destino: `--server-profile <nome>` quando o marcador do repositório seleciona um perfil de servidor, senão `--server-url <url da instalação do hook>`. O token do servidor nunca vai na linha de comando nem no ambiente: o backfill o lê do arquivo do hook ou do perfil. A saída de erro do processo vai para `<dados>/logs/backfill.log`, que passa a `backfill.log.old` quando ultrapassa 1 MiB (uma geração).
+
+**Marcador "em andamento".** Arquivo `<hash do diretório>.inflight` ao lado da sentinela, criado de forma exclusiva e protegido por uma trava de arquivo por diretório (`<hash>.inflight.lock`, que nunca é apagada). Contém um token aleatório de 32 hexadecimais (UUID v4 sem hífens) que identifica o dono. Regras:
+
+- A trava é tomada **sem esperar**: contenção ou diretório de estado inutilizável significa "não reivindicou", e o hook segue sem disparar nada (nunca bloqueia o início de sessão).
+- Se o marcador já existe e foi modificado há **menos de 30 minutos**, ninguém mais reivindica. Se tem 30 minutos ou mais, é considerado órfão: é renomeado para `.stale.<token novo>` e apagado, e a reivindicação é refeita (no máximo duas tentativas).
+- O processo disparado renova o marcador (atualiza o horário de modificação) no início e depois de cada sessão importada, mas só enquanto o conteúdo do arquivo ainda for o seu token. Ao terminar, de qualquer forma (sucesso, erro ou queda de controle), apaga o marcador, mas só se ainda for dele. Assim um processo atrasado nunca libera nem renova a reivindicação de quem assumiu depois.
+- Se o disparo falha, o hook libera o marcador na hora.
+- Efeito: uma rajada de inícios de sessão no mesmo diretório dispara **um** backfill, não um por início.
 
 Consequências:
 
 - Uma vez por diretório de trabalho e por máquina, esse processo é iniciado **mesmo com o recurso desligado ou com a loja não vazia**. Ele sai sem importar e grava a sentinela.
-- A sentinela só é gravada ao final da execução. Enquanto uma importação longa está em andamento, novos inícios de sessão no mesmo diretório disparam outros processos. Eles são barrados pelo portão de vazio assim que a primeira sessão importada está gravada (ver Idempotência).
+- A sentinela só é gravada ao final da execução. Enquanto o marcador "em andamento" é válido, novos inícios de sessão no mesmo diretório não disparam outro processo; se a execução morrer sem liberar, o disparo volta a ser possível depois de 30 minutos. Execuções manuais (`backfill` sem `--auto`) não usam o marcador.
 - Uma falha ao disparar o processo não afeta o início de sessão.
 
 ### 2. Comando `backfill`
 
 Fluxo de uma execução real:
 
-1. **Opt-out automático.** Se a execução é automática e o recurso está desligado, grava a sentinela e sai, sem contatar o servidor.
+0. **Marcador.** Na execução automática com token de reivindicação, renova o marcador "em andamento" (ver §1); ele é liberado ao final, de qualquer forma.
+1. **Opt-out automático.** Se a execução é automática e o recurso está desligado, grava a sentinela (exceto em simulação) e sai com sucesso, sem contatar o servidor.
 2. **Escopo.** Resolve workspace e projeto (padrão: escopo do projeto atual; sobrescritos por `--workspace` e `--project`) e a localização das lojas nativas. Se isso falhar, sai com erro **sem gravar a sentinela**. A próxima abertura de sessão tenta de novo.
-3. **Servidor.** Na execução automática, usa o mesmo destino do hook que a disparou: um perfil de servidor ou a URL de instalação do hook. A credencial é o token persistido do hook e, depois, OIDC. A credencial de ambiente ou de configuração **não** é usada nesse caminho. Na execução manual, o servidor vem da configuração.
-4. **Portão de vazio** (ver Idempotência), salvo com `--force`. Se a loja não está vazia, grava a sentinela (exceto em simulação), gera o relatório com `skipped_non_empty` e sai.
+2b. **Admissão de captura.** Aplica ao diretório o mesmo portão do hook ao vivo (modo de captura da instalação e marcador `.ai-memory.toml`). Se o hook ao vivo não emitiria nada daqui (modo de captura "lista de permissão" sem marcador que adira, ou marcador ilegível), o relatório traz `skipped_not_admitted: true`, **nada é importado, o servidor nem é contatado e a sentinela não é gravada**. Mensagem humana: `ai-memory: capture mode is allowlist and this checkout has no .ai-memory.toml marker opting in (or its marker is unreadable) — nothing to backfill for <ws>/<proj>.`
+3. **Servidor.** Na execução automática, usa o mesmo destino do hook que a disparou: um perfil de servidor (com o token do próprio perfil, o único que apresenta) ou a URL de instalação do hook. Com URL, a credencial é o token persistido do hook e, depois, OIDC. A credencial de ambiente ou de configuração **não** é usada nesse caminho. Na execução manual, o servidor vem da configuração (e da resolução normal de credencial). Um nome de perfil inválido ou recusado é erro (`` `<nome>` is not a valid server profile name`` / ``server profile `<nome>` was refused (<motivo>)``).
+4. **Portão de vazio** (ver Idempotência), salvo com `--force`, com **tempo máximo de 30 s** na consulta (estouro vira erro: ``the server did not answer within 30s``, sem sentinela). Se a loja não está vazia, grava a sentinela (exceto em simulação), gera o relatório com `skipped_non_empty` e sai.
 5. **Enumeração.** Lista as sessões locais do diretório de trabalho em todos os harnesses suportados (ver Cobertura de harness).
 6. **Seleção.** Mantém as N mais recentes (ver Seleção).
 7. **Importação.** Importa as sessões selecionadas em ordem cronológica, da mais antiga para a mais recente, até o limite de eventos.
@@ -89,12 +102,13 @@ A abertura e o fechamento são enviados **sempre**, mesmo quando a sessão não 
 Regras por evento:
 
 - **Conteúdo vazio** (após remover espaços nas pontas): descartado.
-- **Mensagem de usuário** (papel `user` ou `human`): vira uma observação de prompt de usuário (evento `user-prompt`), com o texto original.
-- **Mensagem de outro papel, chamada de ferramenta e resultado de ferramenta**: vira uma observação de extensão com o rótulo `ai-memory-backfill` e o evento `backfill.<origem>`. A origem é `tool_call`, `tool_result`, `<papel>-message` ou `message` (quando não há papel). O corpo traz o texto completo. O título é a primeira linha, aparada e cortada em 120 caracteres. Se ficar vazio, o título é `(backfilled event)`.
+- **Mensagem de usuário** (papel `user` ou `human`): vira uma observação de prompt de usuário (evento `user-prompt`), com o texto original. Corpo: `session_id`, `prompt`, `occurred_at`.
+- **Mensagem de outro papel, chamada de ferramenta e resultado de ferramenta**: vira uma observação de extensão com o rótulo `ai-memory-backfill` e o evento `backfill.<origem>` (parâmetros de URL `extension=ai-memory-backfill` e `source_event=<origem>`). A origem é `tool_call`, `tool_result`, `<papel>-message` ou `message` (quando não há papel). O corpo traz `session_id`, `title`, `message` (o texto completo) e `occurred_at`. O título é a primeira linha, aparada e cortada em 120 caracteres. Se ficar vazio, o título é `(backfilled event)`.
 - **Compactação, checkpoint e anotação**: descartados. Não são conteúdo da sessão.
-- **Chave de ingestão** por evento: `<sessão>:<id do evento>`. A abertura usa `<sessão>:session-start` e o fechamento, `<sessão>:session-end`. Ver Idempotência: o servidor não aceita essas chaves.
+- **Política de captura por evento** (a mesma tabela do hook ao vivo, aplicada pelo cliente; o servidor nunca recebe os padrões de `ignore_paths`). Cada chamada de ferramenta é reconstruída no formato de payload do agente de origem e inspecionada pela política do diretório; cada resultado herda a decisão da chamada a que responde (pelo identificador de chamada nativo; sem identificador, a decisão **mais estrita** de todas as chamadas desde a última mensagem de usuário; órfão: descartado se há política ativa, senão registrado sem conteúdo). Decisões, da mais frouxa à mais estrita: **manter** (conteúdo como gravado) < **desconhecida** (ferramenta não reconhecida: registra só que rodou, corpo `title: "tool unknown"`, `message: "tool_family: unknown"` mais `\noutcome: unknown` em resultados) < **só metadados** (corpo de metadados da política, com `occurred_at`, e o protocolo de captura que o servidor valida e reconstrói) < **descartar**. Mensagens são mantidas, exceto: (a) a saída de comando de shell do Claude Code (mensagem de usuário que abre com `<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>` ou `<local-command-stderr>`), que a captura ao vivo nunca recebe e é descartada; (b) tudo, se o diretório não for admitido. Um evento cujo registro nomeia o próprio diretório é julgado a partir dele: precisa passar o mesmo portão de admissão, entregar ao mesmo servidor e resolver ao mesmo projeto, senão é descartado; as políticas de outros diretórios também valem (vale a mais estrita), e uma chamada cujo destino de arquivo cai em outro diretório obedece à admissão, rota e política desse destino. Um comando de shell cortado pelo adaptador ou gravado como texto não analisável não pode ser casado: com política ativa é descartado.
+- **Chave de ingestão** por evento: `recovery_` seguido dos 55 primeiros caracteres hexadecimais do SHA-256 de quatro campos (intervalo de recuperação, vazio no backfill comum; identificador de sessão; tipo do evento; id do evento), cada um precedido do seu comprimento em 8 bytes big-endian. A abertura e o fechamento usam o tipo `session-start`/`session-end` e o id `boundary`. A chave tem 64 caracteres alfanuméricos ou sublinhado, portanto **o servidor a aceita** e deduplica o replay (resultado `replayed`). Ver Idempotência.
 - **Agente e sessão**: o tipo de agente é o do harness de origem, e o identificador de sessão é o identificador nativo. Assim, a sessão importada tem o mesmo identificador que a captura ao vivo usaria.
-- **Origem do projeto**: é informada como marcador.
+- **Origem do projeto**: o parâmetro `project_src=marker`, além de `workspace`, `project`, `agent`, `event`, `session_id` e `ingest_key`, vai na URL de cada item.
 
 A contagem de "eventos" do relatório conta só os itens de conteúdo, sem abertura e fechamento.
 
@@ -107,10 +121,12 @@ A contagem de "eventos" do relatório conta só os itens de conteúdo, sem abert
 
 ### 6. Envio em lotes e retentativas
 
-- Os itens de uma sessão são enviados em blocos de até **256 itens** por requisição, o mesmo limite de lote do servidor, na ordem da transcrição.
-- Se o servidor aceitar só um prefixo do bloco, o restante é reenviado.
-- Se nenhum item for aceito, a tentativa é repetida até **5 vezes seguidas**, com espera de 200 ms vezes o número da tentativa. Depois disso, a sessão falha.
-- Uma falha no meio deixa a sessão **parcialmente importada**. Não há retomada automática (ver Casos de borda).
+- Os itens de uma sessão (abertura, conteúdo, fechamento) são enviados a `POST /hook/batch` em blocos de até **256 itens e 8 MiB** por requisição (cada item conta o JSON mais um byte; o bloco parte de 2 bytes), na ordem da transcrição. Um único item acima de 8 MiB faz a sessão falhar (`one sanitized hook item exceeds the recovery request byte limit`).
+- A confirmação do servidor é validada item a item. Confirmação incoerente (índices fora de faixa ou fora de ordem, contagem que não bate com o prefixo, resultados em número diferente dos aceitos, índice de falha dentro dos aceitos) faz a sessão falhar (`invalid hook acknowledgement; keeping transcript for retry`). Cada resultado precisa ser `stored` ou `replayed`; `ignored_end` só vale para o item de fechamento; `resumed` e qualquer outro desfecho (por exemplo `dropped_*`) fazem a sessão falhar sem tentar de novo (``hook item <n> was not durably stored (<desfecho>); keeping transcript``). Um índice de falha informado pelo servidor também falha (``hook processing failed at item <n>; keeping transcript for retry``).
+- Se o servidor aceitar só um prefixo **não vazio** do bloco, a sessão **falha** (``server acknowledged only <a> of <b> transcript items; keeping transcript for a safe retry``); não há reenvio do restante.
+- Se nenhum item for aceito, a tentativa é repetida até **5 vezes seguidas**, com espera de 200 ms vezes o número da tentativa. Depois disso, a sessão falha (``server acknowledged none of a hook batch after <n> attempts (rate limited or saturated); rerun to resume``).
+- Uma falha no meio deixa a sessão **parcialmente importada**. Não há retomada automática dentro da execução (ver Casos de borda); como as chaves agora deduplicam, uma nova execução com `--force` reenvia sem duplicar os itens já aceitos.
+- Antes de ler a transcrição, o importador espera o esvaziamento da escrita do harness (melhor esforço, resultado ignorado).
 
 ### 7. Saída, aviso e código de saída
 
@@ -122,15 +138,17 @@ A contagem de "eventos" do relatório conta só os itens de conteúdo, sem abert
 - `X` aparece quando há falhas.
 - `Y` é o número de sessões **não importadas por causa do limite de eventos** (ver Limites). Essas são as sessões mais recentes do conjunto selecionado, pois a importação segue a ordem cronológica.
 
-Mensagens fixas, nos outros casos:
+Mensagens fixas, nos outros casos (ordem de precedência: `--json`, depois `--quiet`, depois estas):
 
-- Loja não vazia: informa que o projeto já tem sessões capturadas e que nada será importado, com a sugestão de `--force`.
-- Simulação: informa quantas sessões seriam importadas.
-- Nenhum histórico: informa que não há histórico local para o projeto.
+- Diretório não admitido: a mensagem da etapa 2b.
+- Loja não vazia: `ai-memory: <ws>/<proj> already has captured sessions — nothing to backfill (use --force to import anyway).`
+- Simulação: `ai-memory: would import <N> local session(s) into <ws>/<proj> (dry run).`
+- Nenhum histórico (nenhuma sessão importada e nenhuma falha): `ai-memory: no local session history found to backfill for <ws>/<proj>.`
+- Cada sessão que falha escreve na saída de erro `ai-memory: backfill of <harness> session <8 primeiros caracteres do id> failed: <erro>`, mesmo com `--quiet`.
 
 **Execução automática** é destacada e silenciosa, como a memória automática do próprio harness. Não há resumo. Falhas de sessão são sempre gravadas no registro de log do processo de segundo plano, inclusive com `--quiet`.
 
-**Código de saída.** Se alguma sessão selecionada falhar, o comando sai com código diferente de zero **depois de emitir o relatório**. As demais sessões continuam sendo tentadas. Com `--json`, o relatório completo vai para a saída padrão mesmo com falhas.
+**Código de saída.** Se alguma sessão selecionada falhar, o comando sai com código diferente de zero **depois de emitir o relatório** (a sentinela já foi gravada), com a mensagem `backfill failed to import <X> of <N> selected session(s)`. As demais sessões continuam sendo tentadas. Com `--json`, o relatório completo vai para a saída padrão mesmo com falhas. Erros anteriores à importação (escopo, localização das lojas, servidor/credencial, consulta de vazio) saem com erro sem relatório.
 
 `--quiet` suprime o resumo, não as falhas.
 
@@ -147,17 +165,20 @@ Campos, nesta ordem:
 | `skipped_for_cap` | Sessões não tentadas por causa do limite de eventos |
 | `failed_sessions` | Sessões com erro de importação |
 | `skipped_non_empty` | `true` quando a loja já tinha sessões e nada foi importado |
+| `skipped_not_admitted` | `true` quando o modo de captura da instalação não admite o diretório e nada foi importado |
 | `dry_run` | `true` na simulação |
+
+A saída é o JSON indentado desse objeto, todos os campos sempre presentes (contagens como inteiros, indicadores como booleanos).
 
 ### 9. Sentinela, portão de vazio e idempotência
 
 **Sentinela.** Arquivo vazio em um subdiretório `backfill-state` dentro do diretório de dados local. O nome do arquivo é o hash SHA-256, em hexadecimal, do caminho do diretório de trabalho. Ela é gravada, sem efeito se já existir:
 
-- na execução automática com o recurso desligado;
+- na execução automática com o recurso desligado (exceto em simulação);
 - na execução real com loja não vazia;
-- ao fim de toda execução real, manual ou automática, mesmo quando algumas sessões falharam.
+- ao fim de toda execução real que chega à importação, manual ou automática, mesmo quando algumas sessões falharam e mesmo com `--session` sem resultado.
 
-Não é gravada na simulação nem quando um erro ocorre antes da importação (escopo, conexão para a consulta de vazio, consulta com erro). Nesses casos, a próxima abertura de sessão tenta de novo.
+Não é gravada na simulação, quando o diretório não é admitido, nem quando um erro ocorre antes da importação (escopo, perfil de servidor, conexão para a consulta de vazio, consulta com erro ou estouro dos 30 s). Nesses casos, a próxima abertura de sessão tenta de novo. O subdiretório é criado se faltar; falha ao gravar a sentinela é ignorada (só causa uma consulta redundante depois).
 
 Como a sentinela é por caminho, o mesmo projeto aberto em outro diretório tem sua própria tentativa.
 
@@ -172,8 +193,8 @@ Como a sentinela é por caminho, o mesmo projeto aberto em outro diretório tem 
 
 - Uma segunda execução, automática ou manual sem `--force`, não importa nada. O relatório traz `skipped_non_empty`, e o número de sessões não muda.
 - A primeira sessão gravada torna a loja não vazia para as execuções seguintes. Isso vale até para sessões sem conteúdo, que criam a sessão.
-- **Não há trava entre execuções concorrentes.** Duas execuções que consultem a loja vazia ao mesmo tempo podem importar em duplicidade.
-- **As chaves de ingestão do backfill não são aceitas pelo servidor.** O servidor só aceita chaves de 1 a 64 caracteres alfanuméricos, hífen ou sublinhado. Chave inválida é descartada sem erro, e a requisição segue como se não tivesse chave. Por isso, o servidor não deduplica o replay. A proteção contra reimportação é só o portão de vazio e a sentinela. Uma execução com `--force` sobre um projeto que já tem as sessões pode duplicar observações (a confirmar).
+- **Disparos automáticos concorrentes são evitados pelo marcador "em andamento"** (§1). Execuções **manuais** não usam o marcador, e duas execuções (manual e automática, ou duas manuais) que consultem a loja vazia ao mesmo tempo ainda podem ambas importar; a deduplicação por chave (abaixo) é a rede de proteção.
+- **As chaves de ingestão do backfill são aceitas pelo servidor.** O servidor só aceita chaves de 1 a 64 caracteres alfanuméricos, hífen ou sublinhado; as do backfill (`recovery_` + 55 hexadecimais = 64) cumprem isso e são derivadas de dados estáveis (sessão, tipo e id do evento), então a repetição do mesmo evento é reconhecida (`replayed`) e gravada uma vez. Isso vale também para `--force` sobre sessões já importadas e para os prompts reenviados por `finalize-session`. A proteção contra reimportação em massa continua sendo o portão de vazio e a sentinela.
 
 ### 10. Limites
 
@@ -183,8 +204,11 @@ Como a sentinela é por caminho, o mesmo projeto aberto em outro diretório tem 
 | Sessões enumeradas por harness | 200 | As mais recentes. O atingimento do limite não é mostrado |
 | Eventos de conteúdo no total | 50.000 | Verificado **antes de cada sessão**. A última sessão iniciada pode ultrapassar o limite. As sessões restantes não são tentadas e contam em `skipped_for_cap` |
 | Itens por requisição | 256 | Igual ao limite do servidor |
+| Bytes por requisição | 8 MiB | Um item sozinho acima disso falha a sessão |
 | Título do evento | 120 caracteres | Primeira linha, aparada |
 | Tentativas sem aceite | 5 | Espera de 200 ms vezes o número da tentativa |
+| Consulta de vazio | 30 s | Estouro é erro, sem sentinela |
+| Marcador "em andamento" | 30 min | Depois disso é órfão e pode ser tomado |
 
 A ordem de importação é cronológica entre as selecionadas. Por isso, quando o limite de eventos é atingido, **as sessões que ficam de fora são as mais recentes** do conjunto. Não há limite por sessão, nem limite total em bytes, nem registro de truncamento nas perdas (ver Propostas).
 
@@ -194,7 +218,7 @@ Limites de tamanho por evento específicos desse caminho: a confirmar. O limite 
 
 - **Texto retroativo é tratado como texto de captura ao vivo.** Cada observação passa pela sanitização do ingresso de captura antes de ser gravada. Um segredo plantado numa transcrição de teste não aparece no estado persistido nem nos resultados de consulta de memória. Esse comportamento é verificado por um teste de canário, que roda só em sistemas POSIX.
 - **Credenciais.** A execução automática não usa credencial de ambiente. A manual usa a configuração.
-- **Exclusões de captura (`ignore_paths`) não se aplicam ao backfill.** Este é um requisito do design e ainda não está implementado. Hoje as regras do ingresso ao vivo só são inspecionadas quando a requisição traz o marcador de captura, que o backfill não envia (a confirmar com teste).
+- **Exclusões de captura (`ignore_paths`) e modo de captura se aplicam ao backfill**, pelo cliente (§4): o diretório precisa ser admitido, e cada chamada e resultado de ferramenta segue a mesma tabela de decisão do hook ao vivo. Eventos de ferramentas que tocam caminhos excluídos viram "só metadados" ou são descartados; o servidor não recebe os padrões.
 - **Sobrescrita.** O portão de vazio e a sentinela impedem que o automático toque em histórico de um projeto estabelecido. Só `--force` faz isso, de forma explícita.
 - **Multiusuário.** O automático roda em qualquer postura de servidor. Não há restrição a instalações de operador único (ver Questões em aberto).
 
@@ -217,7 +241,9 @@ Os mesmos harnesses que o diagnóstico lê, ou seja, o conjunto de adaptadores d
 - **`--session` com identificador inexistente**: nada importado. Em execução real, a sentinela é gravada.
 - **Erro ao resolver o escopo**: sai sem gravar a sentinela. A cada início de sessão, um novo processo é disparado até o escopo ser resolvido.
 - **Interrupção no meio da importação** (processo encerrado): a sentinela não é gravada, mas a primeira sessão já gravada torna a loja não vazia. A execução automática seguinte não reimporta nada, e a sessão parcial fica como está.
-- **Falha no meio de uma sessão**: a mensagem de erro pede para "rerodar para retomar", mas a rerodagem sem `--force` é barrada pelo portão de vazio, porque a sessão parcial já existe. A retomada exige `--force`, com o risco de duplicidade descrito em Idempotência.
+- **Falha no meio de uma sessão**: a mensagem de erro pede para "rerodar para retomar", mas a rerodagem sem `--force` é barrada pelo portão de vazio, porque a sessão parcial já existe. A retomada exige `--force`; os itens já aceitos são reconhecidos pelas chaves (`replayed`) e não duplicam.
+- **Diretório não admitido pelo modo de captura**: nada importado, servidor não contatado, sem sentinela (a próxima abertura tenta de novo, mas o hook também não dispara nada nesse modo).
+- **Marcador "em andamento" órfão** (processo morto): bloqueia novos disparos por até 30 minutos.
 - **Harness com mais de 200 sessões**: são consideradas as 200 mais recentes daquele harness.
 - **Timestamps futuros ou inválidos** na transcrição: tratados conforme a seção de horário de ocorrência.
 
@@ -230,14 +256,12 @@ O cursor incremental era o principal motivo para preferir (A). Com (B), ele vira
 
 ## Propostas (não implementadas)
 
-1. **Trava de importação única por projeto**, no padrão de reivindicação única de handoff e mensagens. Hoje a sentinela cobre a repetição, mas não a concorrência.
+1. **Trava de importação única por projeto no servidor**, no padrão de reivindicação única de handoff e mensagens. Hoje a sentinela cobre a repetição e o marcador "em andamento" cobre o disparo automático concorrente, mas não duas execuções manuais simultâneas (a deduplicação por chave as torna inofensivas).
 2. **Cursor incremental por sessão**, persistido ao fim da importação, para que a leitura ao vivo continue depois do ponto importado sem capturar duas vezes. A não-sobreposição depende da premissa de que a captura ao vivo começa após a instalação.
 3. **Verificação de vazio no handshake de início de sessão**, para não disparar um processo quando a loja já tem histórico.
 4. **Aviso do resultado na sessão seguinte**, pelo mesmo caminho de entrega de avisos de início de sessão. Hoje o resumo só aparece na execução manual.
 5. **Opt-out por marcador de projeto** (`.ai-memory.toml`), para desligar o automático em um projeto específico, independentemente da configuração global.
-6. **Aplicação de `ignore_paths` no backfill**, para descartar eventos de ferramentas de arquivo que casem com as exclusões.
-7. **Chaves de ingestão válidas para o replay**, ou um formato de chave aceito pelo servidor. Sem isso, não há deduplicação de reenvio.
-8. **Retomada de sessão parcialmente importada.**
+8. **Retomada de sessão parcialmente importada** (hoje exige `--force`, sem duplicar graças às chaves).
 9. **Limite por sessão, limite total em bytes e registro de truncamento** nas perdas e no aviso.
 10. **Modo sem limite de sessões** (`--all-sessions`). Hoje o padrão já é importar até o limite.
 11. **Restringir o automático** em servidor com operadores distintos (ver Questões em aberto).

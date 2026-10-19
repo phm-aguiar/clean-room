@@ -157,19 +157,15 @@ Texto exato (uma linha de contexto):
 `memory_handoff_accept`:
 
 - Sem `handoff_id`: pega o mais recente elegível para o `cwd` informado (seção 3).
-- Com `handoff_id`: busca esse identificador no escopo, só se estiver aberto.
-- Só entrega o corpo se **esta** chamada venceu a reivindicação. Quem perde a corrida
-  recebe `handoff: null`.
-- Antes da reivindicação, consulta a cadeia de admissão `HandoffAccept` (sem prazo
-  de 750 ms). Observadores só são notificados em caso de reivindicação efetiva.
-- Filtro de dono: por padrão, o operador da chamada. Ver todos os donos exige privilégio
-  administrativo.
-- *(a confirmar: se a reivindicação por identificador aplica a regra de sessão viva da
-  seção 3 e a varredura pós-reivindicação. Isso não foi confirmado no código.)*
+- Com `handoff_id`: busca esse identificador no escopo. Se já estiver aceito pelo mesmo `session_id` (ou `accepted` quando `session_id` não foi informado), retorna `{ "handoff": null, "status": "consumed_by_hook" }`; se não estiver aberto, retorna `{ "handoff": null, "status": "none_pending" }`.
+- Só entrega o objeto `handoff` (`status: "claimed"`) se **esta** chamada venceu a reivindicação. Quem perde a corrida recebe `handoff: null`.
+- Antes da reivindicação, consulta a cadeia de admissão `HandoffAccept` (sem prazo de 750 ms). Observadores só são notificados em caso de reivindicação efetiva.
+- Filtro de dono: por padrão, o operador da chamada. Ver todos os donos (`all_owners: true`) exige privilégio administrativo.
+- **Sessão viva e varredura pós-reivindicação:** a ferramenta `memory_handoff_accept` **não** aplica o filtro de sessão viva (`busy_since` é omitido, permitindo aceitar um handoff cuja sessão de origem ainda está aberta), mas **executa** a varredura pós-reivindicação (expirando handoffs automáticos abertos anteriores do mesmo dono e compatíveis com o `cwd` que não pertençam a sessões vivas nos últimos 5 minutos) sempre que um handoff automático é reivindicado, inclusive quando `handoff_id` foi informado.
 
 `memory_handoff_begin` cria handoff manual. `shared: true` o torna visível a todo o
-projeto; por padrão, pertence ao operador que o criou. O argumento `cwd` é registrado,
-mas não restringe quem recebe handoff manual. `memory_handoff_list` lista handoffs abertos
+projeto; por padrão, pertence ao operador que o criou. Os argumentos `from_agent`, `to_agent`, `cwd` e `session_id` são aceitos e registrados,
+mas `cwd` e `to_agent` não restringem quem recebe handoff manual. `memory_handoff_list` lista handoffs (filtrados por `state`: `"open"` [padrão], `"accepted"`, `"expired"` ou `"all"`, e `limit` 1..100, padrão 20)
 sem reivindicá-los, e `memory_handoff_cancel` os marca como `expired`.
 
 ## 8. Não implementado (propostas)

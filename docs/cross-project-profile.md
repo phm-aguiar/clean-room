@@ -59,7 +59,7 @@ prompt that can be cached:
 > 🧭 **ai-memory: your usual choices** (cross-project profile)
 > Your usual choices from other projects. Use them as defaults when this
 > project's rules and the user say nothing; say which default you applied. …
-- [lang-c] Use tool-a, not tool-b. (`profile/tools/tool-a.md`)
+- [javascript] Use pnpm, not npm. (`profile/tools/pnpm.md`)
 - Keep integration tests in tests/suite. (`profile/testing/layout.md`)
 ```
 
@@ -71,8 +71,8 @@ prompt that can be cached:
 - **One line per entry**, each naming its page. The line is the entry's
   statement, collapsed to one line and cut at 240 bytes, with the stack tags in
   brackets when the entry has any.
-- **Filtered by stack.** An entry with language tags (for example `lang-a` or
-  `lang-b`) appears only in a project whose recent activity shows one of
+- **Filtered by stack.** An entry with language tags (for example `rust` or
+  `python`) appears only in a project whose recent activity shows one of
   those tags. Tags come from file names in the titles of the project's 2,000
   most recent observations: manifest file names and source file extensions. A
   project with no detected tags, such as one with no activity yet, gets every
@@ -130,7 +130,7 @@ folder: `stack`, `architecture`, `workflow`, `testing`, `tools`, `style` or
 | Key | Meaning |
 |---|---|
 | `summary` (or `abstract`) | The digest line. Otherwise the first line of prose in the body is used. |
-| `applies_to` | Language tags the entry is scoped to, e.g. `lang-a` or `[lang-b]`. Matched case-insensitively. |
+| `applies_to` | Language tags the entry is scoped to, e.g. `rust` or `[python, go]`. Matched case-insensitively. |
 | `enforced_by` | Something already enforces it (e.g. `pre-push hook`); kept out of the digest and out of rules-file blocks. |
 
 Without a summary, the digest line is the first prose line of the body, with
@@ -238,7 +238,7 @@ project of the default workspace (the one that has no working directory).
   *in all my projects*, *every project*, *across projects*, *everywhere*, and the
   Portuguese equivalents (*sempre*, *nunca*, *prefiro*, *em vez de*, *não use*,
   *a partir de agora*, *por padrão*, *eu costumo*, *em todos os meus projetos*,
-  and others). Matching is on whole words, case-insensitively.
+  and others; the complete lists are in Appendix A of the [design document](design-cross-project-profile.md)). Matching is on whole words, case-insensitively.
 
   Text is read line by line, and each line is split into sentences on `.`, `!`
   and `;` followed by whitespace or the end of the line. These never qualify: questions (anything containing `?`), text inside
@@ -299,8 +299,8 @@ together with the existing entries.
   When an LLM classified the candidate, its category is used if it is a known
   one.
 - **Language tags.** Derived from the language and tool names the statement
-  mentions (for example a package manager name tags its language, so "use tool-a"
-  is tagged `lang-c`), or taken from the LLM.
+  mentions (for example a package manager name tags its language, so "use pnpm"
+  is tagged `javascript`; the full vocabulary is in Appendix A.7 of the design document), or taken from the LLM.
 - **Path.** `profile/<category>/<slug>.md`, where the slug is lowercase
   alphanumerics and dashes, at most 60 characters, and `entry` when empty. A
   new page whose path is taken gets `-2`, `-3`, and so on.

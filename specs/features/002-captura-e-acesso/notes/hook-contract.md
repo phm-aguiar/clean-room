@@ -58,16 +58,12 @@ Campos vistos no payload do Codex pela doc: `hook_event_name`, `model`, `permiss
   - O título e o corpo vêm de `prompt`, `message` ou `text`. A primeira chave encontrada vale, e aceita blocos `[{type:text,text}]` (LEI §3.4).
   - O doc cita `prompt` como campo lido pelo hook path no Codex (CDX, "Payload fields"). Para Claude Code vale a regra genérica da LEI §3.4.
 - **PreToolUse**
-  - Usa o esquema fechado do Claude Code (LEI §3.5).
+  - Usa o esquema fechado do Claude Code (LEI §3.5). Exige a presença do objeto `tool_input` ou `args` no payload (caso contrário nenhum evento é emitido).
   - Título: `tool <família>`, com família em `file`, `search-list`, `non-file` ou `unknown`.
-  - Corpo: `tool_family: <família>` mais `tool_call_id` quando existir e for válido.
-  - O nome vem de `tool_name` e o identificador da chamada de `tool_use_id`. Sem identificador válido, a chamada segue sem ele.
+  - Corpo: `tool_family: <família>` mais `tool_call_id: <id>` quando `tool_use_id` existir e tiver de 1 a 128 caracteres ASCII em `[A-Za-z0-9_-]`.
 - **PostToolUse**
   - Mesmas regras de nome, família e identificador do PreToolUse.
-  - Acrescenta `outcome: success | error | unknown` e, se a família não for `unknown`, o separador `---` e a saída (LEI §3.5; CDX, "Tool events").
-  - Para Claude Code o desfecho é sempre `unknown`. A LEI §3.5 diz que "nos demais, o desfecho é sempre `unknown`", e a justificativa citada é o Codex. Que o Claude Code caia nesse "demais" é **leitura nossa** da lista da LEI §3.5. O Claude Code não está entre os agentes com campo de erro dedicado (Pi, Omp, AntigravityCli, Zcode, CopilotCli, Hermes).
-  - A saída vem de `tool_response`. No caminho genérico (outros agentes), vem de `tool_response`, `tool_output`, `output` ou `result`, depois `error`, depois `(no output captured)` (LEI §3.4). Para o esquema fechado, o doc só afirma `tool_response` explicitamente para o Codex (CDX). Para Claude Code o doc é omisso. **Decisão nossa**: ler `tool_response` primeiro, para casar com o caminho genérico.
-  - Sem saída, o corpo traz `(no output captured)` (LEI §3.5).
+  - Acrescenta `outcome: unknown` para Claude Code. Se `tool_family == "unknown"`, o corpo contém **apenas** o cabeçalho (`tool_family: unknown`, `tool_call_id` opcional e `outcome: unknown`), **sem** o separador `---` e **sem** saída. Se `tool_family` pertencer a `file`, `search-list` ou `non-file`, acrescenta `\n---\n` e a saída extraída de `tool_response`, `tool_output`, `output` ou `result` (string direta, array de blocos ou JSON compacto), ou `(no output captured)` quando ausente (LEI §3.5).
 - **PreCompact**: não há título nem corpo (LEI §3.4). Faz checkpoint da página de sessão (LEI §8, passo 11).
 - **Stop**
   - Sem título nem corpo no caminho genérico (LEI §3.4).
@@ -75,7 +71,7 @@ Campos vistos no payload do Codex pela doc: `hook_event_name`, `model`, `permiss
   - O campo é **removido incondicionalmente** antes de qualquer outra etapa. Nunca chega a log, spool, rede ou armazenamento (LEI §5).
   - O script de shell do Claude Code descarta o evento inteiro e responde `{}` se o payload bruto contiver essa chave (HSC §1.6).
   - O corpo da parada só é preenchido com o opt-in duplo: `capture_assistant` no servidor (padrão desligado) e instalação do cliente com captura. O excerto fica em 2000 bytes no cliente, com marca `_ai_memory_assistant` v1, e em 2 KB no servidor (LEI §5, §3.6).
-- **SessionEnd**: sem título nem corpo (LEI §3.4). Segue o fim de sessão da LEI §8.3.
+- **SessionEnd**: título vazio; se o payload trouxer `reason` (string não vazia), o corpo é `reason: <primeira_linha>` (LEI §3.4). Segue o fim de sessão da LEI §8.3.
 - **SubagentStart e SubagentStop**
   - Sem título nem corpo (LEI §3.4).
   - Encaminhados por POST sem injeção de contexto (HSC §1.5).
@@ -101,21 +97,16 @@ Campos vistos no payload do Codex pela doc: `hook_event_name`, `model`, `permiss
 
 - **`tool_name`**
   - É o nome da ferramenta em Claude Code e "agentes parecidos" (LEI §3.5).
-  - No esquema fechado, o nome só serve para derivar a família (`file`, `search-list`, `non-file`, `unknown`). O título é `tool <família>`.
-  - O mapeamento exato de nomes de ferramenta para família **não é definido no doc**. Exemplos como `Read`, `Edit`, `Bash`, `Grep` e `Glob` não aparecem. **Decisão nossa**: a tabela nome para família será definida no plan e na T023 e coberta por fixtures.
+  - No esquema fechado, o nome é normalizado (removendo caracteres não alfanuméricos ASCII e convertendo para minúsculas) para derivar a família (`file`, `search-list`, `non-file`, `unknown`) conforme a tabela completa de LEI §3.5 e §4.3. O título é `tool <família>`.
 - **`tool_use_id`**
-  - É o identificador da chamada (LEI §3.5). Vira `tool_call_id` no corpo, quando existir e for válido.
-  - Strings de metadado `tool_use_id` e `tool_call_id` ficam em 512 bytes na allowlist de workstreams (API, "Allowlist de metadados"). A regra de "válido" para o hook **não é detalhada no doc**.
-  - **Decisão nossa**: reaproveitar o limite de 512 bytes e sanitizar. Fica a confirmar.
+  - É o identificador da chamada (LEI §3.5). Vira `tool_call_id` no corpo quando tiver de **1 a 128 caracteres** e contiver apenas `[A-Za-z0-9_-]`. Caso contrário, é descartado silenciosamente.
 - **`tool_input`**
-  - O doc **não lista** `tool_input` na extração de Claude Code.
-  - A regra de esquema fechado é explícita: "Argumentos nunca entram" em título e corpo (LEI §3.3, "Título e corpo").
-  - O `tool_input` serve, no máximo, à política de captura, para extrair caminhos candidatos de arquivo ou comando de shell e decidir Keep, Drop ou MetadataOnly (LEI §4 e §4.2: 32 caminhos candidatos por chamada, 4096 caracteres cada). O detalhe de quais chaves do `tool_input` viram caminho (por exemplo `file_path`) está em LEI §4.3 e §4.4, que este levantamento não detalha.
-  - **Decisão nossa**: as fixtures incluem `tool_input` com caminho de arquivo e com comando de shell, para a T-política de captura.
+  - Argumentos nunca entram em título e corpo no esquema fechado (LEI §3.3, §3.5).
+  - Em `PreToolUse`, a presença de `tool_input` ou `args` é exigida para emitir a observação.
+  - A política de captura lê as chaves documentadas em LEI §4.3 para extrair até 32 caminhos candidatos diretos (4096 caracteres cada) ou comandos de shell.
 - **`tool_response`**
-  - É a saída da ferramenta. Só aparece no PostToolUse.
-  - O corpo respeita o teto de 2 KB depois da sanitização (LEI §3.6). O texto é sanitizado antes de gravar (LEI §8, passo 6).
-  - Não é interpretado como erro. Para Claude Code o `outcome` é `unknown` (ver 3.2).
+  - É a saída da ferramenta no `PostToolUse` (lida de `tool_response`, `tool_output`, `output` ou `result`).
+  - O corpo respeita o teto de 2 000 bytes UTF-8 seguros depois da sanitização (LEI §3.6). Para Claude Code o `outcome` é sempre `unknown`, e ferramentas com `tool_family == "unknown"` omitem `---` e a saída.
 
 ## 7. Respostas do servidor que o hook precisa tratar
 

@@ -44,14 +44,19 @@ ignore_paths = ["private/**", "~/personal-notes/**"]
 - `[capture]` aceita **somente** `ignore_paths`. Tornam a política **inteira** inválida (nada é aplicado parcialmente): chave desconhecida; valor que não é array; entrada que não é string; TOML inválido; texto não UTF-8; arquivo > 64 KiB; qualquer padrão que falhe na validação.
 - Estados da política para o decisor (LEI §4.3): **Inativa** (sem marcador em denylist), **Inválida** (marcador malformado), **Ativa**.
 
-## 4. Regras dos padrões (MF "Pattern rules")
+## 4. Regras dos padrões e normalização no Windows (MF "Pattern rules"; `docs/windows.md`)
 
 - Casa o caminho **inteiro**, normalizado lexicalmente; não é substring.
 - `*` casa dentro de um componente; `?` casa um caractere que não é separador; `**` cruza diretórios.
 - Padrão relativo tem raiz no diretório do marcador; absoluto é usado como está; `~/` expande para o home.
 - Caminhos relativos em eventos de ferramenta de arquivo são resolvidos a partir do cwd do evento.
-- **Rejeitados** no padrão: os caracteres `! { } [ ] ( ) | ^ $ %`; a sequência `${`; três ou mais `*` seguidos; segmento `..`; `~` não seguido de `/`; caminhos relativos a drive como `C:foo`.
-- Caixa: sensível em caminhos POSIX; drive e UNC do Windows casam ASCII sem distinguir caixa.
+- **Rejeitados** no padrão: os caracteres `! { } [ ] ( ) | ^ $ %`; a sequência `${`; três ou mais `*` seguidos; segmento `..`; `~` não seguido de `/`; caminhos relativos a drive como `C:foo`; e, quando o diretório do marcador é um caminho Windows (`C:/...` ou UNC), qualquer padrão iniciado por `/` sem letra de drive nem prefixo UNC (`/foo` é rejeitado como caminho relativo à raiz de drive no Windows).
+- **Normalização de caminhos Windows na política de captura**:
+  1. Remove prefixos de provedor do PowerShell (`Microsoft.PowerShell.Core\FileSystem::` e `FileSystem::`, sem diferenciar maiúsculas).
+  2. Converte prefixos estendidos Win32: `\\?\UNC\server\share\...` -> `//server/share/...`; `\\?\C:\...`, `\\.\C:\...` e `\??\C:\...` -> `C:/...`; caminhos de compartilhamento administrativo `\\localhost\C$\...` ou `\\127.0.0.1\c$\...` -> `C:/...`.
+  3. Caminhos estilo MSYS2 / Git Bash / Cygwin (`/c/Users/...` ou `/cygdrive/c/Users/...`) geram **dois candidatos**: o caminho POSIX original e a forma com letra de drive `C:/Users/...`.
+  4. Em caminhos Windows (`C:/...` ou UNC), remove sufixos de NTFS Alternate Data Streams (`:stream` ou `:$DATA` após o prefixo do drive) e pontos ou espaços finais de cada segmento (`secret.txt... ` -> `secret.txt`), e compara todos os segmentos ASCII sem diferenciar maiúsculas.
+  5. Ao tokenizar comandos de shell, além de escapes `\`, remove escapes por acento grave (`` ` ``) do PowerShell e circunflexo (`^`) do `cmd.exe` quando o evento ou os tokens indicarem ambiente Windows.
 - Casamento **léxico**: links simbólicos, junctions, bind mounts e aliases não são resolvidos; cada alias visível precisa de padrão próprio.
 
 ## 5. Limites (MF "Bounds"; LEI §4.2)
@@ -75,53 +80,41 @@ Pergunta que a política responde: manter, descartar ou reduzir a metadados um e
 |---|---|---|---|
 | Inativa | qualquer | sem marcador (denylist) ou sem `ignore_paths` | `Keep` (LEI §4.3; MF "Parsing and failure") |
 | Ativa | busca ou listagem | sempre | `Drop` conservador (LEI §4.3; MF "Decisions") |
-| Ativa | arquivo | algum candidato casa com padrão | `Drop` do evento inteiro (MF "Decisions") |
+| Ativa | arquivo | algum candidato casa com padrão (ou aponta para arquivo de spool do harness) | `Drop` do evento inteiro (MF "Decisions") |
 | Ativa | arquivo | sem caminho extraível, malformado ou não suportado | `MetadataOnly` (LEI §4.3; MF "Decisions") |
 | Ativa | arquivo | caminhos extraídos, nenhum casa | `Keep` (LEI §4.3) |
-| Ativa | shell | algum argumento casa, ou orçamento esgotado | `Drop` (LEI §4.3, §4.2; MF "Decisions") |
-| Ativa | shell | nenhum casa | `Keep` (LEI §4.3) |
+| Ativa | shell | algum argumento casa, orçamento esgotado, `output_reader` em `PostToolUse`, `inline_code`, ou `PreToolUse` sem comando | `Drop` (LEI §4.3, §4.2; MF "Decisions") |
+| Ativa | shell | `PostToolUse` sem comando extraível | `MetadataOnly` (LEI §4.3) |
+| Ativa | shell | comando extraído, nenhum argumento casa | `Keep` (LEI §4.3) |
 | Ativa | demais famílias | sempre | `Keep` (LEI §4.3) |
 | Inválida | arquivo ou shell | marcador malformado | `MetadataOnly` (fail-closed) (LEI §4.3; MF "Decisions") |
 | Inválida | demais | sempre | `Keep` (LEI §4.3) |
 
-Detalhes por família (MF "Decisions"):
-- Arquivo: só campos de caminho explícitos e arrays diretos documentados; entradas de multi-edit e multi-leitura são incluídas. O descarte ocorre localmente, antes de spool, fila, rede, logs de transporte ou armazenamento do servidor.
-- Shell: o comando é dividido em palavras e comparado. Texto livre não é analisado além disso; texto de patch não é analisado em busca de caminhos.
-- Prompts, texto do assistente, notificações e conteúdo citado não são atribuíveis a caminho e **não** são filtrados por esta política (MF "Decisions"; MF "What is kept from tool events", último parágrafo).
-- Isto é fronteira léxica de captura, não prevenção completa de perda de dados (MF "Decisions").
-- A decisão **nunca guarda** argumentos brutos, caminhos ou nomes arbitrários; guarda só família da ferramenta, contagem de caminhos e identificador válido da chamada (LEI §4.3).
-
 ## 7. Corpo substituto de `MetadataOnly`
 
-- LEI §4.3: o corpo substituto contém identificador de sessão, diretório, família, nome canônico da ferramenta, identificador da chamada e a marca de protocolo.
-- MF "Decisions": mantém só metadados limitados de roteamento, ferramenta e decisão; **não** contém caminhos, padrões, argumentos, saída, erros, títulos nem payload aninhado.
-- Tensão: a LEI lista "diretório" (cwd) e o MF diz "sem caminhos". Decisão nossa: o cwd é metadado de roteamento permitido (a LEI vence nesse ponto por listá-lo explicitamente); nenhum caminho vindo de `tool_input` entra no corpo.
-- Eventos pré-ferramenta não mantêm comando, argumentos, caminhos, corpos de entrada nem nomes arbitrários de ferramenta; pós-ferramenta acrescenta excerto de resposta ou erro, com o corpo renderizado completo limitado a 2 000 bytes UTF-8 seguros (MF "What is kept from tool events"; LEI §3.6 e SPEC "Edge Cases" dão 2 KB para pré e pós-ferramenta).
+- LEI §4.3: o payload JSON substituído pelo cliente contém apenas `session_id`, `cwd`, `tool_name` (nome canônico da família ou `"unknown"`), `tool_use_id` (se válido) e, dentro de `tool_input` (`PreToolUse`) ou `tool_response` (`PostToolUse`), o objeto:
+  ```json
+  {
+    "_ai_memory_capture_policy": 1,
+    "decision": "metadata_only",
+    "tool_family": "<file|search_list|shell|other|unknown>",
+    "path_count": 0,
+    "tool_call_id": "<id opcional>"
+  }
+  ```
+- O servidor também reinspeciona eventos sem a marca `_ai_memory_capture_policy: 1` usando uma política ativa sintética com o padrão sentinela `"C:/__ai_memory_capture_server_inspection_never_match__"` no Windows e `"/__ai_memory_capture_server_inspection_never_match__"` no Unix.
 
-## 8. Protocolo cliente e servidor (LEI §4.4; PLAN)
+## 8. Protocolo cliente e servidor e `--check-capture` (LEI §4.4; MF)
 
-- O cliente anexa a marca de protocolo (versão 1) ao aplicar a política. Política v1 é imposta pelo comando nativo de hook (MF "Supported integrations and refresh").
-- O servidor **reinspeciona**: se o cliente pediu `Drop`, responde **202** e conta como "descartado pela política" sem gastar capacidade (LEI §4.4; PLAN §2.1 `capture policy dropped`; PLAN Q-02).
-- Evento descartado reconhecido nunca entra em spool, fila, transporte, log ou armazenamento (LEI §4.4).
-- Novos clientes são seguros com servidores antigos porque descartar e reduzir acontece no cliente (MF "Supported integrations and refresh").
-- Checagem local: `ai-memory hook --event ... --agent ... --check-capture` lê um JSON da entrada padrão, não faz spool, fila, drenagem, rede nem handoff, e imprime só metadados limitados: versão do protocolo, estado da política, família, contagem de caminhos, disposição, estado da extração e estado da resolução de escopo; nunca caminhos, padrões ou conteúdo (MF "Checking a decision locally"; PLAN §2.5).
+- Checagem local: `ai-memory hook --event ... --agent ... --check-capture` lê um JSON da entrada padrão, não faz spool, fila, drenagem, rede nem handoff, e imprime um JSON com **15 campos fixos**: `protocol_version` (`1`), `capture_mode`, `event`, `agent`, `policy_state`, `marker_present`, `ignore_rule_count`, `tool_family`, `candidate_path_count`, `disposition` (`"keep"` ou `"drop"` — `MetadataOnly` mapeia para `"drop"` em `disposition`), `effective_decision` (`"keep"`, `"metadata_only"` ou `"drop"`), `reason`, `extraction_status`, `scope_Marker_state` e `drop_subagent_captures`.
 
 ## 9. Descarte de subagente (relacionado; LEI §4.5, MF "Subagent captures")
 
-- Opt-in por projeto. Com valor truthy, o servidor aceita (202) mas não armazena capturas de sessões de subagente; sessões de topo sempre são armazenadas.
+- Opt-in por projeto (`drop_subagent_captures` no marcador; `drop_subagent` na query string de `/hook`). Com valor truthy, o servidor aceita (202 `subagent capture dropped`) mas não armazena capturas de subagentes.
 - Claude Code não marca a sessão pai: só eventos marcados (e início/fim de subagente) são descartados (LEI §4.5; PLAN Q-09).
 
 ## 10. Aplicação na feature 002
 
-- Escopo: política de captura por marcador pertence ao CLI de hook (SPEC "Dentro do escopo", CLI de hook); lógica pura em `internal/ingest/capture`, usada pelo cliente e pela reinspeção do servidor (PLAN Q-01).
+- Escopo: política de captura por marcador pertence ao CLI de hook e à reinspeção do servidor (`internal/ingest/capture`).
 - Leitura: campos de escopo pela regra de linha e `[capture]` por TOML estrito, com os limites acima (PLAN Q-09).
-- Modo padrão denylist (PLAN Q-09); allowlist via `install-hooks --capture-mode` (PLAN Q-11).
-- `last_assistant_message` é sempre removido antes de qualquer etapa; o marcador não restringe captura do assistente (MF "What is kept from tool events", último parágrafo; SPEC "Edge Cases"; LEI §5).
-- Fora da 002: hooks de script de shell legados, Docker wrapper e demais agentes não impõem a política (MF "Supported integrations and refresh", marcado "a confirmar"; PLAN "O que não construir").
-
-## 11. Pontos "a confirmar" ou omissos (registrar como decisão nossa)
-
-- Onde o servidor impõe o padrão de nome de `workspace`/`project`: "a confirmar" no MF "Name rules". Decisão nossa: não validar além do que a 001 já faz; a regra `^[a-z0-9][a-z0-9._-]*$` vale para rotas do home marker.
-- Se o doc diz "metadados limitados" sem enumerar o corpo exato além de LEI §4.3: decisão nossa é seguir a lista da LEI §4.3 exatamente.
-- Nome da chave de subagente: ver §2 (decisão nossa).
-- Interação do marcador inválido com campos de escopo: resolução continua tolerante; captura falha fechado (MF "Inspection states").
+- `last_assistant_message` é sempre removido antes de qualquer etapa (LEI §5).

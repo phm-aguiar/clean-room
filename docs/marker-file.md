@@ -84,13 +84,13 @@ With `[recall] default_global` on, an unscoped memory query from a session in th
 
 ### Session brief
 
-With `[briefing] inject_on_session_start` on, the session-start handoff fetch also returns the project's core pages with their bodies, plus the titles of recently updated pages without bodies. Core pages are pinned pages, pages under the rules area, and pages under the slots area. Pinned pages come first, then ordering by path. Recent titles are capped at 10 and core pages at 24. The brief is appended after any pending handoff **a confirmar**. It is not consumed, so it is recomposed on each opted-in session start **a confirmar** for context clears. Only hosts whose session-start hook injects standard output as context receive it.
+With `[briefing] inject_on_session_start` on, the session-start handoff fetch also returns the project's core pages (a short excerpt of each, deepened to a longer excerpt or the whole body while the budget lasts), plus the titles of recently updated pages without bodies. Core pages are pinned pages (outside the slots area), pages under the rules area, and pages under the slots area. Pinned pages come first, then ordering by path. Recent titles are capped at 10 and core pages at 24. In the session-start payload the brief comes after the profile digest, the pending handoff, the pending-handoff notice and the managed-workstream context, and before the inbox notice. It is not consumed, so it is recomposed on each opted-in session start, which is what a context clear in a host that re-runs the session-start hook needs. Only hosts whose session-start hook injects standard output as context receive it there.
 
 The brief is scoped to the session's own `(workspace, project)`. The global reserved scope is not merged in, so a rule placed only in the global scope does not reach the brief. It stays reachable through on-demand queries. The brief is wrapped as untrusted history. Put instructions the agent must follow every turn in its own rules file, not in the brief.
 
-The character budget covers the whole brief, including headers and footers. It defaults to 4000 characters, which is about four characters per token. It is clamped to 1500 through 20000. Over-budget bodies are truncated with a visible note. Pages crowded out of the budget are listed by path, or counted when even the paths do not fit. The order in which content is cut is **a confirmar**.
+The budget covers the whole brief, including headers and footers, and is measured in **UTF-8 bytes** (the key is named `max_chars` for historical reasons). It defaults to 4000, which is about four bytes per token. A missing or unparsable value gives the default; the value is clamped to 1500 through 20000. Bodies are never truncated: a page is shown as an excerpt (at most 256 bytes at the shortest depth, 500 at the next) or, when it fits whole, as its full body. Pages crowded out of the budget are listed by path, or counted when even the paths do not fit. Content is cut in this order: the recent titles and the omitted-page list are served from reserves taken before the pages are deepened; pages are first all covered by their shortest form in path order (pinned first), then privileged pages (pinned or slots) are deepened first, then the others, then whole bodies cheapest first; the pages at the end of the order are omitted first. The exact algorithm, layout and escaping are in [session-brief.md](session-brief.md).
 
-Hosts that discard session-start output (Kimi Code at the time of writing) receive the brief on the first user prompt of the session, once per session. Their local delivery markers are created only for opted-in repositories and kept for the 512 most recent sessions. Re-briefing after a clear is not supported in that host **a confirmar**.
+Hosts that discard session-start output (Kimi Code at the time of writing) receive the brief on the first user prompt of the session, once per session. Their local delivery markers are created only for opted-in repositories and kept for the 512 most recent files of the delivery-marker directory. Re-briefing after a clear is not supported in that host: the marker survives a clear.
 
 ### Subagent captures
 
@@ -300,8 +300,13 @@ A repository that keeps decision records in its tree should exclude them too, fo
 - `*` matches within one path component. `?` matches one character that is not a separator. `**` crosses directories.
 - Relative patterns are rooted at the marker's directory. Absolute patterns are used as they are. `~/` expands to the home directory.
 - Relative paths in file-tool events are resolved from the event's cwd.
-- Rejected in patterns: the characters `! { } [ ] ( ) | ^ $ %`, the sequence `${`, three or more consecutive `*`, a `..` segment, a `~` not followed by `/`, and drive-relative paths such as `C:foo`.
-- Matching is case-sensitive on POSIX paths. Windows drive and UNC paths match ASCII case-insensitively.
+- Rejected in patterns: the characters `! { } [ ] ( ) | ^ $ %`, the sequence `${`, three or more consecutive `*`, a `..` segment, a `~` not followed by `/`, and drive-relative paths such as `C:foo`. When the marker's base path is a Windows path (`C:/...` or `//server/share/...`), POSIX root patterns (`/foo`) are also rejected as invalid policy because they have no drive letter.
+- Matching is case-sensitive on POSIX paths. Windows drive and UNC paths match ASCII case-insensitively. On a macOS host everything is compared case-insensitively after both the patterns and the candidates are folded (Unicode NFC, then full Unicode lowercase), as macOS's default filesystem does.
+- **Windows path normalization before matching:**
+  - Strips PowerShell provider prefixes (`Microsoft.PowerShell.Core\FileSystem::` and `FileSystem::`, case-insensitively).
+  - Normalizes extended-length and device drive prefixes (`\\?\C:\...`, `\\.\C:\...`, `\??\C:\...`) and local administrative shares (`\\localhost\C$\...` in any case and `\\127.0.0.1\C$\...`; an IPv6 loopback host is **not** recognized) to `C:/...`, and `\\?\UNC\server\share\...` to `//server/share/...`. Other `\\?\`, `\\.\`, or `\??\` device paths and drive-relative paths (`C:foo`) cannot be placed and force `MetadataOnly`.
+  - Strips NTFS Alternate Data Stream suffixes (`file.txt:secret:$DATA` -> `file.txt`) and trailing dots or spaces from each non-glob path segment (`secret. /` -> `secret/`).
+  - Generates dual candidate spellings for MSYS2/Git Bash (`/c/Users/...`) and Cygwin (`/cygdrive/c/Users/...`) paths so both POSIX and `C:/Users/...` forms are tested against patterns.
 - Matching is lexical. Symbolic links, junctions, bind mounts, and path aliases are not resolved. Add each relevant visible alias as its own pattern.
 
 ### Bounds
@@ -320,12 +325,12 @@ Exhausting the comparison budget fails closed. For file tools the event becomes 
 
 With an active policy, the decision depends on the tool family:
 
-- **File tools.** Only explicit path fields and documented direct arrays are read. Multi-edit entries and multi-read operations are included. If any candidate matches, the whole event is dropped locally before it reaches the spool, the queue, the network, transport logs, or server storage. A recognized file tool with missing, malformed, or unsupported candidates becomes **metadata-only**.
+- **File tools.** Only explicit path fields and documented direct arrays are read. Multi-edit entries and multi-read operations are included. If any candidate matches, the whole event is dropped locally before it reaches the spool, the queue, the network, transport logs, or server storage. A recognized file tool with missing, malformed, or unsupported candidates, or targeting a harness output spool file (such as `~/.claude/projects/.../tool-results/<id>.txt`), becomes **metadata-only**.
 - **Search and list tools.** Dropped conservatively.
-- **Shell tools.** The command is split into words and matched. A match, or an exhausted budget, drops the event. Free-form text is not otherwise parsed. Patch text is not parsed for paths.
+- **Shell tools.** The command is split into words (stripping PowerShell backtick `` ` `` and `cmd.exe` caret `^` escape characters) and matched. A match, or an exhausted budget, drops the event. Output-reader tools (`bashoutput`, `taskoutput`, `write_stdin`, `process`, `read_bash`, `write_bash`, `read_powershell`, `write_powershell`) and inline-code execution tools (`execute_code`) become **metadata-only** when policy is active. Free-form text is not otherwise parsed. Patch text is not parsed for paths.
 - **Other tools.** Unchanged.
 
-With an invalid policy, file tools and shell tools become metadata-only. Other tools are unchanged.
+With an invalid policy, file tools, search/list tools and shell tools (including output-reader tools) become metadata-only. Other tools are unchanged. The full decision engine (candidate extraction, shell word splitting, nested scripts, other markers a call touches, and the server's re-inspection) is specified in [lifecycle-event-ingestion.md](lifecycle-event-ingestion.md), section 4.4a.
 
 Metadata-only events keep only bounded routing, tool, and decision metadata. They contain no paths, patterns, arguments, output, errors, titles, or nested payload.
 
@@ -341,7 +346,7 @@ Reinstall the hooks, or refresh the generated plugins, after upgrading. Existing
 
 ### Checking a decision locally
 
-`ai-memory hook --event ... --agent ... --check-capture` reads one JSON payload from standard input. It does no spool, queue, drain, network, or handoff work. It prints only bounded decision metadata: protocol version, policy state, tool family, path count, disposition, extraction state, and scope resolution state. It never prints paths, patterns, or payload content.
+`ai-memory hook --event ... --agent ... --check-capture` reads one JSON payload from standard input. It does no spool, queue, drain, network, or handoff work. It prints a JSON object with 15 fixed fields (`version`, `capture_mode`, `marker_present`, `admits_capture`, `policy_admits_capture`, `event_admits_capture`, `policy_state`, `tool_family`, `path_count`, `disposition` [which reports `"drop"` both when dropped and when reduced to metadata-only], `extraction_state`, `scope` [`workspace`, `project`, `project_strategy`, `identity`, `identity_style`, `aliases`, `drop_subagent_captures`, `default_global`], `scope_resolution`, `server_profile`, `server_resolution`) plus optional `external_capture: true`. It never prints paths, patterns, or payload content.
 
 ```bash
 printf '%s\n' '{"session_id":"demo","cwd":"/example/workspace","tool_name":"Edit","tool_input":{"path":"docs/example.md"}}' \
@@ -351,10 +356,10 @@ printf '%s\n' '{"session_id":"demo","cwd":"/example/workspace","tool_name":"Edit
 
 ### What is kept from tool events
 
-Supported tool events (Claude Code, OpenCode, Pi, OMP, Antigravity) keep the canonical tool family, a validated call ID when the host's documented schema provides one, and a post-tool outcome class.
+Supported tool events (Claude Code, OpenCode, Pi, OMP, Antigravity) keep the canonical tool family, a validated call ID (`tool_use_id` / `callID` of 1 to 128 ASCII characters `[A-Za-z0-9_.-]`) when the host's documented schema provides one, and a post-tool outcome class.
 
-- Pre-tool events keep no command, arguments, paths, input bodies, or arbitrary tool names.
-- Post-tool events add the existing tool-response or error excerpt. The full rendered body is capped at 2,000 UTF-8-safe bytes.
+- Pre-tool events require `tool_input` (or `args`) to classify as `"tool <family>"`; without it, the title falls back to `"pre-tool-use"` and the body is empty. They keep no command, arguments, paths, input bodies, or arbitrary tool names.
+- Post-tool events add `outcome: <success|error|unknown>` and, when `tool_family` is not `"unknown"`, a `---` separator followed by the tool-response or error excerpt (or `(no output captured)`). When `tool_family` is `"unknown"`, only the header lines (`tool_family`, optional `tool_call_id`, `outcome`) are emitted without `---` or output. The full rendered body is capped at 2,000 UTF-8-safe bytes.
 - For Antigravity, a successful file edit falls back to the replacement or written content in the tool arguments, because its hook payload has no output field. A failed edit keeps the error instead. The fallback is discarded with any event rejected by a capture exclusion.
 - Association between a pre-tool and a post-tool event is only by matching call IDs.
 

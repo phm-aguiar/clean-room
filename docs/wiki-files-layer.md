@@ -883,6 +883,15 @@ manutenção do arquivo de configuração.
   entre **3** e a **metade do total de candidatos** (arredondada para cima), o escopo
   inteiro é ignorado naquela passagem. Isso evita marcar tudo como removido por causa de
   um problema de montagem ou de permissão.
+- **Detalhes das regras de contagem.** (1) Candidatos = versões atuais do índice tiradas **antes** da varredura da árvore
+  (uma página gravada durante a varredura nunca parece removida), sem pendências, `_meta.md`, `bootstrap.md`, nomes no formato de ledger
+  (`log.md`, `log-AAAA-MM.md`, por nome, sem ler conteúdo) e `sessions/<id>.md`. (2) Uma página encontrada no disco apaga a sequência
+  dela, mesmo numa varredura parcial. (3) Varredura parcial: nada novo conta e as sequências existentes ficam como estão. (4) Disjuntor:
+  se ausentes `>` `max(3, ceil(total/2))`, **ou** se a varredura não achou nenhuma página (mesmo num escopo pequeno), o escopo é ignorado e a passagem
+  **não conta** (nem incrementa sequências). (5) A sequência guarda o id da versão ausente; se o id mudou, recomeça em 0. (6) Ao chegar a 2, a sequência
+  é descartada e a marcação é tentada; se ainda ausente depois, começa nova sequência. (7) A marcação grava `is_latest = 0`, `superseded_at` e `valid_to` no
+  mesmo instante, fecha os vínculos de entidade abertos e registra auditoria `soft_delete_for_reconcile`; se o arquivo reapareceu ou a versão mudou na conferência final, nada é feito.
+  (8) Uma marcação tem o mesmo prazo de remoção definitiva que o decaimento (`hard_delete_after_days`); se o arquivo voltar, a nova versão religa a cadeia e limpa `superseded_at`.
 - Antes de marcar, sob a guarda exclusiva de mutação, a marcação confere de novo que a
   versão atual continua a mesma e que o arquivo continua ausente. Se qualquer coisa mudou,
   nada é feito.

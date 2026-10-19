@@ -177,7 +177,7 @@ Casos específicos:
 - **Pi.** O cliente não tem arquivo MCP nativo. `--apply` falha sem gravar nada e
   imprime a orientação de instalação da ponte (ver a seção do Pi).
 - **Validações antes de gravar.** `--session-aware` só é aceito com
-  `--client claude-code`. Para o Kiro, a URL é validada antes de qualquer gravação
+  `--client claude-code` (`--session-aware is supported only for --client claude-code`). Para o Kiro, a URL é validada antes de qualquer gravação
   (ver a seção do Kiro).
 
 ### Resolução de endereço e token
@@ -383,7 +383,143 @@ Limites do cliente (a confirmar com a documentação do Claude Code):
 - `--continue` ou `--resume` sem id explícito pode expor o id de inicialização em vez
   do id retomado. Prefira `--resume <session-id>`.
 
-O comando `ai-memory mcp-bridge` é interno. Ele não é um subcomando de uso direto.
+O comando `ai-memory mcp-bridge` é interno (oculto). Ele não é um subcomando de uso direto.
+
+**Dois modos da ponte** (escolhidos por quem a registra, nunca pelo ambiente):
+
+- **Com sessão** (padrão do comando): repassa o id de sessão do agente que a lançou como
+  `X-Memory-Actor-Session-Id` em toda requisição ao servidor e **recusa subir sem ele**. A opção
+  `--agent` (`claude-code`, padrão, ou `muse`) escolhe a **única** variável lida:
+  `CLAUDE_CODE_SESSION_ID` ou `MUSE_SESSION_ID`; a outra nunca é consultada, então um Claude Code
+  aberto num terminal do Muse (ou o inverso) não repassa o id do agente de fora. Mensagem de recusa:
+  `<VARIÁVEL> is missing; this session-aware bridge must be launched by <Claude Code|Muse Code> as an
+  stdio MCP server (other clients register it with --no-session-id)`.
+- **Sem sessão** (`--no-session-id`): retransmissão simples stdio-para-HTTP, sem identidade de
+  sessão, para qualquer outro cliente (que passa `workspace` e `project` explicitamente, como num
+  cliente estático). Ignora `CLAUDE_CODE_SESSION_ID` mesmo presente, porque um cliente aberto de um
+  terminal do Claude Code herda esse id e repassá-lo desviaria as chamadas sem escopo para o ponteiro
+  de projeto ativo de outra sessão. O instalador usa esse modo quando o token do servidor vive em
+  arquivo (ver `users.md`, "Local root bearer token file").
+
+Comportamento comum: opção `--server-url` (vazia conta como ausente e vale a URL configurada; a URL
+ganha `/mcp` se faltar, mantendo uma query `?flavor=` depois do caminho); o bearer é o resolvido pela
+configuração (`AI_MEMORY_AUTH_TOKEN`, `[auth].bearer_token` ou o arquivo de `[auth].bearer_token_file`),
+enviado como cabeçalho `Authorization`; um valor de id de sessão com caracteres inválidos num cabeçalho
+HTTP é erro. A ponte **conecta ao servidor antes de servir o stdio**: 401 ou servidor inalcançável
+encerram o processo na hora, com `connecting the MCP bridge to <url>` mais `: the server answered 401
+Unauthorized` quando for o caso, e, sem bearer, a dica de que ele é lido de `AI_MEMORY_AUTH_TOKEN`,
+`[auth].bearer_token` ou `[auth].bearer_token_file`. O servidor remoto sem informações de servidor após a
+inicialização também é erro. As ferramentas listadas e chamadas são repassadas ao servidor sem alteração,
+e erros de transporte viram `upstream MCP request failed: <erro>`. Até a mensagem `initialize` chegar, a
+ponte responde "método não encontrado" a qualquer outra requisição (`<método> is not available before
+initialize`), ignora notificações e responde `ping`, para clientes que sondam primeiro com
+`server/discover` e caem para `initialize`. URLs `https://` usam o verificador de certificados da
+plataforma, com um provedor criptográfico instalado em processo.
+
+Quando o registro é gravado: o comando da entrada é o **caminho absoluto** deste binário (clientes
+costumam iniciar servidores MCP sem o `PATH` do shell de login); dentro de contêiner, o nome simples
+`ai-memory`. A entrada de uma instalação anterior da ponte é reconhecida por comando `ai-memory` (nome ou
+caminho absoluto de um binário chamado `ai-memory`) cujo primeiro argumento é `mcp-bridge`, com a URL
+em `--server-url`.
+
+### Codex
+
+- **Suporte MCP:** HTTP em streaming. **Hooks:** `ai-memory install-hooks --agent codex --apply`.
+- **Arquivo de configuração (TOML):** `$CODEX_HOME/config.toml` (valor em branco conta como ausente), senão `~/.codex/config.toml`.
+
+```toml
+[mcp_servers.ai-memory]
+url = "http://127.0.0.1:49374/mcp"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.ai-memory.http_headers]
+Authorization = "Bearer <token>"
+```
+
+- `default_tools_approval_mode = "approve"` é sempre gravado: sem ele o Codex pede aprovação a **cada** chamada de ferramenta de memória, o que inviabiliza a captura automática.
+- O token vai em `http_headers.Authorization` (a chave literal `bearer_token` é rejeitada pelo Codex para HTTP em streaming, e `headers` sem o prefixo `http_` é ignorada em silêncio). Quando o token vive em arquivo (ver `users.md`), a entrada traz `bearer_token_env_var = "AI_MEMORY_AUTH_TOKEN"` no lugar de `http_headers`, e o comando avisa `Codex reads the token from $AI_MEMORY_AUTH_TOKEN; export it where you launch codex.`
+- Com `--apply` o arquivo é editado preservando comentários e as demais tabelas; `mcp_servers` em forma de tabela em linha é convertido para a forma em blocos (as outras entradas são preservadas), e só a entrada com o nome informado é substituída.
+
+### OpenCode (V1) e OpenCode 2 (beta)
+
+- **Arquivo:** `~/.config/opencode/opencode.json` (o mesmo para as duas versões). Arquivos `.jsonc` com comentários não são reescritos: passe um JSON estrito com `--config-file`.
+- **V1** (`--client opencode`): servidores diretamente sob `mcp`:
+
+```json
+{ "mcp": { "ai-memory": { "type": "remote", "url": "http://127.0.0.1:49374/mcp", "enabled": true, "headers": { "Authorization": "Bearer <token>" } } } }
+```
+
+- **V2** (`--client opencode2`; aliases `opencode-v2`, `open-code2`): servidores sob `mcp.servers`, **sem** `enabled`, e com `"oauth": false` (sem ele o beta tenta descobrir OAuth no endpoint a cada conexão):
+
+```json
+{ "mcp": { "servers": { "ai-memory": { "type": "remote", "url": "http://127.0.0.1:49374/mcp", "oauth": false, "headers": { "Authorization": "Bearer <token>" } } } } }
+```
+
+- **Propriedade da entrada.** Uma entrada é "gerada" quando o tipo é `remote`, tem `url`, só usa as chaves `type`, `url`, `enabled`, `oauth`, `headers`, os cabeçalhos são ausentes ou exatamente `Authorization: Bearer <não vazio>`, e o formato do local bate (V1: `enabled == true` e sem `oauth`; V2: `oauth == false` e sem `enabled`). Entrada em modo ponte local (`type: "local"`, `command` em lista, `enabled` só no V1) também conta como gerada. Se a entrada **no local escolhido** existe e **não** é gerada, o comando recusa substituí-la: `refusing to replace user-owned OpenCode MCP entry '<nome>' in the selected major-version location`.
+- **Migração.** Ao instalar numa versão, a entrada gerada da **outra** versão é removida (e o mapa `servers` vazio é apagado) somente se o endpoint dela for igual ao do comando e o formato gerado bater; se não for provadamente gerada, ela é preservada com o aviso `[ai-memory] warning: preserving ambiguous OpenCode MCP entry '<nome>' in the alternate major-version location`. Se houver entrada própria do usuário no local escolhido **e** uma gerada no alternativo, recusa com a mensagem sobre migrar a entrada gerada.
+- **Inferência de endereço e token.** Sem `--server-url`/`--auth-token` e com o nome padrão `ai-memory`, o comando reaproveita endereço e token (do cabeçalho `Authorization: Bearer …`) de uma entrada gerada existente. Se as entradas gerada de V1 e V2 divergirem: `conflicting generated OpenCode MCP entries exist in the V1 and V2 locations; pass explicit --server-url and --auth-token before installing`. Se a entrada do local escolhido é do usuário e a alternativa é gerada: `a user-owned OpenCode MCP entry occupies the selected major-version location while a generated entry remains in the alternate location; …`. Entrada do usuário sozinha não é usada para inferir (aviso `preserving user-owned OpenCode MCP entry … pass explicit --server-url and --auth-token`).
+- Quando o token vive em arquivo, a entrada vira ponte stdio local: `{"type": "local", "command": ["<ai-memory>", "mcp-bridge", "--no-session-id", "--server-url", "<url>"], "enabled": true}` (no V2 sem `enabled`).
+
+### GitHub Copilot CLI
+
+- **Hooks:** `ai-memory install-hooks --agent copilot-cli --apply`. (O nome `copilot` sozinho, em `install-mcp`, é o cliente do VS Code, não este.)
+- **Arquivo:** `$COPILOT_HOME/mcp-config.json` (padrão `~/.copilot/mcp-config.json`). Arquivos de projeto `.mcp.json` ou `.github/mcp.json` entram com `--config-file`.
+
+```json
+{ "mcpServers": { "ai-memory": { "type": "http", "url": "http://127.0.0.1:49374/mcp", "headers": { "Authorization": "Bearer <token>" }, "tools": ["*"] } } }
+```
+
+`tools: ["*"]` (todas as ferramentas) é sempre gravado. Equivalente de linha de comando: `copilot mcp add --transport http <nome> <url>`. Com token em arquivo, a entrada é a ponte stdio sem sessão com `"type": "local"` e `"tools": ["*"]`.
+
+### Factory Droid CLI
+
+- **Hooks:** `ai-memory install-hooks --agent droid --apply`. **Arquivo:** `~/.factory/mcp.json` (sem variável que o realoque); um `.factory/mcp.json` de projeto entra com `--config-file`.
+
+```json
+{ "mcpServers": { "ai-memory": { "type": "http", "url": "http://127.0.0.1:49374/mcp", "headers": { "Authorization": "Bearer ${AI_MEMORY_AUTH_TOKEN}" } } } }
+```
+
+O Droid expande `${VAR}` só em `headers`, nunca em `url`; por isso a URL é literal e o bearer é **sempre referenciado por nome** (o token nunca é gravado). O cabeçalho só aparece quando há `--auth-token` (ou token em arquivo). O comando avisa `Droid expands ${AI_MEMORY_AUTH_TOKEN} in the Authorization header; export it where you launch droid, or the server fails to connect.` Equivalente: `droid mcp add <nome> <url> --type http`.
+
+### IBM Bob (IDE e Bob Shell)
+
+- **Hooks:** `ai-memory install-hooks --agent ibm-bob --apply`. **Arquivo:** `~/.bob/settings/mcp.json` (um `.bob/mcp.json` de projeto entra com `--config-file`).
+
+```json
+{ "mcpServers": { "ai-memory": { "type": "streamable-http", "url": "http://127.0.0.1:49374/mcp", "protocolNegotiation": "legacy", "headers": { "Authorization": "Bearer <token>" } } } }
+```
+
+`protocolNegotiation: "legacy"` é obrigatório na prática: no modo automático o Bob sonda um `server/discover` não padrão antes do `initialize` padrão do MCP, que o ai-memory implementa.
+
+### Prime Agent
+
+- **Arquivo:** `$PRIME_AGENT_CODING_AGENT_DIR/settings.json` (padrão `~/.prime/agent/settings.json`); o `.prime/agent/settings.json` de projeto entra com `--config-file`. **Sem hooks.**
+
+```json
+{ "mcpServers": { "ai-memory": { "type": "http", "url": "http://127.0.0.1:49374/mcp", "bearerTokenEnvVar": "AI_MEMORY_AUTH_TOKEN" } } }
+```
+
+O Prime Agent 0.10 só conta um servidor HTTP do usuário como conectado (e só o cita ao modelo) com um grant OAuth ou com `bearerTokenEnvVar` cuja variável esteja definida; um `headers.Authorization` literal ainda despacha chamadas, mas fica sem listar. Por isso o token é referenciado por variável (nunca gravado) e a chave é a camelCase (a forma snake_case que o `mcp add` do próprio agente grava é ignorada pelo carregador). `bearerTokenEnvVar` só aparece quando há `--auth-token` (ou token em arquivo); sem token, o comando explica que o agente lista o servidor como "não conectado". O modelo chama as ferramentas pelo REPL Python: `await mcp.call_tool("<nome>", "memory_query", {...})`.
+
+### DeepSeek Harness (DSH)
+
+- **Somente impressão** (`--apply` é recusado: `DeepSeek Harness has no fixed MCP config file; refusing to write MCP config. Re-run without --apply to print the Cordis patch fragment, then merge it into $DSH_HOME/profiles/<profile>/cordis.patch.yml`, com a nota "the printed entry carries the auth header" quando há token). O nome da entrada precisa casar `[A-Za-z0-9_-]{1,32}`.
+- O cliente é uma entrada de plugin Cordis no `cordis.patch.yml` de um perfil. Fragmento (todo escalar interpolado entre aspas simples):
+
+```yaml
+- insert:
+    - id: 'ai-memory'
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: 'ai-memory'
+        transport: streamable-http
+        url: 'http://127.0.0.1:49374/mcp'
+        headers:
+          Authorization: 'Bearer <token>'
+        toolCallTimeoutMs: 120000
+```
+
+Com token em arquivo, `transport: stdio`, `command` e `args` da ponte sem sessão no lugar de `url`/`headers`. Sem captura de ciclo de vida.
 
 ### Cursor
 
@@ -485,28 +621,37 @@ comando recusa a gravação e não altera o arquivo.
 
 ### Muse Code
 
-- **Suporte MCP:** sim, por HTTP em streaming, com bearer. **Hooks:** não há
-  instalador. Sem adaptador de workstream gerenciada.
+- **Suporte MCP:** sim, **pela ponte stdio com sessão** (`mcp-bridge --agent muse`), que repassa o
+  `MUSE_SESSION_ID` que o Muse entrega aos seus servidores stdio como id de sessão do ator; uma entrada
+  HTTP não carregaria id de sessão algum. **Hooks:** não há instalador. Sem adaptador de workstream
+  gerenciada.
 - **Arquivo de configuração:** `~/.config/muse/settings.json`. Para um diretório XDG
   não padrão, passe o caminho com `--config-file`.
 
-Os servidores ficam no mapa `mcp_servers`, em snake_case. A chave `mcpServers`, usada
-por outros clientes, é ignorada pelo Muse.
+O mapa de servidores é `mcpServers` (padrão). Se o arquivo **já** tiver o mapa legado `mcp_servers`, a entrada
+vai nele, com o campo `type` renomeado para `transport`. Se o arquivo tiver **os dois** mapas, o comando
+**recusa**: `this Muse settings file has both `mcpServers` and `mcp_servers`, and Muse ignores every MCP
+server when both are present. Move the servers into one of the two maps and re-run this command.`
 
 ```json
 {
   "schema_version": 1,
-  "mcp_servers": {
+  "mcpServers": {
     "ai-memory": {
-      "transport": "streamable_http",
-      "url": "http://127.0.0.1:49374/mcp",
-      "headers": { "Authorization": "Bearer <token>" },
-      "enabled": true,
+      "type": "stdio",
+      "command": "/caminho/para/ai-memory",
+      "args": ["mcp-bridge", "--agent", "muse", "--server-url", "http://127.0.0.1:49374/mcp"],
+      "env": { "AI_MEMORY_AUTH_TOKEN": "<token>" },
       "mode": "optional"
     }
   }
 }
 ```
+
+O Muse inicia servidores stdio com o ambiente **limpo**. Por isso, quando a instalação usa um diretório de
+dados próprio, a entrada traz `--data-dir <dir>` e a ponte lê o bearer da configuração dessa instalação
+(`[auth].bearer_token_file`) ao subir; um token passado explicitamente vai em `env.AI_MEMORY_AUTH_TOKEN`
+(o campo `env` só aparece então).
 
 ```bash
 ai-memory install-mcp --client muse
@@ -525,9 +670,6 @@ Dois detalhes do schema:
   que não sobe aborta a execução inteira. Com `optional`, um servidor de memória
   inalcançável custa recall, não a sessão. Por isso o comando grava o modo
   explicitamente.
-
-A chave `framing` não é gravada. Um valor diferente do padrão em `streamable_http` é
-rejeitado pela validação do próprio Muse.
 
 Skills. `ai-memory install-skills` grava as skills do ai-memory em `~/.agents/skills`,
 que é a raiz de skills entre clientes. Que o Muse também leia essa raiz e

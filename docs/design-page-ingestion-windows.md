@@ -95,7 +95,7 @@ Limite assumido: a ordenação não é um retrato do passado. A pontuação text
 
 ### 6.2 Comportamento
 
-- **Entrada.** `memory_query` com `as_of` em ISO-8601 (ver [api-reference.md](api-reference.md)). `as_of` não combina com `global` nem com `scopes`; a combinação retorna erro. Um instante inválido também retorna erro.
+- **Entrada.** `memory_query` com `as_of` em ISO-8601 com fuso (ver [temporal.md](temporal.md), que traz as regras exatas, inclusive o tratamento de `global`). `as_of` com `scopes` retorna erro; um instante inválido ou só com data também.
 - **Ramo de entidades.** Mantém a lógica existente de janelas de vínculo: `valid_from` ≤ T e (`superseded_at` nulo ou > T). Sem filtro de expiração.
 - **Ramo de texto.** Considera versões com `valid_from` ≤ T e (`valid_to` nulo ou > T). Aplica a expiração avaliada em T: uma página já expirada em T também já estava oculta em T.
 - **Conjunto candidato.** Cada ramo traz no máximo max(4 × limite, 20) candidatos.
@@ -124,7 +124,7 @@ Cobertura já existente, descrita por cenário:
 - A aposentadoria por decaimento fecha as duas janelas e impede que `as_of` ressuscite a página.
 - A exclusão explícita remove a linha do tempo, e `as_of` não encontra a página em nenhum instante.
 
-A confirmar: um teste de ida e volta entre dois motores de banco com a mesma consulta `as_of` nos dois sentidos, citado no plano original. Não encontrei esse teste; existe um teste de troca de entidades, mas sem a ida e volta entre motores. A confirmar também: cobertura específica de fechamento de janelas nos caminhos de reorganização de projeto e de regeneração na movimentação de sessão.
+A confirmar: um teste de ida e volta entre dois motores de banco com a mesma consulta `as_of` nos dois sentidos, citado no plano original. Não encontrei esse teste; existe um teste de troca de entidades, mas sem a ida e volta entre motores. Confirmado no código: a reorganização (`reorg`) fecha as duas janelas de todas as versões atuais do workspace no mesmo instante (ver [temporal.md](temporal.md)).
 
 ## 9. Decisões registradas
 

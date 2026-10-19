@@ -60,20 +60,24 @@ O relógio de atividade compartilhado é exposto para o ciclo de sonho.
   transporte, do cabeçalho `x-memory-actor-session-id`, do identificador de sessão nativo e do
   cabeçalho `mcp-session-id`. O roteador de hooks precisa usar a mesma regra; caso contrário,
   leituras e escritas do mesmo operador caem em slots diferentes do projeto ativo.
-- **Leitura:** retorna o escopo e a origem da escolha. A precedência é:
-  1. `project` explícito no workspace ativo do ator;
-  2. `project` explícito no workspace padrão do servidor;
-  3. ponteiro de projeto ativo do ator (publicado pelos hooks);
-  4. projeto padrão passado na inicialização (`--project`).
+- **Leitura:** retorna o escopo e a origem da escolha (`resolved_by`). Os valores no fio de `resolved_by` são:
+  - `"explicit"` (`workspace`/`project` explícito);
+  - `"active_project"` (ponteiro de projeto ativo com chave de ator correspondente);
+  - `"active_project_shared"` (slot único compartilhado do processo);
+  - `"active_project_fallback"` (semente de inicialização `startup_seed`);
+  - `"default"` (escopo padrão porque o ponteiro estava `Unset`);
+  - `"default_fallback"` (escopo padrão após `Mismatch` do ponteiro em leitura).
 
-  Quando a origem é uma **substituição de fallback** (`startup_seed` ou `default_after_mismatch`),
+  Quando a origem é uma **substituição de fallback** (`active_project_fallback` ou `default_fallback`),
   o servidor registra um aviso. Isso acontece quando um cliente MCP estático responde por um
   projeto que nunca foi nomeado.
 - **Escrita:** cria workspace e projeto nomeados se não existirem.
-  Sem `project` explícito, usa o ponteiro ativo. Com `project` mas sem `workspace`, usa o workspace
-  **do ponteiro**, e não o padrão do servidor, para não recriar `default/<projeto>` sem querer.
-  Se o ponteiro não corresponder ao que foi pedido, a escrita falha com erro de escrita não
-  ambígua; nunca grava silenciosamente no padrão.
+  Sem `project` explícito, consulta o ponteiro ativo:
+  - se houver correspondência (`Matched`, `MatchedShared` ou `StartupSeed`), usa o escopo do ponteiro;
+  - se o ponteiro estiver **`Unset`** (nenhuma entrada com chave foi publicada neste processo e o slot único está vazio, ex.: modo `stdio` ou servidor recém-iniciado), cai para o escopo padrão configurado (`default/scratch`);
+  - se o ponteiro estiver em **`Mismatch`** (já houve publicação com chave no processo ou o usuário tem entrada somente-identidade, e a coordenada do chamador não casa), a escrita é recusada com erro JSON-RPC `-32602` (`ambiguous unscoped write`); nunca grava silenciosamente no padrão quando há ambiguidade.
+  Com `project` mas sem `workspace`, usa o workspace **do ponteiro** (quando resolvido), e não o padrão do servidor, para não recriar `default/<projeto>` sem querer.
+- **Protocolo de erros das ferramentas MCP:** falhas de validação, escopo ausente/ambíguo ou página/sessão/handoff não encontrado retornam **erro JSON-RPC** (`-32602` para parâmetros/escopo inválidos, `-32600` com `data: {reason: "precondition_failed", path, expected_page_id, current_page_id}` para conflito de versão esperada, e `-32603` para entidade não encontrada, permissão negada ou falha de armazenamento), e não resultado de ferramenta com `isError: true`.
 - **Múltiplos escopos** (`scopes`: lista de pares `{workspace, project}`, no máximo **25**).
   Resolve cada par como existente, sem criar.
 - **Aliases** nos parâmetros: `query` aceita também `q` e `search`; limites aceitam `n` ou `top_k`
@@ -164,7 +168,7 @@ Fluxo:
      síntese sobre a base de **2000** tokens: `minimal` 1×, `low` 1,5×, `medium` 2×, `high` 3×,
      `max` 4×. Valor desconhecido é rejeitado. Não há campo de raciocínio por requisição fora desse.
 10. **Resposta:** `hits`, `answer` (opcional), `answer_unavailable`
-    (opcional), `raw_hits`, `global_hits`, `global_scope_hits` e `streams_active`.
+    (opcional), `raw_hits` (opcional), `global_hits` (opcional), `global_scope_hits` (opcional) e `streams_active` (opcional).
     - `streams_active` só aparece com `explain`. Em consulta normal lista `fts`, `entity`, `vector`
       (somente se houve vetor), `abstract` (somente se houve vetor e a configuração de vetores de
       resumo está ativa) e `graph`.
@@ -174,33 +178,27 @@ Fluxo:
 ### 3.2 Demais ferramentas de leitura
 
 - **`memory_recent`:** páginas mais recentes por `updated_at` decrescente. Limite padrão do servidor
-  (10), limitado a 1..100.
+  (10), limitado a 1..100 (aceita alias `n`). Retorna `{ recent: [...] }`.
 - **`memory_read_page`:** lê uma página por `path` ou por `query`.
-  - Se os dois forem dados, `path` tem precedência.
+  - Se os dois forem dados, `path` tem precedência. Se nenhum for dado, retorna erro `-32602`.
   - Com `query`, faz busca FTS e devolve o corpo completo do primeiro resultado.
-  - Retorna `path`, `title`, `body` e `frontmatter`. Quando o arquivo Markdown falta e a página é
-    servida do banco, inclui `served_from`.
-  - Erro se a página não existe no escopo resolvido.
-  - `include_related` (opt-in) percorre o grafo de links em volta da página e devolve `related`.
-    Cada item traz `path`, `title`, `kind`, `workspace`, `project`, `depth` e `direction` (`link` ou
-    `backlink`). A profundidade vem de `related_depth` (padrão 1, máximo **3**) e o resultado tem no
-    máximo **50** nós. O percurso considera projetos cruzados. Sem a opção, `related` não aparece.
+  - Retorna `page_id`, `path`, `title`, `body` e `frontmatter` (mais `expired: true` quando a página está expirada). Quando o arquivo Markdown falta no disco e a página é
+    servida do banco, inclui `served_from: "db-fallback"`.
+  - Erro `-32603` se a página não existe no escopo resolvido.
+  - `related` (booleano opt-in, padrão `false`) percorre o grafo de links em volta da página e devolve `related`.
+    Com `related_depth = 1` (padrão), `related` tem `{ links, backlinks }`. Com `related_depth` em `2..3`, `related` tem `{ depth, nodes }` (onde cada nó traz `path`, `title`, `kind`, `workspace`, `project`, `depth` e `direction` `link` ou `backlink`, limitado a **50** nós, incluindo projetos cruzados). Sem `related: true`, o campo `related` é omitido.
   - Em caso de sucesso, reforça a página lida e os vizinhos percorridos (mesmo incremento de acesso
     descrito em 3.1, com a mesma janela por operador). Leitura com erro não reforça nada.
 - **`memory_read_session_observations`:** observações brutas de uma sessão, com paginação.
-  - `session_id` é opcional. Sem ele, usa a sessão concluída mais recente visível no projeto.
-  - `limit` padrão **50**, máximo **200**.
+  - `session_id` é obrigatório (UUID da sessão). Aceita filtros opcionais `kinds` (lista de tipos de observação) e `query` (busca FTS nas observações da sessão).
+  - `offset` padrão **0**; `limit` padrão **50**, limitado a **1..200**.
   - `body_max_chars` padrão **4000**, limitado a **200..16 384**. Corpo acima do limite é cortado com
-    marcador.
-  - `order` padrão crescente.
-  - A resposta traz `total` e `elided_other_scope` (contagem de itens de outro escopo que foram
-    omitidos).
-- **`memory_status`:** contagens e `scope` com `resolved_by`, que informa a origem da escolha
-  (ver 2.1).
-- **`memory_briefing`:** snapshot estruturado.
-  - `pinned`: até **10** páginas fixadas.
-  - `settled` (somente com `settled_first=true`): até **8** páginas, ordenadas por evidência e depois
-    por recência.
+    marcador `\n… [truncated <N> chars]`.
+  - `order`: `"asc"` (padrão) ou `"desc"`.
+  - A resposta traz `{ session, observations, total, offset, limit, order, elided_other_scope, body_max_chars }`.
+- **`memory_status`:** retorna `{ counts: { pages_latest, pages_all, sessions, observations, evidence_rows }, scope: { workspace, project, resolved_by } }` (ver 2.1).
+- **`memory_briefing`:** snapshot estruturado com parâmetros `recent_pages_limit` (padrão 10, limitado a 1..100) e `settled_first` (padrão `false`).
+  - Retorna `counts`, `activity_7d`, `activity_30d`, `last_observation_at`, `pending_handoff_count`, `pending_message_count`, `rules`, `slots`, `recent_pages`, `cross_project_dependents`, `cross_project_dependencies`, `scope`, mais `pinned` (até **10** páginas fixadas, omitido se vazio) e `settled` (somente com `settled_first=true`: até **8** páginas atuais e não expiradas cujo tipo derivado é `rule` ou `decision` — fixadas ou não —, cada uma com `path`, `title`, `kind` e `evidence_count`, ordenadas por contagem de registros de evidência decrescente e depois por `updated_at` decrescente).
 - **`memory_explore`:** digest em prosa feito pelo LLM, com o prompt de sistema do digest (ver
   [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md)). Orçamento base de
   **16 000** tokens, escalado por `reasoning` da mesma forma que em 3.1.
@@ -214,24 +212,22 @@ Fluxo:
 ### 3.3 Ferramentas de escrita
 
 - **`memory_write_page`:**
-  - `tier` padrão: **`semantic`**, exceto quando o caminho da página é a página da sessão
-    (`sessions/<id>.md`). Nesse caso o padrão é **`episodic`**, para que a escrita direta e a
-    consolidação concordem.
+  - `tier` padrão: **`episodic`** quando omitido (`working`, `episodic`, `semantic` ou `procedural`).
   - Valida o caminho e exige que ele seja portável.
   - `scope` aceita:
-    - `"global"`: escreve no escopo reservado `_global`. Não combina com `workspace` nem `project`;
+    - `"global"`: escreve no escopo reservado `default/_global`. Não combina com `workspace` nem `project`;
     - `"profile"`: escreve no perfil entre projetos. Não combina com `workspace` nem `project`;
-    - qualquer outro valor: erro com os valores aceitos.
+    - qualquer outro valor: erro `-32602` com os valores aceitos.
   - `session_id` e `scope` não podem ser usados juntos: uma sessão pertence a um projeto.
-  - Frontmatter aceita `title`, `tags`, `pinned` e `expires_at` (formato RFC 3339 ou `AAAA-MM-DD`).
+  - Aceita controle de concorrência otimista: `expected_page_id` (UUID da versão atual esperada) e `create_only` (booleano; falha se a página já existir). Em caso de divergência, retorna erro JSON-RPC `-32600` com `data: { reason: "precondition_failed", path, expected_page_id, current_page_id }`.
+  - Frontmatter aceita `title`, `tags`, `pinned` (padrão `false`; páginas sob `_slots/` são sempre fixadas), `expires_at` (formato RFC 3339 ou `AAAA-MM-DD`) e metadados OKF (`kind`, `entities`, `abstract`, `relations`, `applies_to`, `enforced_by`).
     Validação completa é feita pela wiki.
   - Identidade do ator e do autor vem da camada de autenticação. A cadeia de admissão só é
     acionada se houver ator identificado ou lista de pulo.
-  - Depois da escrita, tenta um checkpoint (commit). Falha no checkpoint gera aviso, não erro.
-  - Resposta: identificador da página, caminho e checkpoint.
-- **`memory_delete_page`:** operação de exclusão. A resposta informa `deleted: true`, junto com os
-  checkpoints anterior e posterior. Comportamento para página inexistente a confirmar.
-  `scope: "profile"` é aceito e não combina com `workspace` nem `project`.
+  - Antes da escrita tenta um checkpoint prévio (`pre-checkpoint before mcp write-page <path>`) e depois da escrita tenta um checkpoint (`mcp write-page <path>`). Falha no checkpoint gera aviso, não erro.
+  - Resposta: `{ page_id, path, checkpoint }` (e `manifest_warning` opcional).
+- **`memory_delete_page`:** operação de exclusão física de todas as versões do caminho no banco e do arquivo em disco (com limpeza de entidades órfãs e registro em `audit_log` se alguma linha foi apagada). Aceita `expected_page_id` opcional (retornando `-32600` `precondition_failed` se a versão atual divergir ou se a página não existir). Sem `expected_page_id`, a operação é idempotente e retorna sempre `{ path, deleted: true, pre_checkpoint?, checkpoint? }`.
+  `scope: "profile"` é aceito e não combina com `workspace` nem `project` (`scope: "global"` não é aceito na exclusão).
 - **`memory_feedback`:** tipos `helpful`, `not_helpful`, `stale` ou `wrong`. O motivo é opcional:
   é higienizado (removem-se segredos, depois colapsam-se espaços) e cortado em **500** caracteres.
 - **`memory_consolidate`:** consolida uma sessão em uma página ou em várias (`multi_page=true`).
@@ -251,19 +247,15 @@ Fluxo:
 
 - `begin`:
   - honra o `workspace` informado na resolução de escopo de **escrita**;
-  - o resumo e os itens passam por sanitização e são limitados: resumo **3000** caracteres; cada
-    item **1500**; cada caminho de arquivo **512**; listas de texto **6000** caracteres no total e
-    listas de arquivos **4096**; no máximo **20** itens por lista;
+  - aceita `summary` (obrigatório), `next_steps`, `open_questions`, `files_touched`, `from_agent` (padrão `"mcp"`), `to_agent`, `cwd`, `session_id` e `shared` (padrão `false`);
+  - o resumo e os itens passam por sanitização e são truncados com sufixo explícito (nunca rejeitados por tamanho): resumo **3000** caracteres (`\n… [handoff summary truncated at 3000 chars]`); cada item **1500** (`\n[<label> truncated; <omitted> chars omitted]`); cada caminho de arquivo **512**; listas de texto **6000** caracteres no total e listas de arquivos **4096**; no máximo **20** itens por lista (`[<list_label> truncated; <N> additional item(s) omitted]`);
   - o dono é o criador. Com `shared=true`, o dono fica vazio e qualquer operador pode pegar o
     bastão;
   - a autorização de criação ocorre **antes** da inserção; os observadores são notificados depois;
-  - o retorno traz o identificador do bastão.
-- `list`: não reivindica nada. Limite padrão **50**, máximo **200**. Só o administrador pode usar
-  `any_owner=true`.
-- `accept`: reivindica um bastão pelo identificador exato, com comparação atômica (só uma sessão
-  concorrente vence). `any_owner=true` só para administrador.
-- `cancel`: marca como expirado o bastão com o identificador exato, para que a próxima sessão não o
-  consuma.
+  - o retorno traz `{ handoff_id, created_at }`.
+- `list`: não reivindica nada. Aceita `state` (`"open"` [padrão], `"accepted"`, `"expired"` ou `"all"`), `limit` (padrão **20**, limitado a **1..100**) e `all_owners` (booleano; só o administrador pode usar `all_owners=true`). Retorna `{ handoffs: [...] }`.
+- `accept`: reivindica um bastão pelo identificador exato (`handoff_id`) ou o melhor candidato para `cwd`, com comparação atômica (só uma sessão concorrente vence). Não aplica o filtro de 10 minutos de sessão viva, mas executa a varredura pós-reivindicação quando reivindica um handoff automático. `all_owners=true` só para administrador. Retorna `{ handoff: <objeto|null>, status: "claimed" | "consumed_by_hook" | "none_pending" }`.
+- `cancel`: marca como expirado o bastão com o identificador exato (`handoff_id`). `all_owners=true` só para administrador. Se não encontrado ou invisível ao operador, retorna erro JSON-RPC `-32603`; se cancelado agora, retorna `{ handoff_id, cancelled: true, state: "expired" }`; se já estava fechado, retorna `{ handoff_id, cancelled: false, state: "accepted" | "expired" }`.
 
 **Mensagens entre projetos:**
 
@@ -307,7 +299,7 @@ um token vazio como autenticação de administrador.
 Ordem de avaliação:
 
 1. Token vazio: **rejeitado**.
-2. **Administrador:** comparação em tempo constante com o token raiz. Se bate, injeta o ator do
+2. **Administrador:** comparação em tempo constante com o token raiz (comparando os digests SHA-256 de 32 bytes do token fornecido e do esperado para não vazar o comprimento do token). Se bate, injeta o ator do
    administrador e o nível de administrador.
 3. **Proxy de identidade confiável.** Só vale com token portador explícito. Nunca vale com Basic
    nem com cookie. A comparação com o token do proxy é em tempo constante. Depois lê os cabeçalhos
@@ -331,12 +323,11 @@ ignorados. O esquema `Bearer` é comparado sem diferenciar maiúsculas.
 
 ### 4.3 Rotas de máquina
 
-Valem para `/mcp`, `/hook`, `/handoff` e `/workstream/*`:
+Valem para `/mcp`, `/hook`, `/hook/batch`, `/handoff` e `/workstream/*` (todas atrás do filtro externo de cabeçalho `Host`, que responde `400 missing Host header` quando ausente e `403 forbidden host` quando fora de `allowed_hosts`):
 
 - autenticado: segue;
-- sem autoridade configurada: **passagem anônima** (acesso local sem configuração). Um token portador
-  antigo é tratado como anônimo;
-- caso contrário: **401** com `WWW-Authenticate: Bearer realm="ai-memory", error="invalid_token"`.
+- sem autoridade configurada: **passagem anônima** (acesso local sem configuração), sujeita à proteção contra requisições cross-origin de navegador (`Sec-Fetch-Site`, `Origin`, `Sec-Fetch-Dest` e exigência de `X-AI-Memory-Client` em `GET /handoff` quando não-loopback ou com cabeçalhos de encaminhamento). Um token portador antigo é tratado como anônimo;
+- caso contrário: **401** com cabeçalho `WWW-Authenticate: Bearer` e corpo JSON `{"error": "unauthorized: missing or invalid Authorization: Bearer <token> header"}`.
   Nunca anuncia Basic.
 
 Sessões web **nunca** autenticam `/mcp`.
@@ -441,7 +432,7 @@ operadores gera **500** `admin authorization unavailable`.
 | Bastões e mensagens | `POST /admin/handoffs/expire`, `POST /admin/messages/send`, `POST /admin/messages/pop`, `POST /admin/messages/cancel` |
 | Ciclo de vida | `POST /admin/purge-project`, `POST /admin/purge-session`, `POST /admin/rename-project`, `POST /admin/rename-workspace`, `POST /admin/move-project`, `POST /admin/move-session`, `POST /admin/merge-workspace`, `POST /admin/delete-workspace` |
 | Páginas | `POST /admin/write-page`, `POST /admin/delete-page` |
-| Usuários e credenciais | `GET` e `POST /admin/users`; `POST /admin/human-users`; `PATCH /admin/users/{username}`; `POST` em `/admin/users/{username}/` com `expire`, `revive`, `rotate-token`, `reset-password`, `disable`, `enable`, `grant` e `revoke`; `GET /admin/users/{username}/grants`; `GET` e `POST /admin/api-credentials`; `POST /admin/api-credentials/{id}/rotate`; `POST /admin/api-credentials/{id}/revoke` |
+| Usuários e credenciais | `GET /admin/users`; `POST /admin/human-users`; `PATCH /admin/users/{username}`; `POST` em `/admin/users/{username}/` com `reset-password`, `disable`, `enable`, `grant` e `revoke`; `GET /admin/users/{username}/grants`; `GET` e `POST /admin/api-credentials`; `POST /admin/api-credentials/{id}/rotate`; `POST /admin/api-credentials/{id}/revoke` |
 
 Regras relevantes:
 

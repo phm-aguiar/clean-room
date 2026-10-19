@@ -92,7 +92,21 @@ tool and the admin write endpoint:
   file name on every supported system. Reserved characters, a trailing dot or
   space, reserved device names and a `.git` component are all rejected.
 - If any target breaks a rule, the whole write is rejected with a validation
-  error and nothing is saved.
+  error and nothing is saved. The error text is `invalid or oversized page
+  metadata: relations`. An unknown relation key, or a value that is not a list
+  of strings, is rejected earlier, when the request is parsed.
+
+Validation order for each target on the public surface: (1) at most 1024
+characters and no control character (tab and newline count as control); (2) if
+it contains `:`, split at the **first** `:`: the left part is the qualifier and
+must split on `/` into at most 2 components, none empty after trimming, none
+different from its trimmed form, none equal to `.` or `..`; (3) the path part
+is trimmed; its last segment must not be empty or exactly `.md`; if the last
+segment contains a `.`, the path must end in `.md` (so `notes/v1.2` is
+rejected), otherwise `.md` is appended; (4) the result must be a valid page
+path and portable. Total target count is checked first, over all relation keys.
+Duplicate targets are not an error on this surface (storage keeps one row per
+target and label).
 
 Page files and consolidator output have **no count or length cap**. Their
 targets are checked only against the target rules above. The portability
@@ -109,7 +123,10 @@ usually resolves to nothing.
 | Consolidator output | Cannot occur: the output has three fixed fields, and other keys are dropped | Dropped by the target rules | Not limited |
 
 A value under a valid key that is not a list is rejected on the public write
-surface. On the file path it is ignored without a warning.
+surface. On the file path it is ignored without a warning;
+list items that are not strings are silently skipped, and a `relations` value that is not a
+mapping contributes nothing. In the file path, a skipped unknown key or non-page target logs
+a warning with the value cut to 200 bytes.
 
 ## Storage
 
@@ -127,6 +144,14 @@ surface. On the file path it is ignored without a warning.
   page at that path is written later, every matching row is repointed to the
   new latest version, including rows that were already resolved. If the target
   is hard-deleted, its rows stay in place and become unresolved.
+- The repointing runs in the same transaction on **every** page write that
+  creates a version: supersession, resurrection of a tombstoned path, and a brand
+  new chain. It updates all link rows (of any source version) that name the path:
+  bare targets from pages of the same project; `project:path` targets (and
+  `workspace/project:path`, or no workspace meaning the source's workspace) that
+  name this page's project; and, when the written page is `default/_global`,
+  also `_global:path` rows stored without a workspace. A content-identical
+  rewrite creates no version and repoints nothing.
 - No migration is needed. Existing link rows are plain references, so older
   stores need no rewrite.
 
@@ -176,7 +201,9 @@ this part runs whether or not the model-based passes are enabled.
   expansion is fused with the other streams by reciprocal rank fusion, with
   constant 60. The label does **not** change ranking.
 - **Search explanations** report the label of an expansion hop in the `edge`
-  field when the label is not `references`.
+  field when the label is not `references`. The field lives inside the hit's
+  `graph_via` object (`seed_path`, `direction` = `outgoing` or `incoming`,
+  `edge`); `edge` is omitted for plain links.
 - **Related walk** (page read with related depth). Depth is 1 by default and
   is clamped to at most 3. At most 50 related pages are returned, each page
   appears once, and the seed page is never returned. The walk follows every
@@ -184,6 +211,13 @@ this part runs whether or not the model-based passes are enabled.
 - **Page link listings** show each linked page once per direction. A page
   linked both by a typed edge and a plain link appears once.
 - **Status** reports, per relation, how many typed links come from latest pages.
+  This lives only in the administrative status (`GET /admin/status`, section
+  `derived`, field `typed_links_from_latest_pages`, a list of `[relation, count]`
+  pairs ordered by relation name) and in the CLI `status`; the MCP
+  `memory_status` tool does not carry it. The count is store-wide (all
+  workspaces and projects), counts every link row whose label is not
+  `references` and whose source row is a latest version (expired pages
+  included), and omits relations with zero rows.
 
 There is no relation-specific ranking weight, and no traversal of fix or cause
 chains beyond one hop in search. Both are deferred until an evaluation justifies

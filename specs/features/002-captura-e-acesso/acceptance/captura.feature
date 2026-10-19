@@ -49,9 +49,9 @@ Funcionalidade: Captura e acesso (hooks, sessões, handoffs, MCP e CLI)
     E a resposta informa de qual dessas origens veio o escopo
 
   @alternativo
-  Cenário: Escrita sem escopo e sem ponteiro resolvido é recusada como ambígua
+  Cenário: Escrita sem escopo com ponteiro ativo divergente é recusada como ambígua
     Dado que a escrita não informa escopo
-    E que nenhum ponteiro de projeto ativo foi resolvido
+    E que o ponteiro de projeto ativo já recebeu entradas mas não possui entrada para a sessão do agente (Mismatch)
     Quando o agente pede a escrita de uma página
     Então a escrita é recusada como escrita ambígua
     E nada é gravado no escopo padrão

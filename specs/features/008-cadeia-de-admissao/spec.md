@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 008
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando as features anteriores terminarem)
+- **Status:** draft (revisada contra os docs em 2026-10-13; **auditada contra o comportamento do original e corrigida em 2026-10-19** — `admission-webhooks.md` atualizado; `plan.md` e `tasks.md` precisam ser regenerados)
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 007 (ator identificado e capacidade de pular a cadeia), 002 a 004 (operações admitidas)
@@ -18,8 +18,10 @@ O operador quer estender o comportamento sem mudar o motor: acrescentar campos a
 
 ### Dentro do escopo
 - **Configuração** `[[admission_webhooks]]` (`name`, `url`, `timeout_ms` 2000 com corte em 1..30000, `failure_policy` `ignore`|`reject`, `events`, `blocking` padrão `true`) e `AI_MEMORY_ADMISSION_WEBHOOKS_JSON`, que substitui a lista; mais de 16 ganchos impede a subida; lista vazia não monta a cadeia (`docs/admission-webhooks.md` §7 e §8).
-- **Escrita de página** na ordem do §2.1: higienização, `last_modified_by`, nomes resolvidos, bloqueantes em ordem (cada um vê a página deixada pelo anterior), nova higienização, normalização e derivação de título e links, instalação e índice, não bloqueantes com a página final.
-- **Operações de notificação** (`delete`, `purge_project`, `purge_session`, `purge_workspace`, `move_project`, `move_session`) com bloqueantes antes e `partial_failure` nas purgas (§2.2, §2.8, §3.1).
+- **Escrita de página** na ordem do §2.1 (corrigida): higienização, `last_modified_by`, nomes resolvidos, bloqueantes em ordem (cada um vê a página deixada pelo anterior), nova higienização do corpo e de todo texto do frontmatter, normalização (tier e pinned forçados, conformidade OKF com `generated.at`), derivação de título e links, **validação final de `expires_at` e `entities`** (erro aborta antes de gravar, inclusive vindo da saída de um gancho), instalação do arquivo com instantâneo para reversão sob trava por caminho, linha no índice (falha restaura o arquivo; falha da restauração dá `INCONSISTENT STATE: …`), embedding (falha só registrada), não bloqueantes com a página final.
+- **Erros e classificação** (§4 do doc, textos exatos): `admission webhook <nome> status <código e frase>: <corpo>` e `admission webhook <nome> request failed: <erro>`; "indisponível" = erro de transporte, tempo esgotado, 5xx, 408 ou 429 (usado pela escrita de auto-melhoria, 022).
+- **As 15 operações** do original (o doc dizia 14; a 15ª é `delete_event_ledger`): `write_page`, `consolidate`, `delete`, `delete_event_ledger`, `purge_project`, `purge_session`, `purge_workspace`, `move_project`, `move_session`, `handoff_begin`, `handoff_accept`, `handoff_cancel`, `message_send`, `message_pop`, `message_cancel`. Nome desconhecido em `events` faz a configuração falhar na carga.
+- **Operações de notificação** (`delete`, `delete_event_ledger`, `purge_project`, `purge_session`, `purge_workspace`, `move_project`, `move_session`) com bloqueantes antes e `partial_failure` nas purgas (§2.2, §2.8, §3.1). `delete_event_ledger` é a passagem de retenção de ledgers da 004: o caminho enviado é o **nome do arquivo** do ledger, os bloqueantes rodam antes da remoção (recusa por `reject` mantém o arquivo e conta `ledgers_undeleted`), os não bloqueantes são disparados depois com frontmatter nulo e corpo vazio.
 - **Handoffs: decidir, agir, notificar** (`handoff_begin`, `handoff_accept`, `handoff_cancel`; §2.4): só bloqueantes com `reject` decidem; observadores só depois de a operação acontecer; fim de sessão sem handoff em recusa; aceitação no início de sessão com prazo total de 750 ms, deixando o handoff aberto em recusa ou estouro.
 - **Pré-voo de consolidação** (`consolidate`, §2.5) para as escritas que já existem com esse op: relatório de lint (004). A consolidação por LLM chega com a 016.
 - **Contrato** de requisição e resposta (§3): cabeçalho `X-Memory-Op`, corpo `page` e `ctx` (`actor` com campos omitidos quando desconhecidos), resposta 200 com `page.frontmatter`/`page.body`, 204, 2xx ilegível ou acima de 1 MiB como "sem mudança", 4xx/5xx pela política.

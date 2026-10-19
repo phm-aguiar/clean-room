@@ -66,7 +66,7 @@ max-rounds: 40
 
 ### 2A Storage
 
-- [ ] **T006:** Criar a purga de projeto em transação única (contagens de prévia, cascata, colaterais, tombstone de escopo e auditoria), com teste
+- [ ] **T006:** Criar a purga de projeto em transação única (suporte a `project` ou `project_id`, contagens de prévia, cascata incluindo `profile_candidates` e `ingest_keys`, colaterais, tombstone de escopo e auditoria), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T005
@@ -75,7 +75,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/lifecycle_purge_project.go`, `internal/storage/lifecycle_purge_project_test.go`
   - **Wiki-Keywords:** purge-project, cascata, colaterais, auditoria
 
-- [ ] **T007:** Criar a purga de sessão em transação única (coleta por id e pela marca `session_id`, colaterais, tombstone e auditoria), com teste
+- [ ] **T007:** Criar a purga de sessão (resolução de escopo por `session_id`, prévia somente-leitura via `COUNT(*)`, exclusão transacional de `summary_page_id`, `pages` em `sessions/<session_id>.md` e frontmatter `session_id` no escopo, `profile_candidates`, `ingest_keys`, colaterais, tombstone e auditoria), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T005
@@ -84,7 +84,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/lifecycle_purge_session.go`, `internal/storage/lifecycle_purge_session_test.go`
   - **Wiki-Keywords:** purge-session, por id, marca de sessão, colaterais
 
-- [ ] **T008:** Criar a exclusão de workspace (checagem de não vazio, cascata, tombstone do workspace inteiro e auditoria), com teste
+- [ ] **T008:** Criar a exclusão de workspace (exige `confirm: true` quando `dry_run: false`, checagem de não vazio 409 mesmo em `dry_run: true` sem `force: true`, cascata por projeto e tombstone do workspace inteiro), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T005
@@ -102,7 +102,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/compact.go`, `internal/storage/compact_test.go`
   - **Wiki-Keywords:** compactação, rebuild FTS, VACUUM
 
-- [ ] **T010:** Criar a renomeação de projeto e de workspace (validação de nome, nome em uso, perfil reservado), com teste
+- [ ] **T010:** Criar a renomeação de projeto (`from` ou `project_id`) e de workspace (200 no-op se `from == to`, 422 para nome inválido ou `_profile`/`_profile.*`, 409 Conflict se destino já existe), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T001
@@ -111,7 +111,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/lifecycle_rename.go`, `internal/storage/lifecycle_rename_test.go`
   - **Wiki-Keywords:** rename-project, rename-workspace, validação de nome
 
-- [ ] **T011:** Criar a troca de `workspace_id` do movimento real de projeto em transação única, com teste
+- [ ] **T011:** Criar a troca de `workspace_id` do movimento real de projeto em transação única (com rollback do banco e remoção da entrada de `audit_log` se a renomeação do diretório em disco falhar depois), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T001
@@ -120,7 +120,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/lifecycle_move_project.go`, `internal/storage/lifecycle_move_project_test.go`
   - **Wiki-Keywords:** move-project, re-stamp de workspace, true move
 
-- [ ] **T012:** Criar o movimento de sessão (re-stamp por sessão, páginas `move` ou `regenerate`, `source_scopes`, simulação com rollback), com teste
+- [ ] **T012:** Criar o movimento de sessão (re-stamp de `sessions`, `observations`, `handoffs`, `profile_candidates` e `ingest_keys`, páginas `move|keep|regenerate`, `page_conflict = true` sem 409 se destino já existir, `source_scopes` e simulação), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T001
@@ -129,7 +129,7 @@ max-rounds: 40
   - **Arquivos:** `internal/storage/lifecycle_move_session.go`, `internal/storage/lifecycle_move_session_test.go`
   - **Wiki-Keywords:** move-session, source_scopes, re-home, regenerate
 
-- [ ] **T013:** Criar a expiração em lote dos handoffs abertos de um escopo, com teste
+- [ ] **T013:** Criar a expiração em lote dos handoffs abertos de um escopo (com suporte a `older_than_days`, `dry_run`, filtro de proprietário do chamador e registro em `audit_log`), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T001
@@ -150,7 +150,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/scope_tree.go`, `internal/wiki/scope_tree_test.go`
   - **Wiki-Keywords:** remoção de árvore, files_failed, trava exclusiva
 
-- [ ] **T015:** Criar o movimento do diretório de projeto para outro workspace com rollback, com teste
+- [ ] **T015:** Criar o movimento do diretório de projeto para outro workspace após o commit no banco, acionando a reversão do banco em caso de falha de I/O, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T004
@@ -159,7 +159,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/move_tree.go`, `internal/wiki/move_tree_test.go`
   - **Wiki-Keywords:** move-project, renomear diretório, rollback
 
-- [ ] **T016:** Criar a restauração de página a partir de um checkpoint git (leitura, validação, escrita atômica, reindex), com teste
+- [ ] **T016:** Criar a restauração de página a partir de um checkpoint git (`rev`: validação de `path` antes do escopo, leitura, escrita atômica, reindex), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T004
@@ -177,7 +177,7 @@ max-rounds: 40
   - **Arquivos:** `internal/wiki/checkpoints.go`, `internal/wiki/checkpoints_test.go`
   - **Wiki-Keywords:** checkpoints, commit manual, upgrade baseline
 
-- [ ] **T018:** Criar a cópia de páginas da fusão (comparação de conflito e políticas `block`, `overwrite` e `duplicate`) pelo `WritePage`, com teste
+- [ ] **T018:** Criar a cópia de páginas da fusão (comparação de conflito e políticas `block`, `overwrite` e `duplicate` com sufixos `-from-<slug>`, `-1`, `-2`, ... até `-9999`) pelo `WritePage`, com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T004
@@ -228,7 +228,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_after.go`, `internal/cli/admin_after_test.go`
   - **Wiki-Keywords:** ponteiro ativo, cache de escopo, invalidação
 
-- [ ] **T023:** Criar a rota `POST /admin/purge-project` na ordem do doc, com teste
+- [ ] **T023:** Criar a rota `POST /admin/purge-project` na ordem do doc (incluindo checagem 409 de lease vivo mesmo em `dry_run: true` sem `force: true`), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T006, T009, T014, T017, T022
@@ -237,7 +237,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_purge_project.go`, `internal/cli/admin_purge_project_test.go`
   - **Wiki-Keywords:** purge-project, lease, dry_run, compact
 
-- [ ] **T024:** Criar a rota `POST /admin/purge-session` na ordem do doc, com teste
+- [ ] **T024:** Criar a rota `POST /admin/purge-session` na ordem do doc (recebendo `{session_id, confirm, compact, dry_run}`), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T007, T009, T014, T017, T022
@@ -246,7 +246,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_purge_session.go`, `internal/cli/admin_purge_session_test.go`
   - **Wiki-Keywords:** purge-session, trava exclusiva, files_failed
 
-- [ ] **T025:** Criar a rota `POST /admin/delete-workspace` na ordem do doc, com teste
+- [ ] **T025:** Criar a rota `POST /admin/delete-workspace` na ordem do doc (`confirm` obrigatório quando `dry_run: false`; 409 se não vazio sem `force: true` mesmo em `dry_run: true`), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T008, T009, T014, T017, T022
@@ -255,7 +255,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_delete_workspace.go`, `internal/cli/admin_delete_workspace_test.go`
   - **Wiki-Keywords:** delete-workspace, force, dry_run
 
-- [ ] **T026:** Criar as rotas `POST /admin/rename-project` e `POST /admin/rename-workspace`, com teste
+- [ ] **T026:** Criar as rotas `POST /admin/rename-project` e `POST /admin/rename-workspace` (409 quando `to` já existe; 200 no-op quando `from == to`), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T010, T017, T019, T022
@@ -264,7 +264,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_rename.go`, `internal/cli/admin_rename_test.go`
   - **Wiki-Keywords:** rename-project, rename-workspace, manifest_warning
 
-- [ ] **T027:** Criar a rota `POST /admin/move-project` (movimento real e fusão por cópia e purga), com teste
+- [ ] **T027:** Criar a rota `POST /admin/move-project` (movimento real com banco primeiro e fusão por cópia e purga com commit `"move-project-partial ..."` quando `pages_skipped` não for vazio), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T006, T011, T015, T017, T018, T019, T022
@@ -273,7 +273,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_move_project.go`, `internal/cli/admin_move_project_test.go`
   - **Wiki-Keywords:** move-project, moved_via, copy-purge
 
-- [ ] **T028:** Criar a rota `POST /admin/move-session` (única e em lote), com teste
+- [ ] **T028:** Criar a rota `POST /admin/move-session` (`session_id` único e `session_ids[]` em lote, `to_workspace`, `to_project`, `create`, `pages: move|keep|regenerate`, `confirm`), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T012, T017, T022
@@ -282,7 +282,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_move_session.go`, `internal/cli/admin_move_session_test.go`
   - **Wiki-Keywords:** move-session, lote, simulação
 
-- [ ] **T029:** Criar as rotas `POST /admin/handoffs/expire`, `GET /admin/checkpoints`, `POST /admin/restore-page` e `POST /admin/commit`, com teste
+- [ ] **T029:** Criar as rotas `POST /admin/handoffs/expire`, `GET /admin/checkpoints`, `POST /admin/restore-page` (campo JSON `rev`) e `POST /admin/commit` (campo opcional `message`), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T013, T016, T017
@@ -291,7 +291,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_wiki_ops.go`, `internal/cli/admin_wiki_ops_test.go`
   - **Wiki-Keywords:** handoffs expire, checkpoints, restore-page, commit
 
-- [ ] **T050:** Criar a rota `POST /admin/merge-workspace` (move cada projeto do workspace de origem e apaga o workspace vazio), com teste
+- [ ] **T050:** Criar a rota `POST /admin/merge-workspace` (422 se `from == to`, filtra `_profile`/`_profile.*`, move cada projeto e aborta com `failed_project`/`reason`/`projects_merged` em erro parcial), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T027
@@ -300,7 +300,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/admin_merge_workspace.go`, `internal/cli/admin_merge_workspace_test.go`
   - **Wiki-Keywords:** merge-workspace, move-project, source_workspace_deleted
 
-- [ ] **T051:** Criar a rota `POST /admin/compact` (compactação isolada com `confirm` obrigatório e relatório de bytes), com teste
+- [ ] **T051:** Criar a rota `POST /admin/compact` (compactação isolada aceitando `{}` via HTTP e retornando `{bytes_before, bytes_after, bytes_reclaimed}`), com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T009
@@ -321,7 +321,7 @@ max-rounds: 40
 
 ### 2E CLI
 
-- [ ] **T031:** Criar os comandos `purge-project` e `purge-session` (prévia limitada a 5 s, recusa sem `--confirm`), com teste
+- [ ] **T031:** Criar os comandos `purge-project` (com `--project` ou `--project-id`) e `purge-session` (prévia limitada a 5 s, recusa sem `--confirm`), com teste
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T030
@@ -330,7 +330,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/purge_cmd.go`, `internal/cli/purge_cmd_test.go`
   - **Wiki-Keywords:** purge-project, purge-session, prévia de 5 s
 
-- [ ] **T032:** Criar os comandos `rename-project`, `move-project`, `move-session`, `handoffs --expire-all`, `checkpoints`, `restore-page`, `commit` e `compact`, com teste
+- [ ] **T032:** Criar os comandos `rename-project` (`--from` ou `--project-id`), `move-project` (`--project` ou `--project-id`), `move-session` (resolvendo `--from-project` via `GET /admin/sessions`), `handoffs --expire-all [--older-than-days]`, `checkpoints`, `restore-page --from <rev>`, `commit` e `compact --confirm`, com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T030
@@ -339,7 +339,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/lifecycle_cmds.go`, `internal/cli/lifecycle_cmds_test.go`
   - **Wiki-Keywords:** rename-project, move-project, move-session, handoffs, checkpoints, restore-page, commit, compact
 
-- [ ] **T033:** Criar o comando direto `restore --from --force` (estágio, validação, troca reversível), com teste
+- [ ] **T033:** Criar o comando direto `restore --from --force` (allowlist de entradas incluindo GNU Sparse `'S'`, fechamento explícito do SQLite de staging antes do rename no Windows, troca reversível via `.restore-previous-*`), com teste
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T001
@@ -357,7 +357,7 @@ max-rounds: 40
   - **Arquivos:** `internal/cli/reset_cmd.go`, `internal/cli/reset_cmd_test.go`
   - **Wiki-Keywords:** reset, dry-run, processo vivo
 
-- [ ] **T035:** Criar o comando `uninstall` simétrico ao `install-hooks` e `install-mcp` do Claude Code, com `--purge-data`, com teste
+- [ ] **T035:** Criar o comando `uninstall` simétrico ao `install-hooks` e `install-mcp` do Claude Code, com `--purge-data` vs `--keep-data`, `--yes` e `refuse_ambient_data_dir`, com teste
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T001
@@ -396,7 +396,7 @@ max-rounds: 40
   - **Arquivos:** `test/acceptance/lifecycle_failures_test.go`
   - **Wiki-Keywords:** 400, 404, 500, files_failed
 
-- [ ] **T039:** Implementar tratamento de erro: purga de projeto com execução gerenciada de lease vivo (409) e com `--force`
+- [ ] **T039:** Implementar tratamento de erro: purga de projeto com execução gerenciada de lease vivo (409 inclusive em `dry_run: true`) e com `--force`
   - **Papel:** executor
   - **agent:** executor3
   - **Dependências:** T023, T002
@@ -405,7 +405,7 @@ max-rounds: 40
   - **Arquivos:** `test/acceptance/purge_project_test.go`
   - **Wiki-Keywords:** purge-project, lease vivo, force
 
-- [ ] **T040:** Implementar edge case: movimento real preserva id e cadeia de supersessão; fusão com `block`, `overwrite` e `duplicate`
+- [ ] **T040:** Implementar edge case: movimento real preserva id e cadeia de supersessão (banco primeiro + rollback se disco falhar); fusão com `block`, `overwrite` e `duplicate` (`-from-<slug>`, `-1`, `-2`)
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T027, T002
@@ -414,7 +414,7 @@ max-rounds: 40
   - **Arquivos:** `test/acceptance/move_project_test.go`
   - **Wiki-Keywords:** true move, INV-16, fusão
 
-- [ ] **T041:** Implementar edge case: movimento de sessão espalhada, `regenerate`, re-home e guardas
+- [ ] **T041:** Implementar edge case: movimento de sessão espalhada, `regenerate`, `keep`, `page_conflict = true` (200 OK) e guardas
   - **Papel:** executor
   - **agent:** executor2
   - **Dependências:** T028, T002
@@ -432,7 +432,7 @@ max-rounds: 40
   - **Arquivos:** `test/acceptance/restore_reset_test.go`
   - **Wiki-Keywords:** restore, tarball malicioso, reset
 
-- [ ] **T043:** Implementar edge case: purga de sessão não afeta `sessions/<id>.md` de outro projeto nem página escrita à mão
+- [ ] **T043:** Implementar edge case: purga de sessão opera estritamente no escopo `(workspace_id, project_id)` da sessão e não afeta `sessions/<id>.md` de outro projeto
   - **Papel:** executor
   - **agent:** executor1
   - **Dependências:** T024, T002

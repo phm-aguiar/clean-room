@@ -153,7 +153,7 @@ A sent message therefore cannot be used to put text into a restricted project's 
 
 ### Managed-run mutations: owner and legacy policy (Implemented)
 
-A managed run belongs to the operator who opened it. A mutation on a run owned by a different operator is refused as forbidden, whatever grants that operator holds. How the root token is treated by this rule is **a confirmar**.
+A managed run belongs to the operator who opened it. A mutation on a run owned by a different operator is refused as forbidden (`managed run belongs to another operator`), whatever grants that operator holds. **Root is not exempt** (confirmed in the original): the owner test uses the caller's own identity key, and the root level only passes the project check. A root caller whose identity differs from the run's owner is refused with 403, and a root caller with no identity at all (no root username configured) is treated as unattributed and may mutate only runs with no owner. A run with no stored owner (single-operator installs, or opened by an unattributed caller) is admitted for everyone. The owner test runs before the project check, and the refusal never changes the run's state.
 
 The project check for these mutations has two policies:
 
@@ -226,7 +226,7 @@ The identity fields added to projects in a later migration are a separate change
 2. **Page evidence counts.** A bare-identifier operation named "page evidence counts" was described in the original design. No operation with that name exists in the current build. Whether an equivalent operation exists is **a confirmar**.
 3. **Consolidation of a session with no resolvable target.** When the session does not resolve to a target, no write check runs before consolidation. Where the write then lands is **a confirmar**.
 4. **Structural enforcement.** Making unguarded lookups private to the module, so that new call sites must go through the guarded resolver, is recommended. Whether it is fully applied is **a confirmar**.
-5. **Global scope grants.** Whether a grant can be created on the global scope is **a confirmar**. Writes to it are gated in any case.
+5. **Global scope grants.** Confirmed in the original: the grant operation itself has no special case for the global scope. It needs only that the project row exists (otherwise `NotFound`), so a `write` grant on the global scope can be created and then admits writes to it. Only changing the global scope's access **mode** is refused.
 
 ## Non-goals and proposals
 

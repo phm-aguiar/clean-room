@@ -2,9 +2,11 @@
 
 > **Escopo:** este documento contém partes que dependem de LLM ou de embeddings. Essas partes são opcionais e não fazem parte do escopo inicial, que funciona sem LLM. Podem ser removidas ou adiadas junto com as funções correspondentes.
 
-`ai-memory run` é um lançador opcional que permite a uma mesma sessão de trabalho de código passar entre Claude Code, Codex, OpenCode, OpenCode 2 (beta), Pi, Crush, Oh My Pi, Kimi Code, Command Code, Kiro CLI (motores v2 e v3), Grok Build e Antigravity CLI. Execuções diretas do harness mantêm o comportamento atual do ai-memory. Não há modo global nem comando `switch`: usar `run` seleciona o workstream atual e cria ou retoma, de forma transparente, a sessão nativa correta para o harness pedido.
+`ai-memory run` é um lançador opcional que permite a uma mesma sessão de trabalho de código passar entre Claude Code, Codex, OpenCode, OpenCode 2 (beta), Pi, Crush, Oh My Pi, Kimi Code, Command Code, Kiro CLI (motores v2 e v3), Grok Build, Antigravity CLI e GitHub Copilot CLI. Execuções diretas do harness mantêm o comportamento atual do ai-memory. Não há modo global nem comando `switch`: usar `run` seleciona o workstream atual e cria ou retoma, de forma transparente, a sessão nativa correta para o harness pedido. (Ao fim de uma execução interativa bem-sucedida o lançador oferece um menu para trocar de harness ou repetir a execução; ver [Menu depois da execução](#menu-depois-da-execução).)
 
-Este documento descreve o ciclo de vida de uma execução gerenciada: lease, heartbeat, estados, lançamento, contexto entregue, importação de eventos, cancelamento e jail. A leitura de transcrições de cada harness (formatos, cursores e normalização) está em [Adaptadores de harness gerenciados](harness-adapters.md) e não é repetida aqui.
+Este documento descreve o ciclo de vida de uma execução gerenciada: lease, heartbeat, estados, lançamento, contexto entregue, importação de eventos, cancelamento e jail. A leitura de transcrições de cada harness (formatos, cursores e normalização) está em [Adaptadores de harness gerenciados](harness-adapters.md) e não é repetida aqui. O contrato HTTP está em [API: gestão de workstreams](api-reference.md#6-gestão-de-workstreams-workstream) e a recuperação depois de uma queda do servidor em [Recuperação após queda do servidor](downtime-recovery.md).
+
+> **Nota de auditoria (2026-10-19).** Este documento foi auditado contra a implementação de referência (o Windows é a primeira plataforma). Foram acrescentados: flags e variáveis que faltavam, o menu pós-execução, o contrato exato de cada rota do servidor, os textos literais do pacote de contexto, os identificadores e o segmento gravado na importação, o registro local do cliente, a recuperação, e as particularidades do Windows (seção [Windows](#windows-primeira-plataforma)).
 
 **Recomendação:** `ai-memory run` é a forma preferida de iniciar um harness. Na primeira vez que um harness é lançado por ele, os hooks e o MCP do ai-memory desse harness são instalados automaticamente, se ainda não estiverem configurados (ver [Auto-wire](#auto-wire)). Assim, captura e recuperação funcionam sem `install-hooks` separado.
 
@@ -65,12 +67,26 @@ Sintaxe geral:
 ```text
 ai-memory run [--workspace NOME] [--project NOME]
               [--workstream NOME | --new NOME] [--executable CAMINHO]
-              [--yolo] [--fresh]
-              [claude|claude*|codex|opencode|opencode2|pi|crush|omp|kimi|command-code|kiro|grok|antigravity]
+              [--profile NOME] [--env CHAVE=VALOR]... [--env-file CAMINHO]
+              [--yolo] [--true-yolo] [--fresh] [--force-unlock] [--no-autowire]
+              [--require-server] [--jail[=LISTA] | --no-jail]
+              [claude|claude*|codex|opencode|opencode2|pi|crush|omp|kimi|command-code|kiro|grok|antigravity|copilot]
               [argumentos nativos...]
 ```
 
-Opções do próprio wrapper vêm antes do nome do harness. Depois do nome, tudo é passado ao harness como argumento nativo, com exceção destas flags exatas, que o wrapper consome e nunca repassa: `--yolo`, `--true-yolo`, `--fresh`, `--force-unlock`, `--no-autowire`, `--jail`, `--jail=LISTA` e `--no-jail`. Não é preciso `--` antes dos argumentos nativos.
+Nomes aceitos por harness (além dos de [Adaptadores de harness gerenciados](harness-adapters.md#harnesses-suportados)): `claude-code` e qualquer nome que comece com `claude` (Claude Code), `open-code` (OpenCode), `kimi-cli` (Kimi Code), `command-code`/`commandcode`/`cmdc`/`cmd` (Command Code), `kiro-cli` (Kiro), `grok-build`, `agy`/`antigravity-cli` e `copilot-cli`. Os alias que a tabela daquele documento lista valem igualmente aqui.
+
+Opções do próprio wrapper vêm antes do nome do harness. Depois do nome, tudo é passado ao harness como argumento nativo, byte a byte e na mesma ordem, com exceção destas flags exatas, que o wrapper consome e nunca repassa, onde quer que apareçam depois do nome: `--yolo`, `--true-yolo`, `--fresh`, `--force-unlock`, `--no-autowire`, `--jail`, `--jail=LISTA` e `--no-jail` (um `--jail`/`--no-jail` depois do nome vence o que veio antes dele; `--jail` e `--no-jail` juntos são erro: `--jail and --no-jail cannot be used together`). As demais (`--workspace`, `--project`, `--workstream`, `--new`, `--executable`, `--profile`, `--env`, `--env-file`, `--require-server`) só valem **antes** do nome do harness; depois dele são argumentos nativos comuns. Não é preciso `--` antes dos argumentos nativos. Sem nome de harness (modo automático), argumentos nativos e `--executable` são recusados.
+
+### Ambiente do processo filho: `--profile`, `--env`, `--env-file`
+
+- O filho recebe o ambiente do processo do lançador **mais** as sobreposições abaixo; nenhuma outra variável é herdada de fora desse conjunto, e o ambiente é montado explicitamente (o do processo é limpo e substituído pelo efetivo). No Windows os nomes de variável são comparados **sem diferenciar maiúsculas de minúsculas** (uma sobreposição `path` substitui `PATH`); nos demais sistemas a comparação é exata.
+- `--profile NOME` aplica o perfil `[run.profiles.NOME.env]` do `config.toml` (tabela de chave/valor, só de ambiente). Um nome que não existe é erro (`unknown run profile "NOME"; defined profiles: a, b`, ou, sem nenhum perfil definido, uma mensagem que mostra a tabela a acrescentar ao `config.toml`).
+- `--env-file CAMINHO` lê linhas `CHAVE=VALOR` (linhas em branco e as que começam com `#`, depois de aparadas, são ignoradas; uma linha que não é `CHAVE=VALOR` é erro com `caminho:linha`). `--env CHAVE=VALOR` pode ser repetido. Valores são literais: nada é expandido nem interpretado.
+- Precedência (do mais fraco ao mais forte): ambiente do processo, perfil, arquivo, `--env`. Uma chave repetida mantém a posição da primeira ocorrência e o valor da última.
+- As sobreposições alcançam o processo filho, a resolução do armazenamento nativo de sessões, a procura do executável (`PATH`, `PATHEXT`) e o auto-wire (por exemplo `CLAUDE_CONFIG_DIR`), para que hooks, MCP e importação concordem sobre o mesmo diretório de configuração.
+- Variáveis de uso exclusivo do lançador: `AI_MEMORY_RUN_ID`, `AI_MEMORY_WORKSTREAM_ID`, `AI_MEMORY_HOOK_URL` e `AI_MEMORY_PREVIOUS_SESSION_HISTORY` são definidas (ou removidas, no caso do dossiê quando não há troca de harness) pelo lançador depois de aplicar `--env`; um valor passado por `--env` para elas não chega ao filho.
+- Uma variável de diretório de armazenamento nativo (por exemplo o diretório de configuração do Claude) definida mas em branco conta como ausente para a resolução e é **removida** do ambiente do filho.
 
 ### Múltiplas contas Claude
 
@@ -104,7 +120,19 @@ ai-memory workstreams [--workspace NOME] [--project NOME]
 ai-memory workstreams --limit 50 --json
 ```
 
-A listagem usa o mesmo escopo de `run`, coloca o workstream atual primeiro e depois ordena por atividade recente. `--limit` tem padrão 20 e aceita de 1 a 100. Cada linha mostra os harnesses vinculados e o identificador estável. A resposta não expõe caminhos do host, fingerprints do repositório nem identificadores de sessão nativa.
+A listagem usa o mesmo escopo de `run`, coloca o workstream atual primeiro e depois ordena por atividade recente (data de atualização do workstream, desempate pelo identificador, do maior para o menor). `--limit` tem padrão 20 e aceita de 1 a 100. Cada linha mostra os harnesses vinculados e o identificador estável. A resposta não expõe caminhos do host, fingerprints do repositório nem identificadores de sessão nativa. O cliente envia só os dois fingerprints do checkout (calculados sem executar `git status`; ver [Identidade do checkout](harness-adapters.md#fingerprints)); o servidor nunca recebe nem escolhe o caminho.
+
+Saída legível:
+
+```text
+Managed workstreams for <workspace>/<projeto>:
+* <nome>  <idade da última atividade>  [<harness>, <harness>]
+    id: <uuid>
+  <outro nome>  <idade>  [no linked harnesses]
+    id: <uuid>
+```
+
+O `*` marca o workstream atual; a lista de harnesses usa os nomes de agente do fio (`claude-code`, `codex`, `open-code`, …) do vínculo mais recente para o mais antigo; `<idade>` é a idade relativa (`just now`, `5 minutes ago`, `2 hours ago`, `3 days ago`, `2 months ago`; ou `unknown activity` se a data não puder ser lida). Sem workstreams: a linha de título seguida de `No managed workstreams for this checkout.`. Com `--json` é impresso o arranjo JSON (indentado) de `{workstream_id, name, created_at, last_active_at, current, linked_harnesses[]}`, com datas RFC 3339 em UTC.
 
 ### Renomear
 
@@ -113,7 +141,7 @@ ai-memory rename-workstream --from typo-nmae --to refactor-db
 ai-memory rename-workstream --workstream-id 01a04092-… --to refactor-db
 ```
 
-A renomeação altera só o nome. As duas formas de selecionar (`--from` e `--workstream-id`) são mutuamente exclusivas; o identificador é o que `workstreams` mostra. O novo nome é validado como um nome de `--new`, e não pode coincidir com o de outro workstream do mesmo checkout (nesse caso é recusado, não mesclado).
+A renomeação altera só o nome. As duas formas de selecionar (`--from` e `--workstream-id`) são mutuamente exclusivas, e é erro passar nenhuma (`pass --from NAME or --workstream-id ID to choose the workstream to rename`); o identificador é o que `workstreams` mostra. O novo nome é validado como um nome de `--new`, e não pode coincidir com o de outro workstream do mesmo checkout (nesse caso é recusado com `409`, não mesclado). Renomear para o nome que ele já tem é sucesso sem escrita. Um identificador de outro checkout é tratado como inexistente (`404`). Saída: `Renamed workstream '<antigo>' to '<novo>'.` seguida de `    id: <uuid>`, ou `Workstream '<nome>' already has that name.`; com `--json`, o objeto `{workstream_id, from, to}` indentado.
 
 A renomeação não altera data de seleção nem data de atualização. Por isso não muda qual workstream o `run` sem seletor retoma, nem a ordem da listagem. Ledger, harnesses vinculados e execuções ativas usam o identificador, não o nome. Uma execução já ativa continua exibindo o nome com que foi lançada até sair.
 
@@ -124,7 +152,9 @@ A renomeação não altera data de seleção nem data de atualização. Por isso
 - **Workstream vazio:** a sessão mais recente do checkout é retomada sem perguntar.
 - **Workstream já estabelecido:** o servidor tem precedência. O lançador retoma o harness vinculado mais recentemente que ainda tenha uma sessão local utilizável. Não escolhe uma sessão mais nova de outro harness só porque o arquivo dela tem data posterior.
 - O modo automático aceita opções do wrapper, mas não argumentos nativos do harness nem `--executable`, porque o significado deles depende do harness escolhido.
-- Se não houver nenhuma sessão utilizável no conjunto automático, o comando sai com erro, não cria workstream e sugere os comandos explícitos (`ai-memory run <harness>`).
+- Se não houver nenhuma sessão utilizável no conjunto automático, o comando sai com erro, não cria workstream e sugere os comandos explícitos (`ai-memory run <harness>`): `no Claude Code, Codex, OpenCode, Pi, Crush, Kimi Code, Command Code, or Kiro CLI session was found for this directory; start one explicitly with `ai-memory run claude`, …`. Se há sessões locais mas o executável do harness delas não está no `PATH` do host, o erro é `checkout-local sessions were found, but their harness executables are not available in the host PATH: <executáveis>`. Falhas isoladas ao inspecionar o armazenamento de um harness viram o aviso `ai-memory: session scan skipped <harness>: <erro>` e a varredura continua; só se **todas** falham (e nada foi achado) o comando termina com `could not inspect checkout-local sessions: …`.
+- A varredura automática considera, por harness, a sessão mais recente do checkout, no armazenamento que o lançamento usaria (respeitando `--env`/`--profile`). Os candidatos são ordenados por data de modificação decrescente, desempate pelo nome do harness. Na ausência de sessão vinculada no servidor, o harness da primeira entrada é o provisório.
+- O servidor devolve o harness efetivo: para um workstream estabelecido, é o harness com sessão nativa vinculada mais recente que também esteja entre os candidatos locais; senão, o provisório. Um servidor antigo que não informa o harness faz o lançador usar a sessão local mais recente e avisar (`the server does not support managed harness precedence; using the newest checkout-local session. Upgrade the server for established-workstream selection`).
 
 ## Ordem do lançamento
 
@@ -133,8 +163,9 @@ Esta é a ordem real das etapas de `run`. As etapas 1 a 3 acontecem antes de qua
 1. **Checkout e harness.** Inspeciona o repositório (fingerprints e checkpoint inicial), resolve o harness (explícito ou automático) e confere se o executável existe. Erros nesta etapa não tocam o servidor.
 2. **Escopo.** Resolve `workspace` e `project` pelo marcador do checkout, com override pelas opções.
 3. **Decisão do jail.** Se foi pedido `--jail` explícito, o lançador já reexecuta dentro do jail aqui, antes de preparar qualquer execução. Ver [Jail](#jail-ai-jail).
-4. **Sondagem do servidor.** Uma requisição de saúde com timeout de 2 segundos. Se não houver conexão, o lançamento segue como degradado (ver [Servidor indisponível](#servidor-indisponível-lançamento-degradado)), a menos que `--require-server` (ou `AI_MEMORY_RUN_REQUIRE_SERVER`, ou `run.require_server` na configuração) esteja ativo. Qualquer resposta HTTP, mesmo de erro, conta como servidor alcançável.
-5. **Preparação.** `POST` de preparação: expira leases vencidos (de qualquer workstream do servidor), escolhe ou cria o workstream, cria a execução ativa com lease de 90 segundos e atualiza seleção e diretório do workstream, tudo em uma única transação. Se a preparação falhar (por exemplo, autenticação recusada ou workstream ocupado), o agente não é iniciado.
+4. **Sondagem do servidor.** `GET <URL do servidor><caminho base>/healthz` com timeout total de 2 segundos (sem retentativa). Se não houver conexão (recusada, DNS, timeout), o lançamento segue como degradado (ver [Servidor indisponível](#servidor-indisponível-lançamento-degradado)), a menos que `--require-server` (ou `AI_MEMORY_RUN_REQUIRE_SERVER`, ou `run.require_server` na configuração) esteja ativo; nesse caso o comando falha antes de iniciar o agente com o diagnóstico de conexão e o contexto `opening managed workstream; the agent was not started`. Qualquer resposta HTTP, mesmo 404, 405 ou 5xx, conta como servidor alcançável.
+5. **Preparação.** `POST /workstream/runs` (contrato em [api-reference.md](api-reference.md#6-gestão-de-workstreams-workstream)): expira leases vencidos (de qualquer workstream do servidor), escolhe ou cria o workstream, cria a execução ativa com lease de 90 segundos e atualiza seleção e diretório do workstream, tudo em uma única transação. O `lease_owner` enviado é `<nome do host>:<pid do lançador>` (`localhost` se o nome do host não puder ser lido). Se a preparação falhar (por exemplo, autenticação recusada ou workstream ocupado), o agente não é iniciado; o erro leva o contexto `opening managed workstream; the agent was not started`. Com `--force-unlock` não há retentativa nem espera (ver [Lease](#lease-heartbeat-e-recuperação)). Um aviso `manifest_warning` do servidor (renomeação de projeto promovida pela identidade git sem que o manifesto da wiki tenha sido regravado) é impresso como `ai-memory: warning: <aviso>` e não impede o lançamento.
+5a. **Interrupção.** Desde a preparação (e durante a espera por lease alheio, o seletor de sessão e a confirmação de `--yolo`) o lançador captura Ctrl+C (no Windows, o evento de console `CTRL_C_EVENT`; também `CTRL_BREAK`). Antes de o agente iniciar, uma interrupção cancela a execução (ver [Cancelamento](#cancelamento-e-códigos-de-saída)) e o comando termina com o erro `managed run interrupted before the agent started`.
 6. **Registro local.** Atualiza o registro de checkouts do cliente, usado por `continue`, `resume` e `show`. Falha nesse registro é aviso, não erro.
 7. **Harness resolvido pelo servidor.** No modo automático, o servidor indica o harness a usar. Se o servidor for antigo e não informar, usa a sessão mais recente do checkout e avisa.
 8. **Confirmação de `--yolo` e oferta de jail.** Se houve `--yolo` interativo, mostra o aviso e pergunta se deve prosseguir. Se a oferta de jail for aceita, o lease recém-criado é cancelado antes da reexecução.
