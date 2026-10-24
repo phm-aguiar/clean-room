@@ -195,16 +195,23 @@ usuário cadastrado ou quando há um proxy de identidade confiável configurado.
   (50); `rejection_context_days` (180); `max_final_body_chars` (limite de proposta, ver
   [auto-improvement-loop.md](auto-improvement-loop.md)); `max_rule_page_tokens` (2 000);
   `max_procedure_page_tokens` (2 000); `include_raw_fallback` (false); `proposal_actor` (`auto_improve`);
-  `pending_path` (`_pending/auto-improve`); `eval?` (portão externo de avaliação, ver
-  [auto-improve-eval-gates.md](auto-improve-eval-gates.md)).
-- Os campos `dry_run`, `stage` e `mode` foram removidos. Se enviados, a requisição falha fechada.
+  `pending_path` (`_pending/auto-improve`). O portão externo de avaliação é **só do servidor**
+  (`[auto_improve.eval]`, ver [auto-improve-eval-gates.md](auto-improve-eval-gates.md)): enviar `eval`
+  responde 422 `auto-improve eval request field was removed; configure [auto_improve.eval] on the
+  server`.
+- Os campos `dry_run`, `stage` e `mode` foram removidos. Se enviados, a requisição falha fechada
+  (422 `auto-improve dry_run/stage/mode request fields were removed; set
+  [auto_improve].require_approval = true for manual review`). Sem provedor: 503; sessão inexistente ou
+  de outro escopo: erro com `auto-improve failed: class=... status=...`.
+- Detalhes de formato (arquivo de revisão, página aprovada, conflitos, relatório de telemetria):
+  [auto-improvement-loop.md](auto-improvement-loop.md) seção "Formatos exatos".
 - Resposta: `{run_id, approval_required, approval_policy, session_id, summary, warnings[],
   rejected_candidates_count, proposals[{id, sidecar_path, status, page_id?}], skipped[]}`.
 
 **Relatório de telemetria de auto-melhoria** (`/admin/auto-improve/report`). Campos: `workspace`,
 `project`, `since_days` (30), `limit` (10, linhas por tabela de contagem), `stage` (false). Com `stage`,
 cria uma página pendente de relatório e responde `{run_id, proposal_ids[], sidecar_paths[], skipped[],
-report}`. Sem `stage`, o formato da resposta de leitura é a confirmar.
+report}`. Sem `stage`, a resposta é o próprio relatório de telemetria (estrutura em [auto-improvement-loop.md](auto-improvement-loop.md)).
 
 **Curador** (`/admin/curator`). Campos: `workspace`, `project`, `dry_run` (false), `stage` (false),
 `mode?` (`dry_run` ou `stage`, alias dos dois anteriores). Enviar `dry_run` e `stage` juntos, ou um
@@ -327,24 +334,34 @@ Comportamento das execuções gerenciadas (lease, estados, lançamento) está em
 
 - Escrita exige capacidade de escrita normal. Leituras (`GET` do estado do run, `POST /workstream/recent`
   e `GET …/events`) exigem leitura normal.
-- Rotas que alteram um run (heartbeat, cancelamento, aceite de contexto, vínculo e finalização)
-  exigem que o chamador seja o dono do run e tenha escrita no projeto do run. Leitura do estado e do
-  contexto exige acesso de leitura ao projeto do run. Sem o acesso, 403.
+- Rotas que alteram um run (heartbeat, cancelamento, aceite de contexto, vínculo, finalização e
+  recuperação) exigem que o chamador seja o dono do run (o dono gravado na preparação, ou ambos sem dono)
+  e tenha escrita no projeto do run; run inexistente é 404 `not found: managed run not found` e dono
+  errado, 403 `forbidden: managed run belongs to another operator`. A leitura do estado exige
+  leitura normal e acesso de leitura ao projeto. **`POST …/context` exige capacidade de escrita normal e
+  escrita no projeto** (ele é parte da reivindicação do contexto). Sem o acesso, 403.
+- Corpo de erro de todas as rotas: `{"error": "<mensagem>"}` (mais `manifest_warning` quando houver).
+  Mapeamento dos erros do armazenamento: proibido → 403; ocupado/duplicado/nome tomado → 409;
+  não encontrado → 404; estado inválido → 400; demais → 500. Mensagens do armazenamento levam os
+  prefixos `forbidden: `, `not found: `, `invalid state: `, `duplicate: `; a ocupação é
+  `workstream is already active: owned by <lease_owner> until <RFC 3339>`; nome tomado é
+  `workstream name '<nome>' is already taken in this checkout`.
 - Identificadores na URL (`run_id`, `workstream_id`) são UUIDs.
 
 | Método e rota | Corpo | Resposta | Erros |
 |---|---|---|---|
-| `POST /workstream/runs` | `workspace`, `project`, `cwd`, `repo_fingerprint`, `worktree_fingerprint`, `agent`, `automatic_harness` (false), `available_agents[]`, `workstream?`, `new_workstream?`, `force_unlock` (false), `lease_owner` | `{workstream_id, workstream_name, run_id, resolved_agent?, native_session_id?, source_cursor?, sync_after, sync_through, may_adopt_existing_session, manifest_warning?}` | 400 (campo vazio ou longo; `cwd` longo); 403 |
+| `POST /workstream/runs` | `workspace`, `project`, `cwd`, `repo_fingerprint`, `worktree_fingerprint`, `agent`, `automatic_harness` (false), `available_agents[]`, `workstream?`, `new_workstream?`, `force_unlock` (false), `lease_owner` | `{workstream_id, workstream_name, run_id, resolved_agent?, native_session_id?, source_cursor?, sync_after, sync_through, may_adopt_existing_session, manifest_warning?}` | 400 (campo obrigatório vazio — `managed run fields cannot be empty`; `cwd` com mais de 16 KiB; `workspace`, `project`, fingerprints e `lease_owner` com mais de 256 bytes; `workstream` e `new_workstream` juntos; agente não suportado; `automatic_harness` com agente fora do conjunto automático ou não listado em `available_agents`; nome de workstream inválido); 403; 404 (`--workstream` inexistente); 409 (ocupado; `new_workstream` já existente). A preparação **cria** o workspace e o projeto se não existirem |
 | `GET /workstream/runs/{run_id}` | — | `{run_id, workstream_id, agent, native_session_id?, native_session_linked, context_delivered, state}`. `state` ∈ `active`, `finished`, `expired` | 404 `managed run not found`; 500 |
-| `POST /workstream/runs/{run_id}/context` | — | `{context: string ou null}`. O pacote começa com o marcador `<!-- ai-memory:managed-workstream-packet:v1 -->` e com o aviso de memória não confiável (ver abaixo) | 403; 404 `active managed run not found` |
-| `POST /workstream/runs/{run_id}/context/accept` | — | 204 (confirma a entrega do contexto) | 403; 404; 409 `managed run lease is not active` |
-| `POST /workstream/runs/{run_id}/link` | `{native_session_id}` | 204 (vincula o run à sessão nativa) | 400 identidade de sessão nativa inválida; 403; 404; 409 `managed run is not active` |
-| `POST /workstream/runs/{run_id}/heartbeat` | — | 204. Renova o lease de 90 segundos | 409 `managed run lease is not active` |
-| `POST /workstream/runs/{run_id}/finish` | `native_session_id?`, `source_cursor?`, `events[]`, `complete` (true), `checkpoint{head?, branch?, dirty_hash?, changed_paths[]}`, `losses[]`, `exit_code?` | `{imported_events, latest_sequence}` | 400 (identificador de evento reservado; identidade inválida); 404; 409; 413 se houver mais de 4 096 eventos |
-| `POST /workstream/runs/{run_id}/cancel` | — | 204 | 404 `active managed run not found` |
-| `POST /workstream/recent` | `workspace`, `project`, `repo_fingerprint`, `worktree_fingerprint`, `limit`, `offset` (0) | Lista de `{workstream_id, name, created_at, last_active_at, current, linked_harnesses[]}` | 400; 403; 404 |
-| `POST /workstream/rename` | `workspace`, `project`, `repo_fingerprint`, `worktree_fingerprint`, `from?` ou `workstream_id?`, `to` | `{workstream_id, from, to}` | 400 (`from` vazio ou longo, entre outros); 404 |
-| `GET /workstream/{workstream_id}/events` | Query: `q` (busca de texto completo, padrão vazio), `limit` (padrão 20) | Lista de eventos (campos abaixo) | 400 `invalid workstream id`; 500 |
+| `POST /workstream/runs/{run_id}/context` | — | `{context: string ou null}` (`null` se já entregue ou sem nada novo). Só para execuções de Crush e Grok; outro agente → 400 `direct managed context is only supported for Crush and Grok`. O pacote começa com o marcador `<!-- ai-memory:managed-workstream-packet:v1 -->` e com o aviso de memória não confiável (texto em managed-workstreams.md) | 403; 404 `active managed run not found` (inexistente ou não ativa) |
+| `POST /workstream/runs/{run_id}/context/accept` | — | 204 (confirma a entrega do contexto; idempotente, renova o lease por 90 s e leva o cursor de entrega da sessão vinculada a `sync_through`). Só Crush e Grok (senão 400, mesma mensagem) | 403; 404 `managed run not found`; 409 `managed run lease is not active` |
+| `POST /workstream/runs/{run_id}/link` | `{native_session_id}` | 204 (vincula o run à sessão nativa) | 400 `native session identity is UNKNOWN; refusing managed binding`; 403; 404; 409 `managed run is not active` (também quando a execução já tem outra sessão vinculada/contexto entregue e o vínculo mudaria) |
+| `POST /workstream/runs/{run_id}/heartbeat` | — | 204. Renova o lease de 90 segundos, mesmo que o instante de vencimento já tenha passado, enquanto a execução estiver `active` | 403; 404; 409 `managed run lease is not active` (execução finalizada, cancelada ou substituída) |
+| `POST /workstream/runs/{run_id}/finish` | `native_session_id?`, `source_cursor?`, `events[]`, `complete` (true), `checkpoint{head?, branch?, dirty_hash?, changed_paths[]}`, `losses[]`, `exit_code?` | `{imported_events, latest_sequence}` | 400 (`reserved workstream event id`; identidade inválida; `invalid workstream event id`; `invalid workstream message role`; agente ou sessão do evento diferentes dos da execução; id de evento reutilizado com outra identidade); 403; 404; 409 `managed run is not recoverable` (execução `expired`); 413 se houver mais de 4 096 eventos. Em execução já `finished` responde 200 com `imported_events: 0` |
+| `POST /workstream/runs/{run_id}/cancel` | — | 204 (idempotente: também quando a execução já não está ativa) | 403; 404 `not found: managed run not found` |
+| `POST /workstream/runs/{run_id}/recover/finish` | igual a `finish` | igual a `finish` | Usado por `ai-memory recover`. Aceita execução `expired` (reativa-a com lease de 90 s, desde que nenhuma execução mais nova exista no workstream; senão 400 `… was superseded and cannot be recovered`) e `finished` somente como repetição exata (senão 400 `finished managed run recovery is not an exact replay` ou `… contains uncommitted or changed events`) |
+| `POST /workstream/recent` | `workspace`, `project`, `repo_fingerprint`, `worktree_fingerprint`, `limit`, `offset` (0) | Lista de `{workstream_id, name, created_at, last_active_at, current, linked_harnesses[]}` | 400 (campo vazio ou com mais de 256 bytes); 403; 404 (projeto inexistente). `limit` é limitado a 1–100; a ordem é a atual primeiro, depois `updated_at` e `id` decrescentes; `linked_harnesses` do vínculo mais recente ao mais antigo |
+| `POST /workstream/rename` | `workspace`, `project`, `repo_fingerprint`, `worktree_fingerprint`, `from?` ou `workstream_id?`, `to` | `{workstream_id, from, to}` | 400 (`from`/`to` vazio ou longo; `from` e `workstream_id` juntos ou nenhum; nome inválido); 403; 404 (workstream ou projeto inexistente); 409 (nome já tomado). Exige escrita normal e escrita no projeto |
+| `GET /workstream/{workstream_id}/events` | Query: `q` (busca de texto completo, padrão vazio), `limit` (padrão 20) | Lista de eventos (campos abaixo) | 400 `invalid workstream id`; 403; 500. `limit` limitado a 1–100. `q` vazio devolve os eventos mais recentes (sequência decrescente); com texto, busca de texto completo (prefixos de coluna `title:`/`body:`/`content:` no início de palavra são removidos) ordenada por relevância |
 
 **Evento de entrada** (`events[]` de `finish`):
 

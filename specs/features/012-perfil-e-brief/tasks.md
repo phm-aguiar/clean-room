@@ -22,7 +22,7 @@ max-rounds: 40
   - **Arquivos:** `specs/features/012-perfil-e-brief/notes/phase0-findings.md`
   - **Wiki-Keywords:** cross-project-profile, código entregue
 
-- [ ] **T002:** Extrair dos docs as listas fixas (marcadores, stop words, tags de linguagem e de ferramenta, palavras de categoria) e registrar o que o doc não lista como decisão nossa
+- [ ] **T002:** Transcrever dos docs (`design-cross-project-profile.md` Apêndices A, B e C; `session-brief.md`) as listas fixas e os textos literais para `notes/profile-vocab.md`; nada deve ser inventado — divergência entre doc e teste é erro de doc a reportar
   - **Papel:** researcher
   - **agent:** researcher1
   - **Dependências:** Nenhuma

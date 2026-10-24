@@ -333,6 +333,17 @@ max-rounds: 40
   - **Arquivos:** `.env.example`
   - **Wiki-Keywords:** .env.example, run
 
+## Pendências da auditoria de 2026-10-19 (a integrar pela T005)
+Tasks novas exigidas pelos docs corrigidos; a T005 deve inseri-las no DAG:
+- **A1:** ambiente do filho (`--profile`, `--env`, `--env-file`; nomes sem caixa no Windows; variáveis reservadas) — `docs/managed-workstreams.md`.
+- **A2:** resolução de executável no Windows (`PATH` + `PATHEXT`, sem irmão sem extensão) e lançamento sem shell.
+- **A3:** menu pós-execução (3 TTYs, código 0, não degradado, sem `--executable`).
+- **A4:** registro local do cliente `client-projects.json` (trava exclusiva, limites, versão) e `continue`/`resume`/`show`.
+- **A5:** diário de recuperação, rota `recover/finish` e `ai-memory recover` (`docs/downtime-recovery.md`).
+- **A6:** dossiê da sessão anterior (`AI_MEMORY_PREVIOUS_SESSION_HISTORY`) e `claude attach` de sessão em segundo plano.
+- **A7:** fingerprints (fórmula exata), checkpoint (`git status --porcelain=v1 -z`, 256 caminhos).
+- **A8:** eventos de fronteira, segmento bruto e regras de cursor na finalização.
+- **A9:** mensagens literais de stderr (espera por lease, heartbeat, degradado) — critérios de aceite por texto.
 
 
 ## Coordination Graph

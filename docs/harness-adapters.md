@@ -176,6 +176,18 @@ A inspeção recebe o diretório de trabalho, o resolve para o caminho canônico
   3. raiz do worktree (`toplevel`);
   4. caminho canônico do diretório (quando não é um repositório git).
   Worktrees ligados ao mesmo repositório compartilham este fingerprint.
+
+  **Fórmula exata.** Todas as saídas do git são decodificadas como UTF-8 (falha → como ausente) e aparadas nas pontas; um comando que falha conta como ausente. `remotos` = saída de `git -C <cwd> remote get-url --all origin`; `comum` = `git rev-parse --path-format=absolute --git-common-dir`; `raiz` = `git rev-parse --show-toplevel`; `gitdir` = `git rev-parse --path-format=absolute --git-dir`; `canônico` = o caminho canônico do diretório (resolvido por links; no Windows, a forma estendida do sistema). A semente do repositório é o texto `git-remotes
+<remotos>` se `remotos` não é vazio; senão `git-common
+<comum>`; senão `git-root
+<raiz>`; senão `directory
+<canônico>`. `repo_fingerprint = SHA-256 hex minúsculo da semente`. A semente do worktree é `<repo_fingerprint>
+git-dir
+<gitdir>`; senão `<repo_fingerprint>
+root
+<raiz>`; senão `<repo_fingerprint>
+cwd
+<canônico>`; `worktree_fingerprint = SHA-256 hex da semente`. Observação: no Windows o git imprime caminhos com `/` (`C:/Users/x/repo/.git`); os valores entram na semente exatamente como impressos. Para interoperar com dados criados pela implementação de referência, a semente `directory` usa o caminho canônico exatamente como o sistema o devolve; uma implementação nova que não precise ler fingerprints antigos pode escolher outra normalização desde que seja estável.
 - **Fingerprint do worktree**: SHA-256 da combinação do fingerprint do repositório com o diretório git do worktree. Se o diretório git não estiver disponível, usa a raiz do worktree ou o caminho do diretório. Cada worktree tem um valor distinto.
 - **Worktree ligado**: verdadeiro quando o diretório git difere do diretório comum.
 - **URL de push do origin**: primeira linha da URL de push do `origin` (considera `pushurl` e `pushInsteadOf`). Ausente se não houver.

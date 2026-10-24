@@ -66,3 +66,17 @@ Funções puras (cosseno, eps, DBSCAN, surprisal, entropia) em `internal/domain/
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria (2026-10-20, contra o original)
+
+Docs corrigidos: `design-memory-aging.md` (§7.2, §7.3, §8, §9, §10, §12), `consolidation-llm.md` §7.4, §8, §9, §10, `architecture-llm.md`, `experience.md`.
+
+- **Sobrevivente em empate exato de retenção** é o **último** membro do cluster (ordem em que o DBSCAN alcançou), não o primeiro. Vale na A3 e no dream.
+- **Corpo unido da A3** = corpo do sobrevivente + corpos dos *outros* membros; a união de palavras-chave continua com teto de **48 tokens** no total (o "a confirmar" de `architecture-llm.md` foi resolvido).
+- **Cotovelo:** máxima distância perpendicular (empate: primeiro índice); só com 2 pontos ou menos usa o último valor (não há "corda plana" especial).
+- **Textos dos stubs** (A3 e dream) agora literais.
+- **Banda de contradição:** validação de `contradiction_band_*` confirmada (finitos, `0 ≤ min < max ≤ 1`, falha na carga); roda **apenas no lint pedido pelo usuário** (`memory_lint`, `/admin/lint`, CLI), nunca no lint agendado; exclui `_lint/` e páginas expiradas; ordenação (acessos, `updated_at`, caminho) para as 60 mais frias.
+- **Dream:** o laço dorme `interval_secs` (3600) **antes** de checar a ociosidade; observador de 2 s; cancelamento checado antes de cada escopo e de cada cluster; a atividade vem só das chamadas de ferramenta MCP (hooks e rotas admin não contam); relatório de no-op traz provedor `none`.
+- **Filtro de entropia:** padrão desligado confirmado; entropia calculada sobre todos os caracteres, inclusive espaços.
+
+**Status: Fiel** (docs completos e coerentes com o original após as correções).

@@ -4,7 +4,9 @@
 >
 > **Docs antes adiados:** os 14 docs de LLM, embeddings e auto-melhoria (antes em `docs-adiados/`, fora do repositório) foram incorporados a `docs/` em 2026-10-13; só os links relativos entre as duas pastas foram ajustados.
 >
-> **Estado em 2026-10-13:** de 003 a 022, cada feature tem `spec.md` revisada contra os docs, `plan.md` e `tasks.md` **provisório** (DAG validado: sem ciclo, sem dependência quebrada, sem conflito de arquivo entre tasks paralelas). Todas seguem com `Aprovado: false`. Fluxo combinado: ao terminar uma feature, a seguinte é revisada de novo contra o código entregue e os docs, e só então aprovada. A T001 de cada `tasks.md` faz essa reconferência.
+> **Atualização 2026-10-22:** `plan.md` e `tasks.md` de 014 a 022 foram removidos de propósito. As docs e as `spec.md` dessas features foram auditadas contra o Rust (relatórios 003, 004 e 005 em `reports/`), como já feito para 012 e 013. O plano e as tasks serão regerados depois, a partir das docs corrigidas.
+>
+> **Estado em 2026-10-13 (vale para 003 a 013):** de 003 a 022, cada feature tem `spec.md` revisada contra os docs, `plan.md` e `tasks.md` **provisório** (DAG validado: sem ciclo, sem dependência quebrada, sem conflito de arquivo entre tasks paralelas). Todas seguem com `Aprovado: false`. Fluxo combinado: ao terminar uma feature, a seguinte é revisada de novo contra o código entregue e os docs, e só então aprovada. A T001 de cada `tasks.md` faz essa reconferência.
 
 ## Ordem recomendada
 
@@ -23,15 +25,15 @@
 | 011 | [Mensagens entre projetos](011-mensagens-entre-projetos/spec.md) | draft + plano + tasks provisórias | 19 | 002, 007, 008 | Caixa de entrada entre projetos e o aviso no `/handoff`. |
 | 012 | [Perfil entre projetos e brief](012-perfil-e-brief/spec.md) | draft + plano + tasks provisórias | 30 | 002, 004, 007 | Preferências globais e resumo no início de sessão (caminho sem LLM). |
 | 013 | [Workstreams gerenciados](013-workstreams-gerenciados/spec.md) | draft + plano + tasks provisórias | 33 | 010, 002, 007 | `ai-memory run` entre harnesses. |
-| 014 | [Navegador web e API](014-navegador-web-e-api/spec.md) | draft + plano + tasks provisórias | 21 | 007, 002 | Navegador HTML e `/api/v1`, somente leitura. |
-| 015 | [Implantação](015-implantacao/spec.md) | draft + plano + tasks provisórias | 28 | 014, 007, 002 | Contêiner, releases, `upgrade`, wrappers, prefixo do servidor, proxy, Windows nativo. |
-| 016 | [Cliente LLM e provedores por chave](016-cliente-llm/spec.md) | draft + plano + tasks provisórias | 28 | 002, 015 | Fronteira única de rede para modelos: saída estruturada, erros, contingência, saúde, `llm-test`. |
-| 017 | [Embeddings e busca vetorial](017-embeddings-e-busca-vetorial/spec.md) | draft + plano + tasks provisórias | 27 | 016, 004, 002 | Embedder local padrão (MiniLM em Go puro), remotos, fluxos vetoriais, backfill, `embed`. |
-| 018 | [Provedores por assinatura](018-provedores-por-assinatura/spec.md) | draft + plano + tasks provisórias | 22 | 016, 017, 009, 015 | `anthropic-oauth`, `openai-oauth`, `codex`, `copilot` e os logins `auth`. |
-| 019 | [LLM na leitura](019-llm-na-leitura/spec.md) | draft + plano + tasks provisórias | 18 | 016, 017, 005, 002 | Reranqueamento, `answer`/`reasoning` e `memory_explore`. |
-| 020 | [Consolidação por LLM](020-consolidacao-por-llm/spec.md) | draft + plano + tasks provisórias | 30 | 016, 008, 007, 004, 012, 002 | Página única e lote, fila do fim de sessão, checkpoints, bootstrap, lint e perfil por LLM. |
-| 021 | [Curadoria por embeddings](021-curadoria-por-embeddings/spec.md) | draft + plano + tasks provisórias | 19 | 017, 016, 004, 008 | Deduplicação A3, banda de contradição, filtro de entropia e *dream*. |
-| 022 | [Auto-melhoria](022-auto-melhoria/spec.md) | draft + plano + tasks provisórias | 31 | 020, 021, 016, 014, 008, 007, 004 | Revisão, validação, portão de avaliação, pendências, aprovação, experiência e `/pending`. |
+| 014 | [Navegador web e API](014-navegador-web-e-api/spec.md) | spec auditada; sem plan/tasks | — | 007, 002 | Navegador HTML e `/api/v1`, somente leitura. |
+| 015 | [Implantação](015-implantacao/spec.md) | spec auditada (incompleta: wrappers/`setup`); sem plan/tasks | — | 014, 007, 002 | Contêiner, releases, `upgrade`, wrappers, prefixo do servidor, proxy, Windows nativo. |
+| 016 | [Cliente LLM e provedores por chave](016-cliente-llm/spec.md) | spec auditada; sem plan/tasks | — | 002, 015 | Fronteira única de rede para modelos: saída estruturada, erros, contingência, saúde, `llm-test`. |
+| 017 | [Embeddings e busca vetorial](017-embeddings-e-busca-vetorial/spec.md) | spec auditada; sem plan/tasks | — | 016, 004, 002 | Embedder local padrão (MiniLM em Go puro), remotos, fluxos vetoriais, backfill, `embed`. |
+| 018 | [Provedores por assinatura](018-provedores-por-assinatura/spec.md) | spec auditada; sem plan/tasks | — | 016, 017, 009, 015 | `anthropic-oauth`, `openai-oauth`, `codex`, `copilot` e os logins `auth`. |
+| 019 | [LLM na leitura](019-llm-na-leitura/spec.md) | spec auditada; sem plan/tasks | — | 016, 017, 005, 002 | Reranqueamento, `answer`/`reasoning` e `memory_explore`. |
+| 020 | [Consolidação por LLM](020-consolidacao-por-llm/spec.md) | spec auditada; sem plan/tasks | — | 016, 008, 007, 004, 012, 002 | Página única e lote, fila do fim de sessão, checkpoints, bootstrap, lint e perfil por LLM. |
+| 021 | [Curadoria por embeddings](021-curadoria-por-embeddings/spec.md) | spec auditada; sem plan/tasks | — | 017, 016, 004, 008 | Deduplicação A3, banda de contradição, filtro de entropia e *dream*. |
+| 022 | [Auto-melhoria](022-auto-melhoria/spec.md) | spec auditada; sem plan/tasks | — | 020, 021, 016, 014, 008, 007, 004 | Revisão, validação, portão de avaliação, pendências, aprovação, experiência e `/pending`. |
 
 Critério da ordem: primeiro o que completa o produto local sem LLM (003 a 006); depois identidade, que destrava rede e colaboração (007 a 009); depois os outros agentes e a colaboração entre projetos (010 a 013); depois as superfícies extras e a implantação (014 e 015); por último o bloco opcional de LLM e embeddings (016 a 022), na ordem fronteira → vetores → provedores por login → leitura → escrita → curadoria → auto-melhoria.
 

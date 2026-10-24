@@ -376,7 +376,16 @@ the measurements in issue #478.
   replaces the running executable, and reruns `install-hooks --apply` for
   every staged agent. Replacement renames the running executable aside
   before moving the new one in. The old copy is removed on a best-effort
-  basis. Windows on ARM has no release archive.
+  basis. Windows on ARM has no release archive. The executable path is
+  replaced by renaming: the running `ai-memory.exe` becomes `ai-memory.old`,
+  the new file `ai-memory.new` becomes `ai-memory.exe`, and a failed last
+  step renames the old one back. A leftover `.old` is normal while the old
+  process still runs. Full step list, limits (120 s per request, 128 MiB per
+  download, 4 096 archive entries, 512 MiB expanded), refusals and messages:
+  [airgapped-install.md](airgapped-install.md), "The `upgrade` command in
+  detail". A running logon-entry server (see
+  [windows-native-extras.md](windows-native-extras.md) section 14) keeps the
+  old image until it is restarted (`ai-memory setup` restarts it).
 - Docker-wrapper installs use the wrapper's `upgrade` command (see
   Scenario B). The status of the in-place upgrade work tracked in issues 801
   and 802 is *(a confirmar)*.
@@ -756,9 +765,17 @@ wiki commit fails with an ownership error. A failed wiki commit is not fatal,
 so the server keeps running and capture continues, but no wiki checkpoints
 are committed.
 
-On startup, the server logs this condition at error level and names the
-remedy: run the service as the owning user. Older builds logged it at warning
-level *(a confirmar)*.
+On startup, during the baseline-checkpoint step, the server logs this
+condition at **error** level (confirmed in the reference code) with the
+text: `wiki git commits are failing the repository owner check: the wiki
+repository is not owned by the account running ai-memory. Run the service AS
+THE OWNING USER — capture continues, but no wiki checkpoints will be committed
+until this is fixed.` Other failures of that step are only a warning
+(`wiki upgrade baseline checkpoint failed (non-fatal)`); success logs
+`created wiki upgrade baseline checkpoint`. Whether older builds used warning
+level is not verifiable and is irrelevant to a new implementation. With the
+`git` program in use, the equivalent condition is git's "dubious ownership"
+refusal; classify it the same way (distinct from other git failures).
 
 ### Validation report
 
@@ -811,9 +828,11 @@ maintainer decision. It depends on these items:
 
 ### Known gaps
 
-- ai-memory has no Windows service dispatcher. Persistence comes from a
-  wrapper (Scenario E), the same way it comes from a service manager on
-  Linux.
+- ai-memory has no Windows service dispatcher. Persistence comes either from
+  a wrapper (Scenario E) or from the built-in per-user logon entry that
+  `ai-memory setup` installs (a value under the per-user `Run` registry key
+  that starts a hidden supervisor, `service-host`; no administrator needed,
+  see [windows-native-extras.md](windows-native-extras.md) section 14).
 - Native Claude Code uses the direct executable call by default. The
   `windows-bash` platform value restores the Git Bash path.
 - Other agents (Codex, Command Code, Devin CLI, OpenCode, Cursor, Gemini

@@ -845,17 +845,17 @@ Tabela durável por `(sessão, geração)`, onde geração é o número de obser
 
 Estados: `pending → running → completed | failed | superseded`.
 
-- **Enfileirar:** só se a sessão já terminou e tem pelo menos uma observação. Se já existe job para a mesma
+- **Enfileirar:** no fim de sessão, só se a sessão já terminou e tem pelo menos uma observação; no *checkpoint* de compactação (PreCompact/PostCompaction), também com a sessão ainda aberta ou já encerrada-e-retomada (mesma regra de uma observação). Chave (sessão, geração): a mesma geração é ignorada sem erro. Se já existe job para a mesma
   sessão, o novo é inserido só se for de outra geração. Jobs `pending` de gerações anteriores viram
   `superseded`. Um job `running` mantém seu lease.
 - **Reivindicar:** transação `IMMEDIATE`. Pega o job devido mais antigo: `pending` com menos de
-  **5 tentativas** e `next_attempt_at ≤ agora`, ou `running` cujo lease venceu. Gera um `claim_id` que
+  **5 tentativas** e `next_attempt_at ≤ agora`, ou `running` cujo `started_at ≤ agora − 10 min` (lease). Ordena por `requested_at` e depois geração; reivindicar `pending` gasta uma tentativa, reassumir `running` não gasta. Gera um `claim_id` que
   identifica a posse.
 - **Completar, falhar, liberar:** exigem o `claim_id` atual. Um reivindicante antigo, com lease vencido,
   **não** consegue completar o trabalho de quem o substituiu.
-- **Falhar** registra o erro e agenda `next_attempt_at` conforme o instante de nova tentativa informado pelo
+- **Falhar** registra o erro (cortado em 1024 caracteres); vira `failed` se as tentativas chegaram a 5 ou se não há nova data; senão agenda `next_attempt_at` conforme o instante de nova tentativa informado pelo
   chamador. A política de *backoff* fica com o chamador.
-- **Liberar** devolve o job a `pending` sem gastar tentativa.
+- **Liberar** devolve o job a `pending` com `next_attempt_at = agora` e **devolve a tentativa** gasta na reivindicação (se veio de `pending`). Completar/falhar/liberar também exigem `state = running`.
 - **Reconciliação manual:** marca como concluídos os jobs de uma sessão que estão `failed`, `pending` ou
   `superseded`, sem tocar em job `running` (lease vivo).
 
@@ -865,7 +865,7 @@ Limite de tentativas: **5** (`SESSION_CONSOLIDATION_MAX_ATTEMPTS`).
 
 ## 16. Auto-melhoria (persistência)
 
-- **Propostas:** estados `pending`, `approved`, `rejected`, `failed`. Operações: `create` e `update`. Atualização
+- **Propostas:** estados `pending`, `approved`, `rejected`, `conflict`, `failed`. Operações: `create` e `update`. Atualização
   guarda o modo de edição, o JSON de patch e o hash esperado do corpo base.
 - **Snapshot no momento do stage:** cada proposta guarda o estado do alvo quando foi colocada em fila
   (hash do corpo, instante de atualização, fixação e frontmatter).

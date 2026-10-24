@@ -87,7 +87,7 @@ depois:
 - `search.fts.stopwords`: no máximo **2000** itens; cada item é aparado e não pode ficar vazio, ter mais
   de **64** caracteres Unicode, nem ter espaço interno (um item com duas palavras nunca casaria com um
   token). Ver [storage-and-retrieval.md](storage-and-retrieval.md) §11.2.
-- `consolidation.max_input_tokens` deve ser maior ou igual a **6000**.
+- `consolidation.max_input_tokens` deve deixar pelo menos **20 040 caracteres** efetivos (`floor(max_input_tokens × 3 × input_token_safety_margin)`), ou seja, **8350** com a margem padrão 0,8 (6680 com margem 1,0); `consolidation.input_token_safety_margin` deve estar em (0, 1]. Ver [consolidation-llm.md](consolidation-llm.md) §3.3.
 - `consolidation.max_output_tokens` deve ser maior ou igual a **1000**.
 - `llm_timeout_secs` deve ser maior ou igual a **1**.
 - Cabeçalhos extras do cliente LLM (`llm_headers`) devem ser válidos e não podem
@@ -108,14 +108,14 @@ depois:
 | `base_path` | vazio | Prefixo de todas as rotas. |
 | `allowed_hosts` | `localhost`, `127.0.0.1`, `::1` | Lista de `Host` aceitos; defesa contra *DNS rebinding*. |
 | `cors_allow_origins` | vazio | Origens CORS permitidas. |
-| `llm_provider`, `llm_model`, `llm_base_url` | a confirmar | Provedor e modelo do cliente LLM ([llm-providers.md](llm-providers.md)). |
+| `llm_provider`, `llm_model`, `llm_base_url` | ausentes (LLM desligado) | Provedor e modelo do cliente LLM ([llm-providers.md](llm-providers.md)); sem `llm_model`, vale o modelo padrão do provedor (obrigatório em `openai-compat`). |
 | `llm_compat_strict` | `true` | Modo estrito de compatibilidade do cliente LLM. |
 | `llm_timeout_secs` | `300` | Tempo máximo por requisição LLM. |
-| `llm_reasoning_effort` | a confirmar | Esforço de raciocínio do provedor. |
+| `llm_reasoning_effort` | ausente | Esforço de raciocínio do provedor (omitido = padrão do modelo). |
 | `llm_headers` | vazio | Cabeçalhos extras (validados na carga). |
 | `llm_fallbacks[]` | vazio | Provedores de contingência, cada um com provedor, modelo e, opcionalmente, URL base e variável de ambiente da chave. |
 | `reranker` | desligado | Único valor aceito: `llm` (sem diferenciar maiúsculas e minúsculas). Qualquer outro valor é erro. |
-| `embedding_provider`, `embedding_model`, `embedding_dim`, `embedding_base_url` | a confirmar | Configuração do embedding ([local-embeddings.md](local-embeddings.md)). |
+| `embedding_provider`, `embedding_model`, `embedding_dim`, `embedding_base_url`, `embedding_query_prefix`, `embedding_document_prefix` | ausentes (embedder local em melhor esforço; `none`/`off`/`disabled` desligam) | Configuração do embedding ([local-embeddings.md](local-embeddings.md), [llm-client.md](llm-client.md) §8). Os prefixos não são aparados. |
 | `consolidate_on_session_end` | `false` | Liga a consolidação ao fim de sessão (seção 4). |
 | `capture_assistant` | `false` | Captura também as respostas do assistente. |
 | `backfill_on_start` | `true` | Importa o histórico local no primeiro início de projeto vazio. Desligável por configuração ou por variável de ambiente. |
@@ -263,8 +263,10 @@ A confirmar: lista completa das rotas de sessão e de autenticação interna.
 ### 3.5 Conexões e encerramento
 
 - **Keepalive por conexão:** cada conexão aceita recebe keepalive de socket com o
-  intervalo de `tcp_keepalive_secs`. Isso evita acúmulo de descritores de pares mortos
-  até o limite do sistema.
+  intervalo de `tcp_keepalive_secs` (padrão 60; 0 desliga). O mesmo valor é o tempo
+  ocioso antes da primeira sonda **e** o intervalo entre sondas; falha ao ajustar um
+  socket só gera aviso e a conexão segue. Isso evita acúmulo de descritores de pares
+  mortos até o limite do sistema. Detalhes em [windows-native-extras.md](windows-native-extras.md) §11.
 - **Encerramento:** há uma **janela de graça de 5 s** para drenar conexões. Clientes com
   fluxo de eventos ou sessão não se encerram sozinhos. O trabalhador de consolidação
   também é limitado por essa janela. Escritas pendentes no escritor podem ser
@@ -532,7 +534,8 @@ Fluxo (detalhes de cada agente em [harness-adapters.md](harness-adapters.md)):
   **modo degradado**, sem workstream gerenciado.
 - Com `--require-server` (ou `run.require_server` na configuração), a falha é erro e o
   agente **não é iniciado**.
-- A confirmar: comportamento quando a sondagem passa mas a preparação falha.
+- Quando a sondagem passa (qualquer resposta HTTP) mas a preparação falha (conexão perdida, autenticação, erro do servidor, workstream ocupado), o erro é fatal e o agente **não** é iniciado (`opening managed workstream; the agent was not started`).
+- Opções completas de `run` (inclui `--profile`, `--env`, `--env-file`, `--require-server`, `--true-yolo`, `--force-unlock`, `--no-autowire`, `--jail`, `--no-jail`), menu pós-execução e `ai-memory recover`: ver [managed-workstreams.md](managed-workstreams.md) e [downtime-recovery.md](downtime-recovery.md).
 
 Comandos de navegação sobre este fluxo: `show`, `continue`, `resume`, `workstreams`,
 `rename-workstream` e `workstream-search`. Ver seção 9.1 para `continue`.

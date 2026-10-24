@@ -35,9 +35,9 @@ Cada entrada `[[llm_fallbacks]]` do arquivo de configuração (TOML) é um candi
 
 | Campo | Obrigatório | Regra |
 | --- | --- | --- |
-| `provider` | sim | Um dos valores: `anthropic`, `openai`, `gemini` (alias `google`), `openai-compat` (alias `openai_compat`), `openai-oauth` (alias `openai_oauth`), `codex`, `copilot` (aliases `github-copilot`, `github_copilot`), `anthropic-oauth` (alias `anthropic_oauth`), `opencode` (aliases `opencode-zen`, `opencode_zen`). Vazio ou desconhecido é erro. |
+| `provider` | sim | Um dos valores: `anthropic`, `openai`, `gemini` (alias `google`), `openai-compat` (alias `openai_compat`), `openai-oauth` (alias `openai_oauth`), `codex`, `copilot` (aliases `github-copilot`, `github_copilot`), `anthropic-oauth` (alias `anthropic_oauth`), `opencode` (aliases `opencode-zen`, `opencode_zen`), `cursor`. Vazio ou desconhecido é erro. |
 | `model` | sim | Não pode ser vazio. Não há modelo padrão para fallback. |
-| `base_url` | depende do provedor | Opcional. Obrigatório para `openai-compat`. |
+| `base_url` | depende do provedor | Opcional. Obrigatório para `openai-compat`. Vale só para o próprio perfil: não herda a base do primário nem o `LLM_BASE_URL` do ambiente. Ignorado por `openai-oauth`, `codex`, `copilot` e `cursor`. |
 | `api_key_env` | depende do provedor | Nome da variável de ambiente que contém a chave de API. Obrigatório para `anthropic`, `openai`, `gemini` e `opencode`. Opcional para `openai-compat`. Não se aplica aos provedores com fonte nativa de credencial (`openai-oauth`, `codex`, `copilot`, `anthropic-oauth`), que compartilham a credencial do primário. Nunca herda a variável de ambiente do primário. |
 
 Um valor vazio ou só com espaços conta como ausente. Os perfis de fallback não definem timeout, modo estrito de compatibilidade, esforço de raciocínio nem cabeçalhos extras: esses valores vêm dos campos de LLM de topo e valem para o primário e para cada fallback.
@@ -93,7 +93,7 @@ A validação ocorre na carga da configuração, que roda antes de qualquer coma
 5. **Falha determinística:** o erro é registrado e devolvido imediatamente, sem tentar os candidatos restantes.
 6. Se todos os candidatos elegíveis falharam de forma transitória, ou se não restou nenhum elegível, a cadeia devolve um erro agregado.
 
-O erro agregado tem a forma `llm fallback chain exhausted after N candidate(s): ...`. N conta apenas as tentativas feitas; candidatos pulados por circuito aberto não entram na conta. O resumo lista uma entrada por tentativa, no formato `provedor/modelo: classe` ou `provedor/modelo: classe status`, separadas por `; `. O resumo contém apenas rótulos e status, nunca corpo de resposta nem segredo.
+O erro agregado tem a forma `llm fallback chain exhausted after N candidate(s): ...` (cada entrada `provedor/modelo: classe` ou `provedor/modelo: classe status`, sem colchetes). N conta apenas as tentativas feitas; candidatos pulados por circuito aberto não entram na conta. O resumo lista uma entrada por tentativa, no formato `provedor/modelo: classe` ou `provedor/modelo: classe status`, separadas por `; `. O resumo contém apenas rótulos e status, nunca corpo de resposta nem segredo.
 
 Casos de borda:
 
@@ -138,7 +138,7 @@ O relatório de saúde do provedor de LLM tem duas partes.
 - se o candidato foi o último selecionado, isto é, se respondeu à última chamada concluída com sucesso;
 - instante do último sucesso e instante do último erro;
 - status HTTP do último erro, quando houver;
-- classe do último erro, um rótulo estável da mesma tabela de classificação (`http`, `provider`, `unexpected-shape`, `not-configured`, `auth`, `schema`, `all-candidates-failed` e o rótulo de (de)serialização);
+- classe do último erro, um rótulo estável da mesma tabela de classificação (`http`, `provider`, `serde`, `unexpected-shape`, `truncated-response`, `empty-content`, `not-configured`, `auth`, `schema`, `all-candidates-failed`);
 - instante em que o circuito reabre, apenas enquanto o circuito estiver aberto.
 
 O estado por candidato nunca guarda corpo de resposta nem segredo.

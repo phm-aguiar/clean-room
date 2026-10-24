@@ -528,16 +528,19 @@ entrega chegar de novo com a mesma chave, o servidor não duplica a observação
 - Não encerram a sessão e não criam handoff.
 - Se o agente já escreveu a página de sessão, essa página é **mantida**, e o checkpoint não a
   sobrescreve.
-- Se a consolidação por LLM estiver configurada, ela é tentada primeiro:
-  - resposta vazia: nada é escrito;
-  - falha do **provedor** (recusa, limite de taxa, indisponibilidade, resposta não mapeável):
-    cai para a página sintetizada sem LLM;
-  - falha de **política ou infraestrutura** (webhook de admissão recusou o ator ou o escopo,
-    falha de armazenamento, sessão sem resolução): **não** cai para o modo sem LLM. Falha
-    fechado. A operação de admissão de consolidação continua valendo para a página de fallback.
-    Em qualquer caso, o evento segue e o erro é registrado.
-- Se o provedor não for usado, ou depois do fallback, a página é sintetizada sem LLM e
-  escrita em `sessions/<identificador>.md`. Sessão efêmera não gera página.
+- **O provedor nunca é chamado dentro do hook** (a chamada demora mais que o prazo do cliente).
+  A página é sempre sintetizada **sem LLM** e escrita primeiro em `sessions/<identificador>.md`;
+  sessão efêmera (ou sem trabalho substantivo) não gera página.
+  - Com consolidador configurado, essa escrita carrega a operação de admissão `consolidate`: se a
+    política (webhook de admissão) recusa o ator ou o escopo, o checkpoint **falha fechado** antes
+    de gravar a página e antes de enfileirar; falha de armazenamento ou de resolução na escrita só
+    gera aviso e o evento segue.
+  - Depois da escrita (e do commit), enfileira o job de reescrita por LLM na fila durável
+    (`consolidation-llm.md` §3.7 e §3.8), independente de `consolidate_on_session_end`; falha ao
+    enfileirar faz o evento falhar para ser reentregue. A reescrita roda no trabalhador; falha do
+    provedor deixa a página por regras; resposta vazia/inválida encerra o job sem escrever.
+  - Reentrega de um checkpoint cujo job daquela geração já está em andamento ou concluído não regrava
+    a página por regras.
 - O commit usa o rótulo do checkpoint: `pre-compact(session <id8>): checkpoint` ou
   `post-compaction(session <id8>): checkpoint`. `<id8>` são os oito primeiros caracteres do
   identificador.
@@ -693,8 +696,8 @@ lista. Exemplo: `2 prompts, 3 completed tool calls across Bash and Edit, over 18
 ### 11.1 Parâmetros
 
 `agent`, `cwd`, `workspace`, `project`, `session_id`, `project_strategy`, além das opções de
-contexto (brief e perfil). Se houver uma execução gerenciada no parâmetro correspondente, o
-ledger dela também é entregue.
+contexto (brief e perfil). Se houver uma execução gerenciada no parâmetro correspondente (`managed_run`), o
+ledger dela também é entregue; para isso `session_id` e `cwd` também são necessários (ver managed-workstreams.md, "Quem recebe o pacote"). Parâmetros adicionais: `briefing` e `briefing_budget` (ver session-brief.md), `profile_contribute`, `profile_consume` e `profile_digest` (ver design-cross-project-profile.md §5.4).
 
 ### 11.2 Ordem de operações
 
@@ -755,6 +758,7 @@ Rotas, montadas ao lado de `/hook` e sob a mesma autenticação:
 | `/workstream/runs/{id}/context/accept` | POST | Aceita o contexto. |
 | `/workstream/runs/{id}/link` | POST | Vincula uma sessão. |
 | `/workstream/runs/{id}/finish` | POST | Finaliza com eventos. |
+| `/workstream/runs/{id}/recover/finish` | POST | Finaliza/reimporta uma execução expirada ou repete uma finalizada (usado por `ai-memory recover`). |
 | `/workstream/recent` | POST | Lista workstreams recentes. |
 | `/workstream/rename` | POST | Renomeia. |
 | `/workstream/{id}/events` | GET | Busca no ledger. |
@@ -766,12 +770,15 @@ Limites:
 | Item | Limite |
 |---|---|
 | Eventos por finalização | 4096 (acima disso, rejeita) |
-| Conteúdo de cada evento | 64 KiB. O excedente é cortado e marcado como `[truncated by ai-memory]`. O conteúdo é sanitizado antes do corte. |
+| Conteúdo de cada evento | 64 KiB na rota (o excedente é cortado e marcado com `
+[truncated by ai-memory]`; sanitizado antes do corte; é esta versão que vai ao segmento bruto). O armazenamento do ledger limita de novo a 16 KiB no total, terminando em `…` (U+2026) quando corta. |
 | Identificador de evento | de 1 a 512 bytes |
 | Diretório informado | 16 KiB |
 | Nomes | 256 bytes |
 | Metadados lidos do armazenamento | acima de 16 KiB, são tratados como ausentes |
-| Metadados na escrita | a confirmar |
+| Metadados na escrita | reduzidos à allowlist (ver api-reference.md §6): textos ≤ 512 bytes após sanitização; `source_record_id` ≤ 512 bytes |
+| Papel (`role`) | até 32 caracteres `[A-Za-z0-9_-]` |
+| Eventos por finalização | 4096 (413) |
 
 O conteúdo é sanitizado antes de ser gravado no segmento bruto imutável, sob o diretório de
 dados do servidor, e antes da indexação.

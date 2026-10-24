@@ -1784,7 +1784,7 @@ ai-memory works in three intensity tiers:
 | **+ ChatGPT or Codex OAuth** | The same LLM features, using a ChatGPT Pro or Plus login instead of an OpenAI Platform key | `AI_MEMORY_LLM_PROVIDER=openai-oauth` and `ai-memory auth login openai-oauth` | Uses your ChatGPT subscription |
 | **+ Codex credential reuse** | The same LLM features, using the login owned by the Codex CLI, without copying or owning its refresh token | `AI_MEMORY_LLM_PROVIDER=codex` and an authenticated Codex CLI | Uses your ChatGPT subscription |
 | **+ GitHub Copilot** | The same LLM features, using a GitHub Copilot subscription | `AI_MEMORY_LLM_PROVIDER=copilot` and either `ai-memory auth login copilot` or `COPILOT_GITHUB_TOKEN` | Uses your Copilot subscription |
-| **+ LLM reranking** | At most one relevance pass over up to 30 bounded search candidates from projects and scopes (a confirmar: the limits). The normal order is kept when a response is invalid, fails, times out, or hits the concurrency limit. | `AI_MEMORY_RERANKER=llm` and any configured LLM provider | One LLM call per eligible query, with at most four running at once (a confirmar) |
+| **+ LLM reranking** | At most one relevance pass over up to 30 bounded search candidates from projects and scopes (limits: candidates `max(limit, min(limit x 3, 30))`, 20 s per call, 4 concurrent calls). The normal order is kept when a response is invalid, fails, times out, or hits the concurrency limit. | `AI_MEMORY_RERANKER=llm` and any configured LLM provider | One LLM call per eligible query, with at most four running at once |
 | **+ Hybrid retrieval** | Adds vector cosine similarity to the FTS5, entity, and graph reciprocal-rank fusion. This improves recall for paraphrased queries. | `AI_MEMORY_EMBEDDING_PROVIDER=openai` and `OPENAI_API_KEY` (or `EMBEDDING_API_KEY`) | About $0.0001 per page on backfill (estimate, a confirmar) |
 
 ### Recommended models (chosen as defaults)
@@ -1895,7 +1895,7 @@ own environment, as in the example above.
 
 For both Anthropic providers, ai-memory omits `temperature` for Claude 4.7 and
 later models, and for the Claude Mythos Preview model. Those models reject
-non-default sampling parameters (a confirmar: the exact model list). `llm-test`
+non-default sampling parameters (every recognized Claude model from 4.7 on, in any family, plus Mythos Preview). `llm-test`
 starts with the same representative value of 0.2 that bootstrap and consolidation
 use, and then applies the provider's compatibility normalization before it sends
 the request.
@@ -1937,7 +1937,7 @@ Use `ai-memory auth status` to check whether a token is present. Use
 > **Leave the model at the provider default (`gpt-5.5`).** The Codex and ChatGPT
 > backend behind `openai-oauth` accepts only a small, server-defined set of model
 > IDs, and it rejects others with a deterministic 400 error (for example
-> `gpt-5-mini`) (a confirmar). Do not set `AI_MEMORY_LLM_MODEL` for this backend.
+> `gpt-5-mini`) (behavior of the external service; ai-memory does not validate the id). Do not set `AI_MEMORY_LLM_MODEL` for this backend.
 > Consolidation, lint, and explore are summarization tasks. If the default
 > reasoning is too heavy, set `AI_MEMORY_LLM_REASONING_EFFORT=none` or `low`, so
 > that hidden thought tokens do not consume the JSON budget. Keep high-effort
@@ -2366,6 +2366,7 @@ ai-memory bootstrap --dry-run
   "sources_collected": 117,
   "sources_sent": 22,
   "sources_dropped": 95,
+  "sources_by_kind": {"git_commits": 14, "readme": 1, "doc_files": 5, "module_headers": 0, "project_rules": 2},
   "estimated_input_tokens": 48760,
   "pages_written": [],
   "rationale": "(dry-run; LLM not invoked)",
@@ -2373,6 +2374,8 @@ ai-memory bootstrap --dry-run
   "llm_chunks": 1
 }
 ```
+
+The command first prints a human-readable report, then a line `--- machine-readable ---`, then the JSON above. Project-rules files are `CLAUDE.md`, `AGENTS.md`, `AGENT.md` and `claude.md` (only names the directory actually lists). A `--since` value that is not `N days ago`, `N months ago`, `N year(s) ago` or `YYYY-MM-DD` is silently ignored. Full rules: `consolidation-llm.md` section 11.
 
 Large repositories, such as those with years of git history, are pruned on the
 client before they are posted. The remaining sources are then processed in

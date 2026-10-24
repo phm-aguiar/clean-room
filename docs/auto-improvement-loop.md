@@ -16,7 +16,7 @@ O que isso significa na prática:
 - **Instalação sem LLM**: nada disso roda. Não há nada para decidir.
 - **Com LLM, configuração padrão**: as propostas são pequenas, limitadas e
   auditadas. Cada uma entra no registro de pendências com as citações de
-  evidência e a confiança. Dá para reverter pelo histórico da wiki (a confirmar). Para
+  evidência e a confiança. A versão anterior de cada página fica na cadeia de supersessão e pode ser restaurada (a aprovação em si não faz commit git; os commits seguintes da wiki a registram). Para
   ganhar confiança, rode `ai-memory pending-writes list` por uma semana.
 - **Servidor compartilhado por uma equipe**: defina `[auto_improve]
   require_approval = true`. Assim, nenhuma edição autônoma é aplicada sem
@@ -237,7 +237,7 @@ rejeita a proposta e registra o motivo.
 **Comuns a todas as propostas**
 
 1. Operação canônica (`create_or_update`).
-2. Confiança maior ou igual a `min_confidence` (padrão 0,75).
+2. Confiança entre 0 e 1 (senão `confidence_out_of_range`) e maior ou igual a `min_confidence` (padrão 0,75).
 3. Justificativa presente.
 4. Evidência presente e completa.
 5. Caminho normalizado e portável para o sistema de arquivos.
@@ -245,6 +245,7 @@ rejeita a proposta e registra o motivo.
 
 **Página inteira (`full_page`)**
 
+- (Todos os limites de "caracteres" desta seção contam **bytes** UTF-8; a regra `max_proposals_exceeded` é avaliada antes da normalização.)
 - Corpo não vazio, com no máximo o menor entre `max_final_body_chars`
   (padrão 32000) e o teto absoluto de 32000 caracteres.
 - Para `_rules/`, o corpo cabe em `max_rule_page_tokens` (padrão 2000 tokens,
@@ -272,7 +273,7 @@ rejeita a proposta e registra o motivo.
 - O corpo original não pode ter títulos repetidos.
 - As edições são aplicadas em ordem. Cada uma usa uma âncora: um título
   markdown exato, com os marcadores (por exemplo, `## Processo de release`).
-  A comparação ignora caixa e espaços repetidos.
+  A âncora é procurada por **igualdade exata** da linha; só a detecção de cabeçalhos duplicados ignora caixa e espaços repetidos.
   - `append`: insere conteúdo no fim da seção da âncora.
   - `add_section`: insere uma seção irmã logo após a âncora. O novo título
     precisa ter o mesmo nível da âncora.
@@ -301,7 +302,7 @@ quando houver. Os principais motivos são:
 | Motivo | Quando |
 |---|---|
 | `unsupported_operation` | Operação diferente de `create_or_update` |
-| `confidence_below_threshold` | Confiança abaixo do mínimo |
+| `confidence_below_threshold` / `confidence_out_of_range` | Confiança abaixo do mínimo, ou fora de [0, 1] (NaN, percentual) |
 | `missing_rationale` / `missing_evidence` | Justificativa ou evidência ausente |
 | `invalid_path` / `unsupported_path_prefix` | Caminho inválido ou fora dos destinos |
 | `unsupported_edit_mode` | Modo de edição desconhecido |
@@ -388,7 +389,7 @@ passa por limpeza de dados sensíveis.
   agendador não exige aprovação manual. Exigir aprovação não impede o
   agendamento.
 - No momento da aprovação, uma página fixada (pinned) nunca é reescrita. A
-  proposta vira `conflict` com o motivo "target page is pinned". Existe uma
+  proposta vira `conflict` com o motivo "target page is pinned; pinned pages are never rewritten by auto-improvement". Existe uma
   exceção: páginas de estado em `_slots/` que não são invariantes. Slots
   invariantes continuam protegidos.
 - Se o alvo mudou desde o registro (outra versão, outro hash ou outro
@@ -408,7 +409,7 @@ passa por limpeza de dados sensíveis.
 | `approved` | Aplicada na wiki |
 | `rejected` | Rejeitada por uma pessoa, com motivo |
 | `conflict` | Aprovação tentada, mas recusada (página fixada ou alvo mudou) |
-| `failed` | Falha ao aplicar depois da aprovação |
+| `failed` | Falha ao aplicar depois da aprovação (inclui recusa da cadeia de admissão) |
 
 ## Buffer de rejeições
 
@@ -503,6 +504,152 @@ tabelas de contagem. O relatório inclui agregados, taxas de término (aprovado,
 rejeitado, conflito, falha), achados e pontos cegos. Só leitura, a menos que
 `--stage` seja usado. Com `--stage`, cria uma única página de relatório
 pendente de aprovação.
+
+## Formatos exatos (auditoria 2026-10-20)
+
+### Arquivo de revisão (`_pending/auto-improve/<id>.md`)
+
+Escrito logo depois do registro, fora do índice (nunca vira página, nem entra em FTS ou embeddings),
+de forma atômica, depois de passar pelo sanitizador. Texto (valores entre `<>`):
+
+````text
+# Pending auto-improvement proposal
+
+- proposal_id: `<uuid>`
+- run_id: `<uuid>`
+- operation: `<create|update>`
+- target_path: `<caminho>`
+- kind: `<kind>`
+- title: `<título>`
+- confidence: `<número>`
+- edit_mode: `<full_page|patch>`
+- expected_base_body_sha256: `<hex de 64 caracteres ou none>`
+- staged_at: `<microssegundos desde a época Unix>`
+
+## Rationale
+
+<justificativa>
+
+## Evidence
+
+```json
+<evidência em JSON indentado, 2 espaços>
+```
+
+## Patch metadata
+
+```json
+<edições em JSON indentado, ou null>
+```
+
+## Proposed body
+
+<corpo proposto (o corpo final materializado, também para patch)>
+````
+
+A confiança é gravada como número de 64 bits convertido do valor de 32 bits devolvido pelo modelo,
+então `0.82` aparece como `0.8199999928474426`; uma implementação pode arredondar sem afetar o
+comportamento (o arquivo é só para leitura humana).
+
+### Página criada pela aprovação
+
+A aprovação reescreve o corpo guardado (passando de novo pelo sanitizador e pela cadeia de admissão
+com a operação de escrita de página) como uma página nova com: tier **`semantic`**; fixada se e só se o
+caminho está em `_slots/`; frontmatter `{kind, title, auto_improve_proposal_id, auto_improve_run_id}`
+mais a marca de último modificador do ator; sem tags, sem evidência de página e com o autor igual ao
+aprovador. O arquivo é gravado antes da transação do banco; em conflito ou erro ele é restaurado ao
+conteúdo anterior (ou removido). A aprovação **não** faz commit git. Depois de aprovada, a versão
+recebe embedding. Recusa da cadeia de admissão marca a proposta `failed` (e registra no buffer de
+rejeições, exceto quando a recusa é indisponibilidade da cadeia) e devolve erro; proposta que não
+está mais `pending` devolve erro (HTTP 500 `auto-improve proposal is not pending or not in scope`).
+
+Conflito, exatamente: página fixada (e não slot de estado) → motivo `target page is pinned; pinned
+pages are never rewritten by auto-improvement`; `create` com alvo que agora existe, ou `update` com
+alvo ausente ou cujo identificador de versão, hash do corpo ou instante de atualização difira do
+snapshot do registro → `target changed since proposal was staged`. Ambos viram `conflict`, entram no
+buffer de rejeições e acrescentam o evento `conflict`.
+
+### Buffer de rejeições
+
+Linha por rejeição: caminho, kind, operação, modo, motivo, impressão digital, resumo e evidência.
+Impressão digital = SHA-256 hex de `caminho \n kind \n operação \n modo \n motivo \n resumo`, cada campo
+com espaços colapsados e minúsculas ASCII (ausente = vazio). Entram: (a) cada candidata rejeitada do
+relatório com `reason` não vazio (caminho = `target_path`, senão `path`, senão o campo `evidence` se for
+um caminho válido; resumo = `summary`, senão `evidence`, senão o motivo); (b) rejeição manual (motivo
+do revisor); (c) conflito; (d) falha de aprovação com `record_rejection`. Resumo da proposta rejeitada
+= título (ou, se vazio, a justificativa). O contexto do prompt lê as mais recentes primeiro.
+
+### `pending-writes` (CLI e rotas)
+
+- `list`: `--status`, `--limit` (padrão 50; a rota limita a 1..200); status inválido → 400. Saída humana:
+  uma linha `<id>  <status>  <operação>  <caminho>` (dois espaços) ou `(no pending writes)`.
+- `show`: `<caminho> [<status>] <título>`, linha em branco, justificativa, linha em branco,
+  `--- body ---` e o corpo. `--json` imprime o detalhe completo (inclui eventos).
+- `diff`: a rota responde `{proposal_id, diff}` com o texto (não é um diff unificado):
+
+```text
+--- before/<caminho>
++++ after/<caminho>
+@@
+<corpo atual da página (vazio se não existe)>
+--- proposed ---
+<corpo proposto>
+```
+
+- `approve`: 200 `{status:"approved", page_id}`; conflito 409 `{status:"conflict"}`; id inválido 400;
+  id desconhecido ou de outro escopo 404 `proposal not found in scope`. `reject`: corpo `{reason}`; 200
+  `{status:"rejected"}`. Saída humana `✓ approved <id>` / `✓ rejected <id>`.
+
+### Superfícies de revisão manual
+
+- `memory_auto_improve` (MCP) aceita `session_id`, `workspace`, `project`, `min_observations`,
+  `min_session_duration_secs`, `min_confidence`, `max_input_tokens`, `max_proposals` e
+  `include_raw_fallback` (sobrescrevem a configuração só nesta chamada); `dry_run`, `stage` e `mode`
+  falham com `-32602` `auto-improve dry_run/stage/mode arguments were removed; set
+  [auto_improve].require_approval = true for manual review`. Sem `session_id`: a sessão concluída mais
+  recente sem execução; se não houver, erro `-32603` `no completed session without an
+  auto-improvement run found for the resolved project; pass session_id to rerun a specific session`.
+  Falha do review: `-32603` `auto-improve failed: class=<classe> status=<status|none>`.
+- `POST /admin/auto-improve`: campo `eval` → 422 `auto-improve eval request field was removed;
+  configure [auto_improve.eval] on the server`; `dry_run`/`stage`/`mode` → 422 `auto-improve
+  dry_run/stage/mode request fields were removed; set [auto_improve].require_approval = true for
+  manual review`. O servidor sempre usa a configuração dele para o portão, o prefixo de páginas
+  editáveis e `require_approval`; os demais limites vêm do corpo (padrões iguais aos da seção
+  "Limites"). O campo `sidecar_path` da resposta é o caminho absoluto do arquivo no disco. Uma falha
+  de aprovação no meio do laço devolve erro 500 e as propostas restantes ficam `pending`.
+- `ai-memory auto-improve --session-id <id>`: sobrescritas `--min-observations`,
+  `--min-session-duration-secs`, `--min-confidence`, `--max-input-tokens`, `--max-proposals`,
+  `--include-raw-fallback`, `--json`. Saída humana: `Staged auto-improve run <run> for manual
+  approval` (ou `Auto-approved auto-improve run <run>`), `Approval policy: <manual|auto_approve>`, uma
+  linha por proposta `  - <id> [<status>] page <page_id> (<sidecar>)` (sem `page <id>` quando não há) e
+  as linhas das puladas.
+- A configuração do registro de execução manual não traz `trigger` nem `require_approval`; a do
+  agendador traz `trigger` = `scheduler` (ou `experience-scheduler`) e `require_approval`.
+
+### Relatório de telemetria
+
+`POST /admin/auto-improve/report` `{workspace, project, since_days (30), limit (10, limitado a 1..100),
+stage (false)}` e a CLI `auto-improve-report`. Estrutura: `workspace`, `project`, `generated_at`,
+`since_created_at` (microssegundos), `summary`, `params`, `aggregate` (contagens `{key,count}` por
+status, operação, modo, kind, kinds de manutenção, alvos mais propostos, motivos de rejeição,
+impressões digitais repetidas e alvos rejeitados; mais `run_count` e `runs_with_learning_proposals`),
+`terminal_rates` (`denominator`, `approved_rate`, `rejected_rate`, `conflict_rate`, `failed_rate`; taxa
+0 sem denominador), `findings` e `blind_spots`. Achados: `no_terminal_learning_proposals` (info, sem
+denominador), `pending_learning_proposals_excluded` (info), `maintenance_proposals_excluded` (info),
+`eval_gate_rejections_seen` (info) e um `repeated_rejection_fingerprint` (warning) por impressão digital
+repetida. Resumo: `<N> run(s), no terminal learning proposals in the last <D> day(s).` ou `<N> run(s),
+<T> terminal learning proposal(s), <P>% approved in the last <D> day(s).` (uma casa decimal). Pontos
+cegos fixos: erros de provedor antes do registro podem não aparecer nas contagens; taxas de sucesso e
+deltas do portão não são persistidos; as taxas excluem pendentes e propostas de manutenção. Em markdown
+(título `# Auto-Improve Telemetry Report`, aviso de somente-relatório, metadados, taxas em `%` com uma
+casa, uma subseção de contagens por tabela com `- None` quando vazia, achados, pontos cegos). Com
+`stage`, cria uma proposta `auto_improve_report` (confiança 1,0; ator `auto_improve_report`) em
+`notes/auto-improve-report-<microssegundos>.md`; o curador usa `notes/curator-<AAAA-MM-DD>.md`, kind
+`curator_report`, ator `curator`.
+
+### Navegador `/pending`
+
+Ver [wiki-browser.md](wiki-browser.md) seção "Triagem de propostas pendentes".
 
 ## Comandos, ferramentas e rotas
 

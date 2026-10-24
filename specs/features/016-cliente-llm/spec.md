@@ -77,3 +77,24 @@ Pacote `internal/llm` sem dependência de `storage` nem de `wiki`: interface `Pr
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria de 2026-10-20/22 contra o comportamento original (relatório `reports/004-auditoria-016-017-018.md`). Os docs foram corrigidos; esta spec passa a exigir:
+
+- **Classes de erro:** além das listadas, `serde` (rótulo literal), `truncated-response` (resposta estruturada com `finish_reason=length`) e `empty-content` (2xx sem conteúdo). Ambas são terminais, livres de conteúdo, e o modo estrito do `openai-compat` não recorre ao tolerante para elas. Textos de erro literais em `llm-client.md` §3.1.
+- **Corpo de erro:** segredos são redigidos e sequências de controle removidas **antes** do corte em 1 KiB; marcador de leitura `<failed to read provider error body: ...>`; excesso vira `provider response exceeded <N> bytes`.
+- **Redirecionamentos:** só dentro da mesma origem (máx. 10); endpoints de credenciais exigem https (loopback pode ser http).
+- **Base URL:** a base explícita do ai-memory vale para todos os provedores HTTP (inclusive `anthropic` e `openai`); só o `LLM_BASE_URL` sem prefixo se restringe a `openai-compat` e `opencode`. O texto anterior do catálogo estava errado.
+- **Anthropic:** Haiku só recebe campos de esforço a partir de 5.5; escolha de ferramenta forçada não vale para Opus/Sonnet >= 5.5 e Fable/Mythos >= 5.1 (modo automático com leitura tolerante do texto); `thinking` tem os modos `adaptive`, `disabled` e `between_tools` (Sonnet >= 5.5 com `none`); temperatura removida em qualquer família >= 4.7; reconhecimento aceita prefixos de Bedrock/Vertex.
+- **Cabeçalhos extras:** na variável de ambiente as entradas são separadas por vírgula (TOML: lista); numeração 1-based que conta entradas vazias; textos de erro literais.
+- **OpenAI:** montagem de URL (`v<1-2 dígitos>`), famílias `gpt-5/6`, `o1/o3/o4` com `max_completion_tokens`; normalização de schema detalhada (`$ref` isolado, `oneOf` -> `anyOf`, `required` completo).
+- **`openai-compat`:** chave ausente = `Bearer dummy`; normalização feita pelo próprio provedor; condição de recaída inclui `structured-output`; limpeza do tolerante inclui tag de fechamento avulsa (DeepSeek-R1/QwQ/Qwen3) e cerca de código; `AI_MEMORY_LLM_COMPAT_DISABLE_THINKING` (`chat_template_kwargs`); `HTTP-Referer`/`X-Title` literais do OpenRouter.
+- **Gemini:** URL e corpo exatos; profundidade 16 conta aninhamento, não só `$ref`; chaves removidas por nome em qualquer objeto (inclusive propriedades de dados com esses nomes); regras de `thinkingBudget: 0`.
+- **`opencode`:** listas de modelos por protocolo transcritas por inteiro; "base Go" definida pelo caminho da URL; rota Anthropic usa `x-api-key`; rota Responses sem stream e sem temperatura.
+- **Cadeia:** resumo `provedor/modelo: classe status` (sem colchetes); perfis `llm_fallbacks` não herdam base nem chave; variável `api_key_env` ausente vira pendência mesmo em provedores com credencial própria; dica de nova tentativa do status é `ai-memory llm-test --provider <p> --model <m>[ --base-url <b>] --prompt ping`.
+- **`llm-test`:** `--model` e `--prompt` obrigatórios; schema fixo `answer`; formato de saída em `llm-providers.md` §9; aceita também `cursor`.
+- **Provedor `cursor`** (CLI `agent` do Cursor) existia no original e não estava nos docs: agora documentado (`llm-client.md` §5.10). Entra na 018 (assinatura), mas o nome e o modelo padrão fazem parte do catálogo da 016.
+
+### Status
+**Ainda incompleta**: precisa de nova rodada de plano/tarefas (apagados de propósito) para incorporar os itens acima; os docs agora bastam para reimplementar. Pendência herdada do original: o analisador de ambiente do `AI_MEMORY_LLM_HEADERS` não foi reproduzido literalmente (aceitar vírgula e, por segurança, quebra de linha).

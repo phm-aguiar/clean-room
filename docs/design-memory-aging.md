@@ -482,7 +482,7 @@ vectors, nothing happens.
 - **Adaptive eps**: for each point, take the distance to its k-th nearest neighbor
   (k = `min_pts`, excluding itself). Sort these k-distances ascending. The elbow is
   the point of maximum perpendicular distance from the chord joining the first and
-  last values. For 2 or fewer points, or a flat chord, the elbow is the last value.
+  last values. Ties pick the first index. For 2 or fewer points the elbow is the last value.
   `eps = clamp(elbow, 0, max_eps)`. If `k == 0` or `n <= k`, there is nothing to
   cluster.
 - **DBSCAN** with that eps and `min_pts` (a core point has at least `min_pts`
@@ -494,9 +494,10 @@ vectors, nothing happens.
 
 ### 7.3 Collapse
 
-Per cluster, the **survivor** is the member with the highest retention (ties: first
-in order). The survivor is rewritten with the compaction builder (section 6) applied
-to the survivor body concatenated with every member body (separated by a blank line).
+Per cluster, the **survivor** is the member with the highest retention (on an exact tie, the **last**
+tied member in cluster order, i.e. the order DBSCAN reached them). The survivor is rewritten with the compaction builder (section 6) applied
+to the survivor body followed, after a blank line each, by the body of every *other* member (the
+survivor body counts once); the keep-token union is still capped at 48 tokens in total.
 It therefore keeps the union of keep-tokens, plus a trailing line:
 
 ```text
@@ -507,8 +508,7 @@ Its frontmatter gains `merged_from: [paths]` and `compacted: true`.
 
 Each other member is rewritten as a **stub**:
 
-- Body: "This page was merged into [[survivor-path]] by A3 cold-cluster dedup." plus a
-  footer saying the full body is in git history and recoverable with `restore-page`.
+- Body, exactly: `This page was merged into [[survivor-path]] by A3 cold-cluster dedup.`, a blank line, then `_Merged into the survivor below by A3 cold-cluster dedup. This page's full pre-merge body is retained in git history and the supersession chain, and can be recovered with restore-page._` and a newline.
 - Frontmatter: the member's own, plus `compacted: true` and `merged_into: <survivor path>`.
 
 All writes of all clusters go in one batch (survivor first, then its stubs). The
@@ -536,7 +536,7 @@ Config `[auto_improve.scheduler.experience_entropy_filter]`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | false | when false, always `keep` (the default for the config key is "a confirmar") |
+| `enabled` | false | when false, always `keep` (default false; confirmed) |
 | `min_chars` | 16 | minimum non-whitespace character count |
 | `min_entropy_bits_per_char` | 2.0 | minimum Shannon entropy over the character distribution |
 | `max_repetition_ratio` | 0.7 | maximum `1 - distinct_tokens / total_tokens` (tokens lowercased ASCII, split on whitespace) |
@@ -564,7 +564,8 @@ Part of the lint operation (see [consolidation.md](consolidation.md)). Advisory 
 - Config (top level): `contradiction_band_min` (default **0.4**, inclusive) and
   `contradiction_band_max` (default **0.75**, exclusive). Environment variables:
   `AI_MEMORY_CONTRADICTION_BAND_MIN` and `AI_MEMORY_CONTRADICTION_BAND_MAX`.
-  Validation (finite, `0 <= min < max <= 1`, startup fails otherwise) is "a confirmar".
+  Validation at startup (confirmed): both finite, `0 <= min < max <= 1`; otherwise config load fails with a message naming both keys.
+- Runs **only in a user-invoked lint** (`memory_lint`, `POST /admin/lint`, the CLI), never in the scheduled lint, which is rule-based only and passes no embedder. Eligible pages also exclude TTL-expired pages.
 - Candidates: latest pages of tier `semantic` or `procedural`, excluding paths under
   `_lint/`, sorted by `(access_count asc, updated_at asc, path asc)`, truncated to the
   **60** coldest. At least 2 must have stored vectors for the server's embedding
@@ -605,7 +606,7 @@ The job starts only if `[dream] enabled` AND an LLM provider AND an embedder are
 configured. Otherwise a log line explains why and nothing starts. It does not depend
 on `[maintenance] enabled`.
 
-Loop (the exact tick and watcher timings are "a confirmar"):
+Loop (timings confirmed):
 
 1. Sleep `interval_secs`.
 2. If `now - last_client_activity < idle_window_secs`, skip this tick. "Client
@@ -680,8 +681,7 @@ is retained in git history and the supersession chain, and can be recovered with
 `consolidate`. Evidence `{kind: "reconsolidation", source_id: "b2_dream:<loser page
 id>"}` per loser.
 
-Loser stubs: body "This page was merged into [[survivor]] by the LLM dream pass (B2)."
-plus a note that the full body is retained and recoverable. Frontmatter: the loser's
+Loser stubs: body, exactly `This page was merged into [[survivor]] by the LLM dream pass (B2).`, a blank line, `_Its full pre-merge body is retained in git history and the supersession chain, and can be recovered with restore-page._` and a newline. Frontmatter: the loser's
 own, plus `compacted: true` and `merged_into: <survivor>`.
 
 The survivor is **not** marked `compacted`, so it can become cold again later and be
@@ -729,8 +729,8 @@ as errors. Provider and apply failures are counted in `skipped`.
    `merged_from`, one stub with `merged_into`, and an evidence row `a3_merge:...`.
    With no embedder, nothing happens and there is no error.
 6. Dream enabled with provider and embedder, operator idle for 300 s or more: a run
-   starts. A tool call during the run sets cancel (timing "a confirmar", expected
-   within about 2 s), and the report shows `cancelled = true` after the current
+   starts. A tool call during the run sets cancel (the watcher samples the clock
+   every 2 s, so within about 2 s), and the report shows `cancelled = true` after the current
    cluster completes. With no provider the job never starts.
 7. A tombstone older than 180 days is purged; newer ones are kept. Rewriting a
    tombstoned path before the purge keeps the old version in the chain.

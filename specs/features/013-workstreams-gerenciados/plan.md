@@ -9,7 +9,7 @@
 - **Fontes de contrato:** as listadas na spec.
 
 ## 2. Design de Contratos e Fronteiras
-- **Rotas:** `/workstream/runs` (POST), `/workstream/runs/{id}` (GET), `/heartbeat`, `/cancel`, `/context`, `/context/accept`, `/link`, `/finish`, `/workstream/recent`, `/workstream/rename`, `/workstream/{id}/events` (GET), com os limites de `docs/lifecycle-event-ingestion.md` §12.
+- **Rotas:** `/workstream/runs` (POST), `/workstream/runs/{id}` (GET), `/heartbeat`, `/cancel`, `/context`, `/context/accept`, `/link`, `/finish`, `/recover/finish`, `/workstream/recent`, `/workstream/rename`, `/workstream/{id}/events` (GET), com os limites de `docs/lifecycle-event-ingestion.md` §12.
 - **Ambiente do filho:** `AI_MEMORY_RUN_ID`, `AI_MEMORY_WORKSTREAM_ID`, `AI_MEMORY_HOOK_URL` (lidos pelo hook através de `internal/config`).
 - **Esquema SQL:** sem migração; `workstreams`, `workstream_native_sessions`, `managed_runs`, `workstream_events` e o FTS já na V01.
 

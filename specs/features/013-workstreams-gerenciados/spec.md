@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 013
-- **Status:** draft (revisada contra os docs em 2026-10-13 no nível de escopo; contratos por harness vêm da fase 0 do `tasks.md`; nova revisão prevista quando a 010 terminar)
+- **Status:** draft (docs e spec auditados contra o ai-memory de referência em 2026-10-19; Windows é a primeira plataforma)
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 010 (adaptadores de transcrição, instalação nos agentes), 002 (`/handoff` e reivindicação), 007 (dono e acesso por projeto)
@@ -18,14 +18,16 @@ Quem troca de harness no meio de um trabalho quer que a retomada nativa do harne
 
 ### Dentro do escopo
 - **Conceitos e estados** (`docs/managed-workstreams.md` § Conceitos): workstream por `(workspace, projeto, fingerprint do repositório, fingerprint do worktree)`, execução com lease, sessão nativa vinculada, ledger append-only, cursores de origem e de entrega; estados `active`, `finished`, `expired`.
-- **CLI:** `run` (sintaxe, opções do wrapper antes do harness, flags consumidas, aliases `claude*`, `--executable`), `workstreams`, `rename-workstream`, `workstream-search`, `show`, `continue`, `resume` (`docs/managed-workstreams.md`, `docs/cli.md` §7 e §9.1).
+- **CLI:** `run` (sintaxe completa — `--workspace --project --workstream --new --executable --profile --env --env-file --require-server --yolo --true-yolo --fresh --force-unlock --no-autowire --jail --no-jail` —, flags consumidas depois do harness, aliases `claude*`, `copilot`, `--executable`, ambiente do filho), **menu pós-execução**, `workstreams`, `rename-workstream`, `workstream-search`, `show`, `continue`, `resume` (`docs/managed-workstreams.md`, `docs/cli.md` §7 e §9.1).
 - **Seleção** de workstream e de harness (explícito ou automático), **ordem do lançamento** em 17 etapas, **sessão nativa** (estabelecido, adoção interativa até 8 sessões, seletores explícitos, `--fresh`, sessão vinculada que sumiu), **lançamento degradado** com servidor indisponível (`--require-server`).
 - **Contexto entregue:** pacote com até 256 eventos, 6000 caracteres por evento, 30 000 no total, envolvido como histórico não confiável; entrega pelo hook de início de sessão com confirmação e avanço do cursor na mesma transação; **mesma transação da reivindicação do handoff**, que não é consumido se a confirmação do contexto falhar; Crush (arquivo de configuração temporário) e Grok (opção de regras) pelo lançador.
 - **Importação** ao sair: lotes de até 400 eventos ou 1 MiB, identificadores determinísticos, cursor por finalização, segmento sanitizado imutável em `raw/`, limites (4096 por finalização, 64 KiB de entrada, 16 KiB no ledger, id até 512 bytes, papel até 32), 3 tentativas.
 - **Lease e heartbeat:** 90 s, heartbeat a cada 30 s com tempo de 10 s, espera por lease alheio, `--force-unlock` só para o mesmo operador, cancelamento e códigos de saída.
-- **Rotas `/workstream/*`** e limites (`docs/lifecycle-event-ingestion.md` §12, `docs/api-reference.md` §6); acesso por projeto e regra de dono nas mutações de run (`docs/design-per-project-authz.md`).
+- **Recuperação** (`docs/downtime-recovery.md`): diário local, `ai-memory recover`, rota `recover/finish`.
+- **Registro local do cliente** (`client-projects.json`) e `continue`/`resume` (`--all`, `--search`, `--limit`).
+- **Rotas `/workstream/*`** (12, incluindo `recover/finish`) e limites (`docs/lifecycle-event-ingestion.md` §12, `docs/api-reference.md` §6); acesso por projeto e regra de dono nas mutações de run (`docs/design-per-project-authz.md`).
 - **Auto-wire** (`run_autowire`, uma vez por harness, versão e local; sem MCP no degradado).
-- **Yolo e ai-jail** (`docs/design-yolo-safety-ai-jail.md`): aviso do `--yolo`, detecção e oferta do jail, reexecução, já dentro do jail, `--true-yolo` do Claude, seleção do que o jail expõe.
+- **Yolo e ai-jail** (`docs/design-yolo-safety-ai-jail.md`): aviso do `--yolo`, `--true-yolo` do Claude. **No MVP Windows o jail é inexistente**: `--jail` falha com a mensagem do doc, `--no-jail` é aceito, nunca há oferta nem reexecução; detecção, oferta, checklist e seleção do que o jail expõe ficam para as plataformas Unix.
 - **Contribuições de harness gerenciado** (`docs/managed-harness-contributions.md`): contrato para registrar um harness novo, script de aceitação.
 - Integração com a purga de projeto da 003 (lease vivo bloqueia sem `--force`) e com o movimento de projeto.
 
@@ -48,6 +50,16 @@ Quem troca de harness no meio de um trabalho quer que a retomada nativa do harne
 - **Preparação recusada (autenticação, erro de resposta):** o agente não inicia.
 - **Sessão vinculada apagada:** sessão nova e reapontamento.
 
+## Correções da auditoria (2026-10-19)
+- **Rotas:** `POST …/context` exige escrita (não leitura) e só vale para Crush/Grok; `cancel` é idempotente (204 também em execução terminal; 404 se inexistente); `heartbeat` renova mesmo com o instante vencido enquanto `active`; `finish` em execução `expired` = 409 `managed run is not recoverable`; erro de ocupação tem formato fixo que o cliente interpreta (`workstream is already active: owned by <dono> until <RFC 3339>`). Detalhes em `docs/api-reference.md` §6.
+- **Importação:** conteúdo cortado em 64 KiB com marcador na rota e em 16 KiB com `…` no ledger; eventos de fronteira `managed-run:<run>:checkpoint|losses`; validação de agente/sessão do evento (`unresolved:<run>` sem sessão); sequência por workstream começa em 1; cursor de entrega ao concluir = `max(atual, X)`; segmento em `raw/workstreams/<id>/segments/<run>-<16 hex>.jsonl`.
+- **Pacote de contexto:** texto literal e regras de 6 000/30 000 **caracteres** em `docs/managed-workstreams.md`; troca de harness cria o dossiê `AI_MEMORY_PREVIOUS_SESSION_HISTORY`; reivindicação numa transação com o handoff, sem handoff no texto quando a reivindicação do contexto falha.
+- **Ambiente do filho** (`--profile/--env/--env-file`, comparação de nomes sem caixa no Windows) e **resolução de executável** por `PATH` + `PATHEXT` (nunca o irmão sem extensão; `cmdc` no Windows).
+- **Fingerprints** com fórmula exata (`docs/harness-adapters.md`).
+- **Registro do cliente** e **diário de recuperação**: formatos, limites, travas (`LockFileEx`) e proteção de arquivo no Windows.
+- **Purga de projeto (003):** só bloqueia execução `active` com lease **ainda válido** (`lease_expires_at > agora`); `--force` ignora.
+- **Sem timeout** nas chamadas HTTP do lançador, exceto sondagem (2 s) e heartbeat (10 s).
+
 ## Edge Cases
 - `kill -9` do lançador: lease vence em até 90 s; a próxima execução começa do último cursor comprometido, sem duplicar.
 - Finalização repetida responde com zero eventos; finalizar execução `expired` é recusado.
@@ -55,7 +67,7 @@ Quem troca de harness no meio de um trabalho quer que a retomada nativa do harne
 
 ## Constraints
 - **Segurança:** conteúdo sanitizado antes de gravar no ledger e no segmento (remover segredo antes de cortar); pacote de contexto como dado não confiável.
-- **Tecnologia:** `os/exec` para o processo filho, sem shell.
+- **Tecnologia:** `os/exec` para o processo filho, sem shell; no Windows, resolver o arquivo por `PATH`/`PATHEXT` e executar o arquivo resolvido (não o nome simples). Ctrl+C: tratar `CTRL_C_EVENT`; o filho recebe o mesmo evento do console.
 
 ## Critérios de Sucesso
 - [ ] Ordem do lançamento e regras de lease testadas com um servidor e um harness falsos

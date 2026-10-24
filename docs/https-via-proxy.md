@@ -101,15 +101,18 @@ O servidor não infere HTTPS a partir de `X-Forwarded-Proto` nem de qualquer out
 
 O proxy deve repassar o cabeçalho `Authorization` sem alterá-lo. O token bearer é lido diretamente dele.
 
-A resposta do `/api/v1` tem ETag calculado sobre o corpo da resposta. Ele não depende do host nem do esquema recebidos. A confirmar: que nenhuma resposta contém URLs absolutas montadas com o esquema ou o host de origem.
+A resposta do `/api/v1` tem ETag calculado sobre o corpo da resposta. Ele não depende do host nem do esquema recebidos. Confirmado no código de referência: nenhuma resposta do navegador embutido, da API ou da interface customizada monta URL absoluta com o esquema ou o host da requisição. Os redirecionamentos (login, troca de senha, barra final) devolvem `Location` só com o **caminho** (começando por `/`, com o prefixo de base já incluído), e os links do HTML são relativos à base injetada. Por isso um proxy que reescreve `Host` ou o esquema não quebra os links.
 
 ### IP do cliente (`X-Forwarded-For`)
 
 O cabeçalho `X-Forwarded-For` é usado somente para limitar tentativas de login e de recuperação de senha. Ele é honrado apenas quando a conexão vem de um CIDR listado em `[auth].trusted_proxy_cidrs`:
 
-- Os valores de todas as ocorrências do cabeçalho são lidos na ordem recebida.
-- O servidor percorre os IPs da direita para a esquerda e usa o primeiro que não pertence aos CIDRs confiáveis. Se todos pertencerem, usa o primeiro IP da lista.
-- Se a conexão não vier de um CIDR confiável, se o cabeçalho estiver ausente, ou se algum valor não for um IP válido, vale o IP da conexão.
+- Os valores de todas as ocorrências do cabeçalho são lidos na ordem recebida e concatenados em uma só lista; cada valor é dividido em vírgulas e cada item é aparado.
+- O servidor percorre os IPs da direita para a esquerda e usa o primeiro que não pertence aos CIDRs confiáveis. Se todos pertencerem, usa o primeiro IP da lista (o mais à esquerda da primeira ocorrência do cabeçalho).
+- Se a conexão não vier de um CIDR confiável, se o cabeçalho estiver ausente, ou se algum item não for um IP válido (item vazio, como em `1.2.3.4,`, valor com porta, valor com bytes que não são ASCII), vale o IP da conexão. Um único item inválido invalida a lista inteira.
+- Sem informação do par da conexão (não ocorre em um servidor TCP normal), o endereço usado é `0.0.0.0`.
+- `[auth].trusted_proxy_cidrs` (variável `AI_MEMORY_AUTH__TRUSTED_PROXY_CIDRS`, lista separada por vírgula): cada entrada é `a.b.c.d/n` ou `x::y/n` (prefixo até 32 em IPv4 e até 128 em IPv6) ou um endereço puro (`/32` ou `/128`); na variável de ambiente as entradas são aparadas e as vazias são descartadas. Uma entrada vazia (só possível no arquivo de configuração), com endereço ou prefixo inválido impede a inicialização, com o texto `invalid [auth].trusted_proxy_cidrs entry "<entrada>": <motivo>` (motivos: `empty CIDR`, `invalid CIDR prefix in "<entrada>"`, `invalid CIDR address in "<entrada>"`, `CIDR prefix N exceeds 32|128`). IPv4 e IPv6 nunca se comparam entre si (um IPv4 mapeado em IPv6 não casa com um CIDR IPv4).
+- O IP escolhido alimenta só o limitador de tentativas de login e de recuperação: no máximo **10 falhas por IP em 60 s** (janela deslizante, cada falha expira individualmente quando passa de 60 s), no máximo 4 096 IPs guardados (cheio: descarta os expirados e, se ainda cheio, o IP cuja falha mais antiga é a mais velha); acima do limite a resposta é `429` com `{"error":"too many login attempts"}`. Ver [users.md](users.md).
 
 ### Identidade asserida pelo proxy (multiusuário)
 
@@ -171,7 +174,12 @@ ai-memory install-hooks --agent  claude-code --apply \
     --server-url "https://memory.example.com/wiki" --auth-token "$AI_MEMORY_AUTH_TOKEN"
 ```
 
-O caminho da URL configurada no cliente é usado como prefixo base pelo cliente.
+O caminho da URL configurada no cliente é usado como prefixo base pelo cliente. Regras exatas (comandos clientes como `status`, `backup`, `compact`, e o teste de saúde do contêiner):
+
+- A URL do servidor é dividida em origem (esquema + autoridade) e caminho (tudo a partir da primeira `/` depois da autoridade); barras finais são aparadas. Uma URL sem `://` é tratada como origem opaca, sem caminho.
+- O prefixo de base do cliente é, nesta ordem: o caminho da URL do servidor (`http://host:49374/wiki` → `/wiki`); se a URL não tem caminho, o valor de `AI_MEMORY_BASE_PATH` (ou `base_path` do arquivo de configuração). O caminho da URL **vence** a variável. O prefixo escolhido passa pelo mesmo normalizador de prefixo (abaixo): um caminho com caractere fora do conjunto não reservado ou com segmento `.`/`..` vira raiz (`""`), sem aviso.
+- Toda rota chamada é `origem + prefixo + rota` (ex.: `http://host:49374/wiki/admin/status`).
+- A URL padrão do servidor, quando nem o arquivo de configuração nem `AI_MEMORY_SERVER_URL` a definem, é derivada do endereço de escuta configurado (`AI_MEMORY_BIND`/`bind`): o `host:port` vira `http://host:port` (divide no último `:`; `0.0.0.0` vira `127.0.0.1` e `[::]` vira `[::1]`; nome de host e IPv6 entre colchetes são mantidos; host vazio, porta 0 ou inválida, ou IPv6 sem colchetes deixam a URL padrão). Sem nenhum dos dois: `http://127.0.0.1:49374`. A opção `--bind` da linha de comando do `serve` **não** entra nessa derivação (é de outro processo).
 
 A interface web fica em `https://memory.example.com/wiki/web`. Para servir a interface diretamente em `https://memory.example.com/wiki`, defina `AI_MEMORY_WEB_SLUG=/`. Isso vale para a interface integrada e para uma interface customizada de página única (`--web-ui-dir`).
 
@@ -186,7 +194,9 @@ Login humano: a interface integrada tem página de login própria, sob o caminho
 - Cada segmento precisa conter apenas caracteres não reservados da RFC 3986 (`A-Z`, `a-z`, `0-9`, `-`, `.`, `_`, `~`).
 - Os segmentos `.` e `..` são rejeitados. Em fronteira de segmento significam diretório atual e pai, e aceitá-los permitiria percurso de diretório no prefixo.
 - Se qualquer segmento for inválido, o valor inteiro cai para montagem na raiz. O log de inicialização registra o motivo.
-- O redirecionamento permanente de barra final, de `{base_path}{web_slug}/` para a forma canônica, preserva a query string.
+- O redirecionamento permanente de barra final, de `{base_path}{web_slug}/` para a forma canônica, usa status **308** e preserva a query string.
+- O aviso de inicialização para prefixo inseguro é `AI_MEMORY_BASE_PATH is not a safe path prefix; serving at root instead` (e `AI_MEMORY_WEB_SLUG is not a safe path prefix; serving the web UI at the base-path root instead`), com o valor bruto no registro. Entrada que só tem espaços ou barras não gera aviso (é raiz legítima).
+- O healthcheck do contêiner (`status`) usa o mesmo prefixo (variável `AI_MEMORY_BASE_PATH` do ambiente do contêiner) e o `Host` `127.0.0.1:49374`; a lista de hosts permitidos deve manter `127.0.0.1` ou `localhost`, senão a própria verificação de saúde recebe 403 e o contêiner fica `unhealthy`.
 
 ## Clientes
 

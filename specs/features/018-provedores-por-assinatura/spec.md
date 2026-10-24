@@ -71,3 +71,19 @@ Arquivos novos em `internal/llm` (um por provedor e um para o stream de Response
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria de 2026-10-20/22 contra o comportamento original (relatório `reports/004-auditoria-016-017-018.md`).
+
+- **Decisão em aberto resolvida:** o `auth login openai-oauth` usa **fluxo de dispositivo** (não navegador/PKCE): URLs `https://auth.openai.com/api/accounts/deviceauth/usercode` e `.../deviceauth/token`, página `https://auth.openai.com/codex/device`, troca em `https://auth.openai.com/oauth/token` com `redirect_uri=https://auth.openai.com/deviceauth/callback`, cliente `app_EMoamEEZ73f0CkXaXp7hrann`, polling `interval + 3 s` com 403/404 = pendente. Texto completo em `llm-client.md` §4.5. Não há decisão nossa a registrar.
+- **`openai-oauth`:** endpoint `https://chatgpt.com/backend-api/codex/responses`; cabeçalhos fixos (`openai-beta: responses=experimental`, `originator: codex_cli_rs`, `session_id` UUID v4); `max_output_tokens` nunca enviado; `temperature` omitida para `gpt-5*`, `gpt-6*` e qualquer modelo iniciado por `o`; extração de `chatgpt-account-id` (3 locais do JWT); parser SSE detalhado; evento terminal = erro 502 sintético (transitório, aciona fallback).
+- **`codex`:** protocolo JSON-RPC da recuperação (`initialize`, `initialized`, `account/read` com `refreshToken: true`), mensagens, trava por instância (chamadas concorrentes **esperam**), `CODEX_HOME` definido para a pasta do arquivo.
+- **`copilot`:** constantes e cabeçalhos transcritos; troca de token em `GET https://api.github.com/copilot_internal/v2/token`; base derivada de `proxy-ep` (`proxy.` -> `api.`); catálogo `/models`: ausente = Chat Completions (guardado), HTTP não-2xx = Chat Completions (não guardado), falha de transporte propaga; Responses sem stream; `auth login copilot` aceita token do ambiente (`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) antes do fluxo de dispositivo (escopo `read:user`); embedder do Copilot tem 300 s e só repete 429.
+- **`anthropic-oauth`:** dica extra do `llm-test` em 429; o "aviso de políticas" está nos docs de instalação, não no `llm-test`.
+- **Novo provedor `cursor`** (CLI `agent`): ambiente em lista permitida, `--mode ask`, diretório temporário privado, limites 1 MiB/64 KiB, status 504 no timeout. Deve entrar no escopo desta feature (login pelo aplicativo do Cursor; sem comando `auth`).
+- **`auth.json`:** chaves `openai`, `copilot`, `oidc` com campos exatos, escrita atômica `auth.json.tmp`, apagado quando vazio; `auth status` / `auth logout` com textos literais.
+- Perfis de `llm_fallbacks` para provedores com credencial própria não usam `api_key_env` como credencial, mas uma variável nomeada e ausente ainda gera pendência.
+
+### Status
+**Precisa de ajustes**: incluir `cursor`, o protocolo de login por dispositivo e os detalhes acima; o item "Decisões tomadas" (protocolo do login) está resolvido pelos docs.

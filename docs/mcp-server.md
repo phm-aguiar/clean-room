@@ -159,11 +159,17 @@ Fluxo:
    fixadas do projeto (limitadas ao `limit`). Remove duplicatas por identificador e trunca
    novamente no `limit`.
 9. **`answer=true`** (opt-in; desligado por padrão). Só com esse argumento o LLM é acionado.
-   - Pede ao LLM uma resposta estruturada (`answer` e `citations`) sobre os resultados do projeto e
-     os de `_global`, com instrução de usar **somente** o conteúdo recuperado.
+   - Roda por último, depois de reordenação, `pin_first` e união de `_global`/perfil. Pede ao LLM uma
+     resposta estruturada (`answer` e `citations`) sobre os resultados do projeto e os de `_global`
+     (não sobre `raw_hits`), com instrução de usar **somente** o conteúdo recuperado. Prompt,
+     mensagem, esquema e temperatura (0,1) literais em `prompts-schemas-and-sanitizer.md` §8.3.
+     A resposta traz `answer: {text, citations}`; as citações são as que o modelo informou (o
+     servidor não as confere).
    - Sem provedor configurado: retorna os resultados com a nota `answer_unavailable` (nunca erro).
    - Falha do provedor: retorna os resultados com nota de falha contendo a classe do erro e o
-     status HTTP (ou `none`).
+     status HTTP (ou `none`): `answer synthesis failed: class=<classe> status=<status|none>`.
+   - `global=true` e `as_of` não chamam o LLM e trazem `answer_unavailable` com texto próprio
+     (todos os textos no §8.3 do doc de prompts). Esses retornos vêm antes da reordenação.
    - `reasoning` (`minimal` padrão, `low`, `medium`, `high`, `max`) escala o orçamento de tokens da
      síntese sobre a base de **2000** tokens: `minimal` 1×, `low` 1,5×, `medium` 2×, `high` 3×,
      `max` 4×. Valor desconhecido é rejeitado. Não há campo de raciocínio por requisição fora desse.
@@ -200,11 +206,20 @@ Fluxo:
 - **`memory_briefing`:** snapshot estruturado com parâmetros `recent_pages_limit` (padrão 10, limitado a 1..100) e `settled_first` (padrão `false`).
   - Retorna `counts`, `activity_7d`, `activity_30d`, `last_observation_at`, `pending_handoff_count`, `pending_message_count`, `rules`, `slots`, `recent_pages`, `cross_project_dependents`, `cross_project_dependencies`, `scope`, mais `pinned` (até **10** páginas fixadas, omitido se vazio) e `settled` (somente com `settled_first=true`: até **8** páginas atuais e não expiradas cujo tipo derivado é `rule` ou `decision` — fixadas ou não —, cada uma com `path`, `title`, `kind` e `evidence_count`, ordenadas por contagem de registros de evidência decrescente e depois por `updated_at` decrescente).
 - **`memory_explore`:** digest em prosa feito pelo LLM, com o prompt de sistema do digest (ver
-  [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md)). Orçamento base de
-  **16 000** tokens, escalado por `reasoning` da mesma forma que em 3.1.
-  - Sem provedor de LLM: responde com `prose: null`, um motivo e o snapshot do briefing em JSON.
+  [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md) §8.2). Parâmetros
+  `focus` (texto livre opcional), `recent_pages_limit` (padrão 10), `workspace`/`project` e
+  `reasoning`. Orçamento base de **16 000** tokens, escalado por `reasoning` da mesma forma que em
+  3.1; temperatura 0,2; chamada de texto livre (sem esquema).
+  - Sucesso: `{ prose: <texto do modelo>, gap: {hours_since_last, bucket, description}, briefing: <snapshot> }`.
+  - Sem provedor de LLM: responde com `prose: null`, `reason` =
+    `no LLM provider configured; returning structured briefing instead` e o snapshot do briefing
+    em JSON (`briefing`).
+  - Falha do provedor: mesma forma, `reason` = `LLM call failed: class=<classe> status=<status|none>`
+    (nunca erro; log só com classe e status).
   - Registra incremento de acesso nas páginas que expôs (regras, slots, recentes, fixadas e
-    assentadas), resolvidas em lote.
+    assentadas), resolvidas por caminho em uma única leitura em lote, **antes** de saber se o LLM
+    está configurado e mesmo se ele falhar (as páginas foram lidas de qualquer modo); mesma
+    janela de 60 s por operador do §3.1.
 - **`memory_handoff_list`** e **`memory_message_list`:** listagens somente leitura (ver 3.3).
 - **`memory_install_self_routing`:** devolve o bloco marcado de roteamento, a lista de skills
   gerenciadas e dicas de destino por harness.
@@ -231,13 +246,17 @@ Fluxo:
 - **`memory_feedback`:** tipos `helpful`, `not_helpful`, `stale` ou `wrong`. O motivo é opcional:
   é higienizado (removem-se segredos, depois colapsam-se espaços) e cortado em **500** caracteres.
 - **`memory_consolidate`:** consolida uma sessão em uma página ou em várias (`multi_page=true`).
-  Sem `session_id`, usa a sessão concluída mais recente visível no projeto. Aceita `dry_run` (plano
+  Sem `session_id`, usa a sessão concluída mais recente visível no projeto (nenhuma: erro `-32602`
+  `no completed session in <escopo>; pass session_id to consolidate a specific session`). Aceita `dry_run` (plano
   sem chamar o LLM) e `instructions` por chamada, tratadas como preferências consultivas e não
   confiáveis.
 - **`memory_auto_improve`:** executa a auto-melhoria de uma sessão. Os argumentos `dry_run`,
   `stage` e `mode` foram removidos e são rejeitados. A revisão manual é configurada em
   `[auto_improve].require_approval`. Sem `session_id`, usa a sessão concluída mais recente sem
-  execução de auto-melhoria.
+  execução de auto-melhoria. Aceita ainda `workspace`, `project`, `min_observations`,
+  `min_session_duration_secs`, `min_confidence`, `max_input_tokens`, `max_proposals` e
+  `include_raw_fallback` (sobrescrevem a configuração só nesta chamada). Mensagens e formato da
+  resposta: `auto-improvement-loop.md`, seção "Formatos exatos".
 - **`memory_forget_sweep`:** varredura de esquecimento. `dry_run` mostra o que faria sem alterar nada.
   Exige autorização de administrador.
 - **`memory_lint`:** verificação de qualidade da wiki. Sem `dry_run`, grava o relatório na área

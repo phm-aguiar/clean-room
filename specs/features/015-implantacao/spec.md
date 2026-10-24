@@ -50,7 +50,22 @@ Operadores querem rodar o servidor fora da própria máquina com segurança: em 
 - **`X-Forwarded-For` de conexão não confiável ou com IP inválido:** vale o IP da conexão.
 - **Serviço Windows com outra conta que não a dona do diretório:** servidor sobe, commits da wiki falham, erro registrado na inicialização com a orientação.
 
+## Correções da auditoria (2026-10-20)
+Pontos em que a spec ou os docs divergiam do ai-memory de referência (docs corrigidos; a spec passa a exigir):
+- **Entrada de registro de logon e `service-host` (faltava inteiro):** no Windows o servidor em segundo plano do produto de referência não é serviço: é o valor `ai-memory` em `HKCU\...\CurrentVersion\Run` que inicia um supervisor oculto (reinício após 5 s, desiste após 5 falhas em menos de 10 s, parada cooperativa por arquivo, estado em `service-host.json`). Entra no escopo como alternativa sem administrador ao exemplo WinSW; `docs/windows-native-extras.md` §14. O comando `setup` que o instala é maior que esta feature: ver pendências no relatório 003.
+- **`upgrade` completo:** recusas (contêiner, prefixos de pacote, diretório não gravável), limites (120 s por requisição, 128 MiB por download, 4 096 entradas, 512 MiB expandidos), formato do `.sha256`, lista de permissão de caminhos do arquivo, nomes `.new`/`.old` (extensão trocada), `--force`, "already up to date", reaplicação de hooks só dos agentes preparados, caso especial do Claude Code, aviso de servidor remoto, mensagens literais: `docs/airgapped-install.md`.
+- **Healthcheck é cliente HTTP:** `status` chama `/admin/status` em `127.0.0.1` com o prefixo de base; `AI_MEMORY_ALLOWED_HOSTS` deve manter `127.0.0.1`/`localhost` e o usuário uid 1000 deve ler `/data`.
+- **Redirecionamento da barra final é 308**; cliente de linha de comando: o caminho da URL do servidor vence `AI_MEMORY_BASE_PATH`, ambos normalizados (inválido vira raiz); URL padrão derivada do `bind` (`0.0.0.0` → `127.0.0.1`).
+- **`X-Forwarded-For`:** itens separados por vírgula e aparados, qualquer item inválido (inclusive vazio) invalida a lista, sem par da conexão = `0.0.0.0`; `trusted_proxy_cidrs` aceita endereço puro (`/32`,`/128`), entrada inválida impede a subida; limite de 10 falhas por 60 s e 4 096 IPs.
+- **Keepalive:** o mesmo valor serve de tempo ocioso e de intervalo; falha de ajuste é só aviso.
+- **Erro de dono da wiki:** registrado em nível de erro no passo do checkpoint-base da inicialização (texto no `docs/windows.md`); o fallback de commit exclui os ledgers de hook.
+- **Resolvidos "a confirmar":** `raw/` guarda segmentos imutáveis de workstreams gerenciados (entra no backup se houver workstreams); `config.toml` pode conter segredos de `[auth]`; espaço necessário para `compact` ≈ tamanho do banco.
+- **Conflito spec × doc:** o critério "nenhuma conexão de saída por padrão" colide com o doc (`docs/airgapped-install.md`), que registra uma chamada ligada por padrão: o download em segundo plano do modelo de embeddings locais na primeira subida com provedor não definido. O teste vale para o MVP sem embeddings (feature 017 fora); ao implementar a 017 o teste deve fixar `embedding_provider = "none"` ou excluir esse download, e o exemplo do Happy Path 2 deve preparar os arquivos do modelo.
+- **Não verificáveis (ausentes do material de referência):** wrappers POSIX/PowerShell/cmd, script de deploy, unidades systemd/launchd/sysusers/tmpfiles, script e unidades de backup, composições Nix/AUR. O que os docs dizem deles ficou como estava, sem confirmação.
+
 ## Edge Cases
+- `upgrade` com `--version` vazio: erro; com tag igual à instalada: "already up to date" sem baixar; sem `.sha256` utilizável: recusa antes de extrair.
+- Valor `ai-memory` do registro de terceiros: nem `setup` nem `uninstall` o tocam.
 - `X-Forwarded-For` com todos os IPs confiáveis: usa o primeiro da lista.
 - Wrapper sem o comando do Docker: código 127 citando `AI_MEMORY_DOCKER`.
 - `upgrade` do wrapper sem checksum publicado: recusa a autoatualização.

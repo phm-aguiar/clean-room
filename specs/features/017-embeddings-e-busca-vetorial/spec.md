@@ -79,3 +79,22 @@ Pacote `internal/embed` (interface, remotos, sintético) e `internal/embed/minil
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria de 2026-10-20/22 contra o comportamento original (relatório `reports/004-auditoria-016-017-018.md`).
+
+- **Retentativa dos embeddings remotos:** `openai` e `openai-compat` repetem **429 e 503**, respeitam `Retry-After` inteiro (máx. 32 s) e têm orçamento de 62 s; Google e Copilot repetem só 429 (2, 4, 8, 16, 32 s); Voyage nunca. O cenário "seis 429 = 62 s" vale sem `Retry-After`.
+- **Identidade Google:** o nome gravado inclui `models/`. Modelos `embedding-2` não enviam `taskType` e reformatam o texto (`title: none | text: ...` / `task: search result | query: ...`).
+- **Prefixos:** `embed` simples não aplica prefixo; exemplos exatos (E5, Nemotron, e5-mistral, Qwen3 sem espaço final); variável de ambiente vazia apaga o prefixo do arquivo.
+- **Parse de resposta OpenAI:** ordem e textos de erro literais (`llm-client.md` §8.4). Voyage: corpo `input` é lista de um item.
+- **Embedder sintético:** FNV-1a 64 bits, minúsculas só ASCII, `hash mod dim`.
+- **Local:** URLs/arquivos, nome do temporário, mensagens, download segue redirecionamento entre hosts, inferência detalhada, `degenerate embedding norm`, `empty tokenization`.
+- **Escrita:** com embedder ativo, **toda escrita de página** (inclusive reindexação por arquivo editado fora e restauração) embute corpo e resumo na hora; falha só registra (`page_embed_failures`). Isso faltava no escopo.
+- **Inicialização:** local padrão sem arquivos baixa em segundo plano e segue sem embedder; local explícito baixa antes e falha se não conseguir; divergência de tripla só avisa.
+- **Backfill:** cada página só é lida se faltar vetor; resumo `abstract` sem registro de falha própria; `POST /admin/embed` **não** devolve `abstracts_embedded` (campos: `embedded`, `skipped`, `failed`, `would_embed`, `provider`, `model`, `dim`); `--force` sem `--project` varre todos os projetos do workspace; saída com `failed > 0` gera exit != 0 (`N page(s) failed to embed (E embedded, S skipped); run `ai-memory embed` again to retry them`); `--dry-run` imprime `dry-run: would embed N page(s), S already up-to-date`; o purge do `reembed` só apaga `page_embeddings`.
+- **Status:** `latest_pages_missing_embeddings`, `latest_pages_unembeddable`, `embed_failures_unresolved/recovered`, tripla por contagem; detalhe truncado em 500 caracteres.
+- Valores de configuração: provedores comparados exatamente; mensagens de erro literais em `llm-client.md` §8.2.
+
+### Status
+**Precisa de ajustes**: incorporar os itens acima (principalmente retentativa 503/Retry-After, embedding na escrita e o relatório sem `abstracts_embedded`). Pendências: valores de `config.json` do MiniLM (conferir contra o arquivo fixado) e a fidelidade numérica do encoder em Go (fixture de referência).

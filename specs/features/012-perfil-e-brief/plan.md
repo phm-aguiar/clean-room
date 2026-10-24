@@ -12,6 +12,7 @@
 - **Página de entrada:** `docs/design-cross-project-profile.md` §5.3.
 - **Configuração:** `[profile]` (§7) e `AI_MEMORY_PROFILE__*`; marcador `[profile] contribute/consume` e `[briefing]`.
 - **Rotas:** `GET /admin/profile/status|list|review|apply`, `POST /admin/profile/rebuild`.
+- **Brief:** `docs/session-brief.md` (algoritmo de tiers, orçamento em bytes).
 - **Esquema SQL:** sem migração; `profile_candidates`, `profile_entry_ledger`, `profile_harvest_marks`, `projects.profile_contribute/consume` já na V01.
 
 ## 3. Decisões Arquiteturais e Justificativas
