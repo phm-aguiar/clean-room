@@ -132,14 +132,15 @@ Itens de captura comuns a todos os agentes com hooks:
 | OpenCode | `opencode` (`open-code`) | Banco SQLite. | Não. |
 | OpenCode 2 (beta) | `opencode2` | Banco SQLite. | Não. |
 | Pi | `pi` | Arquivo JSONL da família Pi. | Não. |
-| Crush | `crush` | Banco SQLite do projeto. Contexto entregue por um arquivo global temporário, apontado pela variável `CRUSH_GLOBAL_CONFIG`. | A confirmar. |
+| Crush | `crush` | Banco SQLite do projeto. Contexto entregue por um arquivo global temporário, apontado pela variável `CRUSH_GLOBAL_CONFIG`. | Não (o Crush não tem hooks, então o lançador não abre nem finaliza sessão de hook). |
 | Oh My Pi | `omp` (`oh-my-pi`) | Arquivo JSONL da família Pi. | Não. |
 | Kimi Code | `kimi` (`kimi-code`, `kimi-cli`) | Arquivo JSONL. | Não. |
 | Command Code | `command-code` (`commandcode`, `cmdc`, `cmd`) | Registro de sessão v3, com árvore de mensagens. Raciocínio oculto e metadados de provedor não são importados. | Sim. |
 | Kiro CLI | `kiro` (`kiro-cli`). Motor v2 por padrão. | Arquivo JSONL do motor v2. | Sim. |
-| Kiro CLI, motor v3 | `kiro` com `--v3`, `--mode`, ou `--agent-engine` com valor diferente de `v2`. | Arquivo JSONL do motor v3. | Sim. |
+| Kiro CLI, motor v3 | `kiro` com `--v3`, `--mode`, ou `--agent-engine v3`. (Um `--agent-engine` com qualquer outro valor que não seja `v2` não é atribuído a nenhum motor: a invocação passa direto, sem vínculo de sessão.) | Arquivo JSONL do motor v3. | Sim. |
 | Grok Build CLI | `grok` (`grok-build`) | Arquivo JSONL. Contexto entregue pela opção `--rules`. | Não. |
-| Antigravity CLI | `antigravity` (`antigravity-cli`, `agy`). Retomada com `--conversation`. | Só os prompts digitados, lidos do histórico. Passos do assistente e de tools não são decodificados. O ledger vem da captura por hooks. | Sim. |
+| Antigravity CLI | `antigravity` (`antigravity-cli`, `agy`). Retomada com `--conversation`. | Só os prompts digitados, lidos do histórico (usados pelo backfill; o `run` não exporta transcript do Antigravity). Passos do assistente e de tools não são decodificados. O ledger vem da captura por hooks. | Sim. |
+| GitHub Copilot CLI | `copilot` (`copilot-cli`). Sessão nova com `--session-id <UUID>`; retomada com `--resume=<id>`. | Arquivo JSONL `events.jsonl` por sessão (reescrevível). | Não. |
 
 Regras da execução gerenciada:
 

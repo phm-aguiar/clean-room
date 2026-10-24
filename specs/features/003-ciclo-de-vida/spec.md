@@ -57,7 +57,7 @@ Importa agora porque, com a captura automática da 002 ligada, sessões caem em 
 - **Escopo ou sessão inexistente:** 404, nada criado nem apagado.
 - **Checkpoint prévio falhou:** 500, nada apagado.
 - **Remoção de arquivo falhou depois do commit:** 200 com `files_failed` preenchido; o banco já foi apagado; uma segunda chamada devolve 404.
-- **`purge-project` com execução gerenciada de lease vivo e sem `--force`:** 409 Conflict com `active_workstreams`, **inclusive em `dry_run: true`**; lease vencido não bloqueia.
+- **`purge-project` com execução gerenciada de lease vivo e sem `--force`:** 409 Conflict (corpo `{"error": "project has <n> active managed run(s) in workstream(s) …"}`, **sem** campo `active_workstreams`; correção da auditoria 008), **inclusive em `dry_run: true`**; lease vencido não bloqueia.
 - **`delete-workspace` em workspace não vazio sem `force: true`:** 409 Conflict com a lista `projects`, **inclusive em `dry_run: true`**; sem `confirm: true` quando `dry_run: false`: 400 Bad Request.
 - **`move-project` para o mesmo workspace:** 422; projeto ativo do hook sem `--force`: 409; execução gerenciada viva na origem em modo fusão: 409 mesmo com `--force`.
 - **Fusão (`copy-purge`) com conflito e política `block`:** 409 com a lista `conflicts`, nada copiado; sob `duplicate`, sufixos colidentes iniciam em `<stem>-from-<slug>.<ext>` e depois `-1`, `-2`, ... até `-9999`; página ilegível: 200 com `source_purged: false`, `pages_skipped` e commit git `"move-project-partial <from_ws>/<proj> -> <to_ws>/<proj>"`.

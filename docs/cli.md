@@ -336,8 +336,8 @@ entrada padrão. Ordem de processamento:
 6. **Chave de ingestão (UUID) gerada uma única vez** e incluída na query string da `url` gravada no item da fila (`ingest_key=<uuid>`). Toda
    nova tentativa reenvia a mesma URL, o que torna a ingestão idempotente.
 7. **Escrita na fila local**, instantânea, em arquivo temporário `.json.tmp` renomeado para `{created_ms:013}-{pid}-{seq:016x}-{recovery_key}.json` (com permissão `0600` em Unix). O JSON do item contém `{ url, body, created_ms, auth_mode, token?, attempts, profile? }`. A
-   autenticação é guardada por item (`auth_mode`): token estático embutido (`static_token`), credencial OIDC resolvida
-   e renovada na drenagem (`oidc_at_drain`), ou anônimo (`anonymous`).
+   autenticação é guardada por item (`auth_mode`): token estático embutido (`static`), credencial OIDC resolvida
+   e renovada na drenagem (`oidc`), ou anônimo (`none`); esses são os três valores gravados no campo `auth_mode` do arquivo.
 8. **Drenagem incremental:** em evento de uso de ferramenta pós-execução, se a fila tiver
    pelo menos **32** itens (configurável), drena-se com orçamento de **250 ms**. A fila
    não cresce indefinidamente, e a chamada de ferramenta nunca espera a rede por muito
@@ -349,7 +349,7 @@ entrada padrão. Ordem de processamento:
    Atenção: essa leitura de handoff é **destrutiva** no servidor. Agentes que não
    injetam esse conteúdo recebem o handoff sob demanda, por ferramenta MCP. O agente Kimi recebe o briefing opt-in no primeiro prompt (`UserPromptSubmit`).
 10. **Fronteiras** (`stop`, `pre-compact`, `session-end`): dispara um drenador em segundo
-    plano (`hook-drain`), com entrada/saída padrão nulas, saída de erro em `logs/hook-drain.log`, trava exclusiva de sistema operacional na fila (`.drain.lock`) e orçamento de
+    plano (`hook-drain`), com entrada/saída padrão nulas, saída de erro em `logs/hook-drain.log`, trava exclusiva de sistema operacional na fila (`.drain.lock`, esperada por até 30 s; se continuar ocupada, o drenador escreve um aviso em `hook-drain.log` e não envia nada nessa passada) e orçamento de
     **5 min**.
 11. Sempre responde sucesso ao agente.
 
@@ -368,11 +368,11 @@ No início da drenagem, arquivos `.json.tmp` órfãos com mais de **5 minutos** 
 
 Envio: `POST /hook/batch`. A resposta de confirmação indica quais itens foram aceitos e
 qual falhou (com compatibilidade para o formato antigo de confirmação). Apenas os itens
-confirmados são apagados. Os que falharam (`5xx`, `401` após retentativa ou `failed_index`) têm o contador de tentativas incrementado; erros `4xx` permanentes (exceto `401`, `408`, `429`) descartam o item imediatamente.
+confirmados são apagados. Os que falharam (qualquer resposta que não seja 2xx, `401`, `403`, `404`/`405` ou `429`; um `401` que persiste depois da retentativa; o item apontado por `failed_index`) têm o contador de tentativas incrementado. **Só o `403` descarta o item na hora** (o autor não pode escrever no projeto: reenviar seria recusado para sempre); `400`, `408`, `413`, `422` e os demais `4xx` contam como falha comum. A tabela completa de desfechos está em [downtime-recovery.md](downtime-recovery.md) §4.3.
 
 - Em lote recusado por **401**, a drenagem repete **uma vez** com o token atual que lhe
   foi entregue (`AI_MEMORY_AUTH_TOKEN` ou `<data_dir>/auth-token`). Isso cobre token rotacionado após a captura.
-- Respostas de limitação de taxa (**429**), timeout de requisição (**408**) e erros de rede não consomem tentativas.
+- Respostas de limitação de taxa (**429**), estouro do tempo da requisição no cliente, conexão recusada e falha de DNS (o endereço está morto, não o item) não consomem tentativas. Uma resposta HTTP `408` **consome** (conta como falha comum).
 - Endereços gravados nos itens são reapontados para o `server_url` atual antes do envio.
 - Um status de saúde da fila (contagens, idade, tentativas, **sem conteúdo**) alimenta
   os comandos `status` e `doctor`.
@@ -693,7 +693,11 @@ Regras de implementação dos comandos:
     (<erro>); finalizing without them`; sem diretório pessoal: `ai-memory: no home directory; session
     <id> is finalized without its prompts`).
   - **Efeito local:** apaga o id de sessão guardado pelos hooks do agente (por exemplo ZCode, que não
-    tem evento de fim) em `<dados>/hook-state/<agente>-session-id`.
+    tem evento de fim) em `<dados>/hook-state/<agente>-session-id`. Só acontece se pelo menos uma sessão
+    foi finalizada (nada selecionado = nada apagado); falha ao apagar é ignorada. O envio usa um cliente HTTP
+    sem tempo limite próprio; o diretório do `cwd` de reserva é o da variável de diretório do host (quando
+    definida e não vazia) ou o diretório atual; `--session-id` precisa ser um UUID (senão erro de parâmetro
+    do analisador de linha de comando).
   - **Saída:** `No open <agente> sessions matched <ws>/<proj>` ou `Finalized <n> <agente> session(s) for
     <ws>/<proj>` seguido de uma linha `  - <id>` por sessão; com `--json`, `{workspace, project, agent,
     finalized[]}`.

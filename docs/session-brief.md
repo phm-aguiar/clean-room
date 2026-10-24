@@ -12,7 +12,7 @@ On a session start the server can return, in the same payload as the pending han
 
 - The project marker turns it on with `[briefing] inject_on_session_start` set to a truthy value (`1`, `true`, `yes`, `on`; case-insensitive, trimmed). Its budget comes from `[briefing] max_chars` (an integer).
 - The hook client forwards them on the `/handoff` request as `briefing` (truthy) and `briefing_budget` (the raw text of `max_chars`). The server composes the brief only when `briefing` is truthy (`1`/`true`/`yes`/`on`, any case after trimming).
-- Budget: `briefing_budget` trimmed and parsed as a non-negative integer; absent or unparsable → **4000**; then clamped to **[1500, 20000]**. The floor exists because the fixed scaffold (title, security notice, fences, closing instruction) must always fit; the ceiling because the brief is paid on every session start.
+- Budget: `briefing_budget` trimmed and parsed as a non-negative integer (a leading `+` is accepted; a minus sign, a decimal point, thousands separators and a value above the largest 64-bit unsigned integer are unparsable); absent or unparsable → **4000**; then clamped to **[1500, 20000]**. The floor exists because the fixed scaffold (title, security notice, fences, closing instruction) must always fit; the ceiling because the brief is paid on every session start.
 - Scope: only the session's own `(workspace, project)`. The reserved global scope (`_global`) is **not** merged in: a rule that lives only there reaches the agent through on-demand queries, not through the brief.
 
 ## 3. Which pages
@@ -106,5 +106,22 @@ Each core page `i` has: `privileged`, `title_only_cost`, and either no tiers or 
 ## 7. Delivery by host
 
 - Hosts whose session-start hook injects standard output as context receive the brief inside the `/handoff` response of the session-start hook (after the profile digest, handoff, pending-handoff notice and managed context, before the inbox notice; parts are separated by a single `\n`).
-- Hosts that discard session-start output (Kimi Code) re-fetch `/handoff` on every user prompt; the client sends `briefing`/`briefing_budget` **only on the first prompt of a session**. It records that in a marker file `<data dir>/briefed/<key>` created after the request completes (success or failure; with the server down, one brief is lost and recovered next session). `<key>` is the sanitized native session id (every character other than ASCII letters, digits, `.`, `_` and `-` becomes `_`) or, without a session id, the SHA-256 hex of `<agent>\n<cwd>`. The directory keeps the 512 most recent files (it is shared with the profile-digest markers). The marker survives a context clear, so **re-briefing after a clear is not supported** in those hosts.
+- Hosts that discard session-start output (Kimi Code) re-fetch `/handoff` on every user prompt; the client sends `briefing`/`briefing_budget` **only on the first prompt of a session**. It records that in a marker file `<data dir>/briefed/<key>` created after the request completes (success or failure; with the server down, one brief is lost and recovered next session). `<key>` is the sanitized native session id (every character other than ASCII letters, digits, `.`, `_` and `-` becomes `_`) or, without a session id, the SHA-256 hex of `<agent>\n<cwd>`. The directory keeps the 512 most recent regular files: after the new marker is written, the other files are ordered by modification time, newest first (ties by name, descending), and every one past the 511th is deleted. Brief markers and the profile-digest markers (named `profile-<key>`) are counted together. The marker is an empty file, and a failure to write or prune it is ignored (the worst case is that the brief or the digest is requested again on the next prompt). A session whose key starts with `profile-` has a brief marker named like another session's profile-digest marker; the collision is negligible and unguarded. The marker survives a context clear, so **re-briefing after a clear is not supported** in those hosts.
 - A project whose marker does not opt in never produces the marker file and never asks for the brief.
+
+## 8. Fixed sizes and invariants (from the reference tests)
+
+Fixed sizes of the exact texts of section 5: the part before the first page section (title line, security line with the notice, blank line, start fence line) is 475 bytes; `tail` is 363 bytes; the unavoidable scaffold is therefore 838 bytes, and the budget floor of 1,500 leaves 662 bytes for content.
+
+For any budget in [1500, 20000] and any set of pages, hostile text included (fence markers, `<!--`, CRLF, emoji, metadata fields, empty bodies, bodies of thousands of words), a rendering satisfies:
+
+1. its length never exceeds the budget;
+2. the security notice is present;
+3. exactly one start fence and one end fence appear;
+4. it ends with the footer;
+5. it is deterministic (same input, same bytes);
+6. the pages shown are a prefix of the core list, and every core page is accounted for exactly once, shown or covered by the omitted section (a listed path, the `…and N more` line, or the bare count);
+7. when nothing was crowded out and recent pages exist, the recent section is present;
+8. the cost does not grow with the size of bodies that are not shown (24 pages of 1 MB each render in well under two seconds).
+
+Reference scenarios: a short page (`Use nextest for every test run in CI.` as the whole body of `_rules/short.md`) appears exactly once, not as an excerpt plus a body; a fence marker inside an `abstract` is escaped (`quoted &lt;!-- ai-memory:untrusted-history:end --&gt; then text`); a project with the page `_rules/style.md` whose body is `always use the single writer actor` gets a brief that contains `project brief`, that body, the end fence and, after the fence, the agent footer; a non-truthy `briefing` value (`false`) yields nothing when no handoff is pending, and with a pending handoff the handoff precedes the brief.

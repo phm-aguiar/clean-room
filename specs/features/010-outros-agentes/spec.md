@@ -38,6 +38,11 @@ A promessa do produto é trocar de agente no meio da tarefa sem reexplicar o con
 - macOS e o app de barra de menus (fora do escopo inicial em `tech.md`).
 - Imagem de contêiner, AUR e serviço de sistema (feature 015).
 
+## Correções da auditoria (2026-10-24, adaptadores de transcrição)
+- Verificação parcial encerrada: analisadores de Claude Code, Codex, Pi/OMP, Kimi, Command Code, Kiro v2/v3, Grok, Copilot, OpenCode/2, Crush e Antigravity conferidos linha a linha e transcritos em `docs/harness-adapters.md` §6 (perdas literais, cabeçalhos, SQL, cursores, limites).
+- Corrigido: filtro de eco do Claude só em `tool_result`; Antigravity não exporta no `run`; datas SQL ausentes; allowlist de metadados do servidor descarta `success`/`attribution`.
+- Dialeto do OpenCode por sondagem de versão também vale para `install-hooks`/`install-mcp`.
+
 ## Comportamento Esperado
 
 ### Cenário Principal (Happy Path)

@@ -2,7 +2,7 @@
 
 > **Escopo:** este documento contém partes que dependem de LLM ou de embeddings. Essas partes são opcionais e não fazem parte do escopo inicial, que funciona sem LLM. Podem ser removidas ou adiadas junto com as funções correspondentes.
 
-O suporte a workstreams gerenciados é mais restrito que o suporte a MCP ou a hooks de ciclo de vida. Esta versão gerencia Claude Code, Codex, OpenCode, OpenCode 2 (beta), Pi, Crush, OMP, Kimi Code, Command Code, Kiro CLI v2 e v3, Grok Build CLI e Antigravity CLI. Gemini CLI, Devin CLI, Cursor e as demais integrações da [matriz de suporte](support-matrix.md) não passam a ser gerenciadas apenas porque o ai-memory consegue capturar seus hooks.
+O suporte a workstreams gerenciados é mais restrito que o suporte a MCP ou a hooks de ciclo de vida. Esta versão gerencia Claude Code, Codex, OpenCode, OpenCode 2 (beta), Pi, Crush, OMP, Kimi Code, Command Code, Kiro CLI v2 e v3, Grok Build CLI, Antigravity CLI e GitHub Copilot CLI (14 adaptadores). Gemini CLI, Devin CLI, Cursor e as demais integrações da [matriz de suporte](support-matrix.md) não passam a ser gerenciadas apenas porque o ai-memory consegue capturar seus hooks.
 
 Um adaptador gerenciado precisa:
 
@@ -42,8 +42,8 @@ Se a identidade exata da sessão, a extração somente leitura ou a entrega de c
 
 - **Comando `ai-memory run`:** inclua a variante na lista de harnesses escolhíveis, com nome canônico e aliases.
 - **Mapeamento de harness gerenciado:** defina o nome canônico estável, o executável padrão, o tipo de agente correspondente e se o harness emite evento de fim de sessão. Harnesses sem esse evento (Command Code, Kiro v2 e v3, Antigravity) mantêm a sessão aberta até `ai-memory finalize-session`.
-- **Lista de validação do servidor:** o servidor aceita execuções gerenciadas somente de tipos listados explicitamente (hoje: Claude Code, Codex, OpenCode, Pi, Crush, OMP, Kimi Code, Command Code, Kiro CLI, Grok e Antigravity CLI). Inclua o tipo novo nessa lista.
-- **Seleção automática:** `ai-memory run` sem harness explícito escolhe entre uma lista do cliente e uma lista do servidor. Não inclua o harness em nenhuma delas antes de a descoberta de candidatos no checkout ser confiável. A data de modificação de um arquivo local é apenas uma dica de bootstrap. Em um workstream já estabelecido, a ligação atual do harness no servidor prevalece.
+- **Lista de validação do servidor:** o servidor aceita execuções gerenciadas somente de tipos listados explicitamente (hoje, os 12 tipos de agente: `claude-code`, `codex`, `open-code`, `pi`, `crush`, `omp`, `kimi-code`, `command-code`, `kiro-cli`, `grok`, `antigravity-cli` e `copilot-cli`; qualquer outro é recusado com `400 managed run requires a supported command-line harness`). Inclua o tipo novo nessa lista.
+- **Seleção automática:** `ai-memory run` sem harness explícito escolhe entre uma lista do cliente (Claude Code, Codex, OpenCode, Pi, Crush, Kimi Code, Command Code, Kiro v2 e Kiro v3) e uma lista do servidor (os tipos `claude-code`, `codex`, `open-code`, `pi`, `crush`, `kimi-code`, `command-code` e `kiro-cli`; um agente automático fora dela é recusado). Não inclua o harness em nenhuma delas antes de a descoberta de candidatos no checkout ser confiável. A data de modificação de um arquivo local é apenas uma dica de bootstrap. Em um workstream já estabelecido, a ligação atual do harness no servidor prevalece.
 - **Documentação:** atualize a matriz de suporte, a [arquitetura](architecture.md) e as [decisões de design](design-decisions.md), e registre a mudança no changelog do projeto. O changelog é gate de merge para mudanças visíveis ao usuário. Esse item é convenção de revisão; o código não o verifica.
 
 ## 3. Preservar o argv nativo e a posse da sessão
@@ -52,7 +52,7 @@ Implemente os modos de nova sessão, retomada e seletor explícito no componente
 
 ### Argumentos
 
-- Preserve todos os argumentos do usuário, na mesma ordem, exceto os tokens exatos `--yolo`, `--fresh` e `--true-yolo`, que pertencem ao wrapper. Todas as ocorrências desses tokens são removidas.
+- Preserve todos os argumentos do usuário, na mesma ordem, exceto os tokens exatos `--yolo`, `--true-yolo`, `--fresh`, `--force-unlock`, `--no-autowire`, `--jail`, `--jail=LISTA` e `--no-jail`, que pertencem ao wrapper. Todas as ocorrências desses tokens são removidas (um argumento que não é UTF-8 nunca é tocado).
 - Um seletor nativo explícito sempre vence o vínculo do ai-memory.
 - Ajuda, versão, modo sem persistência (`--no-session` e equivalentes) e subcomandos utilitários (como login, doctor e export) rodam em modo passthrough: nenhuma flag de sessão é injetada.
 - Modos não interativos (exec, run, print, prompt e equivalentes) continuam sendo sessões, mas não oferecem adoção de sessão existente.
@@ -74,10 +74,11 @@ Ao retomar um vínculo, o wrapper injeta o seletor abaixo somente se o usuário 
 | Kiro v2 e v3 | nenhum | `--resume-id <id>` no fim |
 | Grok Build | `--session-id <uuid>` gerado | `--resume <id>` |
 | Antigravity | nenhum | `--conversation <id>` no fim |
+| Copilot CLI | `--session-id <uuid>` gerado, no fim | `--resume=<id>` (forma com `=`) no fim |
 
 Regras complementares:
 
-- Gere um id próprio só quando a CLI aceitar um id fornecido pelo chamador. Hoje, isso vale para Claude Code, Pi e Grok. Nos demais, deixe o harness criar a sessão e descubra-a após a saída, pelo checkout exato e pelo horário de início.
+- Gere um id próprio só quando a CLI aceitar um id fornecido pelo chamador. Hoje, isso vale para Claude Code, Pi, Grok e Copilot CLI. Nos demais, deixe o harness criar a sessão e descubra-a após a saída, pelo checkout exato e pelo horário de início.
 - Não infira a sessão a partir de "a mais recente globalmente".
 - Em Kiro v3, se nenhum motor for escolhido, a opção de motor v3 é inserida no início do argv.
 
@@ -140,7 +141,7 @@ Exclua, anotando a perda quando houver:
 - raciocínio oculto, anotado com o nome do harness;
 - chamadas de ferramenta não concluídas, nos adaptadores que expõem o status (Crush e OpenCode 2);
 - mídia e conteúdo binário (por exemplo, resultados de imagem), anotados;
-- metadados de provedor e credenciais, que não são copiados. O servidor também higieniza o conteúdo antes de gravar o segmento bruto (a confirmar: a cobertura dessa higienização para todos os formatos);
+- metadados de provedor e credenciais, que não são copiados. O servidor também higieniza o conteúdo antes de gravar o segmento bruto; a cobertura é total e independente do formato do harness (a rota remove segredos do `content` de **todo** evento e só depois corta em 64 KiB; `source_record_id` e `metadata` passam pela lista de campos permitidos; o armazenamento do ledger higieniza de novo e limita a 16 KiB — ver [managed-workstreams.md](managed-workstreams.md#eventos-e-importação)). Os adaptadores, porém, **não** devem contar com isso para campos de identidade: o identificador nativo é validado pelo filtro de privacidade antes de qualquer uso;
 - conteúdo sintético injetado pelo próprio harness e o pacote de contexto gerenciado já entregue, para não reimportar o próprio contexto.
 
 As anotações de perda são deduplicadas. Se o conteúdo for opaco ou não documentado, devolva uma anotação de perda e conte com a captura de ciclo de vida sanitizada, sem adivinhar. Nunca copie um registro privado "por precaução".

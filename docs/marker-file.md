@@ -66,8 +66,8 @@ The reader is deliberately simple. The file is not parsed as a complete TOML doc
 | `server` | root | server profile name | install default | Selects a server profile. See [cli.md](cli.md). |
 | `default_global` | `[recall]` | truthy | off | Makes an unscoped read default to all projects. See [Recall default](#recall-default). |
 | `inject_on_session_start` | `[briefing]` | truthy | off | Injects a compiled project brief at session start. See [Session brief](#session-brief). |
-| `max_chars` | `[briefing]` | integer | 4000 | Character budget for the whole brief. Clamped to 1500 through 20000. |
-| `contribute` | `[profile]` | truthy or falsy | on | Whether this project contributes to the cross-project profile. See [cross-project-profile.md](cross-project-profile.md). |
+| `max_chars` | `[briefing]` | integer | 4000 | Budget for the whole brief, in UTF-8 bytes despite the key name. Clamped to 1500 through 20000. |
+| `contribute` | `[profile]` | truthy or falsy | on | Whether this project contributes to the cross-project profile. See [cross-project-profile.md](cross-project-profile.md). Whenever a marker resolves, the client sends `0` for a falsy value and `1` for anything else, a missing key included, so removing the key turns it back on. |
 | `consume` | `[profile]` | truthy or falsy | on | Whether this project reads the profile digest and union. |
 | `ignore_paths` | `[capture]` | array of strings | none (inactive) | Capture exclusions. See [Capture exclusions](#capture-exclusions). |
 | `[routes.*]` | home marker only | tables | none | See [Home marker](#home-marker). |
@@ -76,11 +76,11 @@ Section-style keys (`[recall]`, `[briefing]`, `[profile]`) are read by the same 
 
 ### Name rules
 
-`workspace` and `project` names are intended to match `^[a-z0-9][a-z0-9._-]*$`: lowercase ASCII letters and digits first, then dots, dashes and underscores. Home route names are checked against this pattern (see [Home marker](#home-marker)). The scope reader does not check local names. Where the server enforces the pattern is **a confirmar**.
+`workspace` and `project` names are intended to match `^[a-z0-9][a-z0-9._-]*$`: lowercase ASCII letters and digits first, then dots, dashes and underscores. Home route names are checked against this pattern (see [Home marker](#home-marker)). The scope reader does not check local names. Resolved on 2026-10-24: the pattern is enforced only for the home marker's route names (`route_workspace` and `route_project`, at most 512 bytes, the first character a lowercase letter or digit), by the client (the CLI and the generated plugins). The server does not apply it when a hook or a local marker names a workspace or a project: the name is used as sent and created on first use, and matching is case-sensitive. The only server-side name checks are those of the rename routes (see [lifecycle-ops.md](lifecycle-ops.md)) and the reserved profile names.
 
 ### Recall default
 
-With `[recall] default_global` on, an unscoped memory query from a session in this tree searches every project, and an unscoped recent-pages query returns the latest pages across projects. Each hit is annotated with its workspace and project. Explicit scope arguments override this default **a confirmar**. While it is active, unscoped queries return cross-project global hits instead of project hits. The reserved global preference pages still appear, annotated, among the global results. The setting is meant for meta-repositories that often need sibling-project context.
+With `[recall] default_global` on, an unscoped memory query from a session in this tree searches every project, and an unscoped recent-pages query returns the latest pages across projects. Each hit is annotated with its workspace and project. Explicit scope arguments override this default (confirmed on 2026-10-24: a non-blank `workspace` or `project` argument wins, and for `memory_query` so do a non-empty `scopes` list and `global = true`; `memory_recent` looks only at `workspace` and `project`). While it is active, unscoped queries return cross-project global hits instead of project hits. The reserved global preference pages still appear, annotated, among the global results. The setting is meant for meta-repositories that often need sibling-project context.
 
 ### Session brief
 
@@ -105,7 +105,7 @@ When the marker does not pin `project`, the project name is derived in this orde
 3. With `project_strategy = repo-root`, the name of the main repository root. Linked worktrees and subdirectories then share one project. The client CLI uses this only when there is no usable remote.
 4. The basename of cwd.
 
-The order used by lifecycle hooks after step 2 is **a confirmar**.
+The server resolves a lifecycle event or a session-start fetch in this order (confirmed on 2026-10-24; the client has already put the marker's `workspace` and `project`, the strategy, the repository identity and the aliases on the request). (a) The workspace is the marker's, else `default`. (b) When the marker declares aliases, they must match a stored project that carries the same repository identity, otherwise the request fails; the alias match is the project. (c) Otherwise, when a repository identity of a kind that routes by identity was sent (it is ignored for a marker `project` that has no aliases), the project already carrying that identity wins whatever its name; if none does, the candidate is claimed for it: the project whose stored repository path is the longest prefix of the cwd, else the project named by the next step. (d) Otherwise, when no `project` was sent, a project whose stored repository path is the longest prefix of the cwd wins over a differently named derived name, so a deep working directory never fragments a project. (e) Otherwise the named project is fetched or created: the marker's `project` if sent, else the name derived from the cwd (`repo-root`: the name of the main repository root; `basename`: the last component of the cwd). A name that is `_global`, `_profile` or starts with `_profile.` is replaced by the server's default project. For an event of an existing session, session-sticky routing (below) is tried before all of this.
 
 Without a git remote, the default is the basename of cwd. A marker that declares only `workspace` therefore does not force the project name to the folder name when the checkout has a remote.
 
@@ -259,7 +259,7 @@ A genuine workspace rescope, meaning a marker that names a different workspace t
 
 Session-creating events are unaffected in both modes. Opening a session in a plain folder outside any repository still names the project after that folder.
 
-Under `project_strategy = "repo-root"`, a mid-session event whose cwd is outside any git repository and outside any marker inherits the session's project. Agent scratch directories and data folders therefore do not create projects. Whether this applies in every host is **a confirmar**.
+Under `project_strategy = "repo-root"`, a mid-session event whose cwd is outside any git repository and outside any marker inherits the session's project. Agent scratch directories and data folders therefore do not create projects. Confirmed on 2026-10-24: the decision is made by the server from the strategy that the client sends (`project_strategy=repo-root`), so it applies to every host whose hook forwards the strategy, native hooks and generated plugins alike. A client that does not forward it is treated as `basename`: an out-of-tree event is then resolved on its own, while in-tree stickiness still applies. In both cases the session's own directory must be a meaningful anchor (not `/` and not `$HOME`).
 
 ## Allowlist mode: the marker as an opt-in
 
@@ -275,7 +275,7 @@ Forgetting the file has opposite costs in the two modes. By default a repository
 
 The mode is stored per install. A later bare `install-hooks --apply`, including an upgrade refresh, keeps it.
 
-The mode is enforced by the native hook commands and by the generated plugins for the supported hosts. Raw script fallbacks, the Docker host wrapper, and `setup-agent` snippets post to the server without these checks, so allowlist mode does not gate them **a confirmar**.
+The mode is enforced by the native hook commands and by the generated plugins for the supported hosts. Raw script fallbacks, the Docker host wrapper, and `setup-agent` snippets post to the server without these checks, so allowlist mode does not gate them. Confirmed on 2026-10-24: when `install-hooks --apply` writes script hooks under allowlist mode it prints `WARNING: this install uses script hooks, which POST directly and cannot enforce the mode. Allowlist is stored but NOT in force here.`; `setup-agent` passes no capture mode at all; [install.md](install.md) states the same for the Docker host wrapper and the `setup-agent` snippets.
 
 ## Capture exclusions
 
@@ -340,7 +340,7 @@ This is a lexical capture boundary, not complete data-loss prevention. Excluding
 
 ### Supported integrations and refresh
 
-Capture policy v1 is enforced by the native hook commands and by the generated plugins for OpenCode, OMP, Pi, and OpenClaw. Local installers use native commands where the host supports them. Legacy script hooks and remote-only or container script bundles do not enforce the policy **a confirmar**.
+Capture policy v1 is enforced by the native hook commands and by the generated plugins for OpenCode, OMP, Pi, and OpenClaw. Local installers use native commands where the host supports them. Legacy script hooks and remote-only or container script bundles do not enforce the policy (confirmed on 2026-10-24 against [install.md](install.md), "Capture exclusions": only native `ai-memory hook` commands and the generated OpenCode, OMP, Pi and OpenClaw integrations enforce it, and the installer's capability output shows which integration was selected).
 
 Reinstall the hooks, or refresh the generated plugins, after upgrading. Existing hooks keep their prior behavior until then. New clients stay safe with old servers because stripping and dropping happen on the client. Old clients talking to new servers keep old behavior and cannot enforce a host-only marker policy. The policy adds no tool and no database migration.
 

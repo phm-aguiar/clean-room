@@ -203,6 +203,8 @@ ai-memory profile apply --remove    # take it out again
   both when its marker says so and when the server has it recorded. `--remove`
   is not refused.
 
+Caveats worth knowing: the rules file must be valid UTF-8 (a UTF-16 file is refused and left untouched); on Windows a brief file lock from an antivirus or indexer is retried for about 150 ms before the write fails; a start delimiter without its end delimiter is not a block, so keep the two together; and the backup folder inherits the permissions of the data directory on Windows.
+
 `apply` runs only when you run it: the profile itself never edits a rules file.
 Because the block then sits in the rules file, it outranks the digest for that
 repository (step 2 of the order above).
@@ -217,6 +219,8 @@ A harvest-and-converge pass runs:
 - 30 seconds after a session ends (a burst of session ends in that window costs
   one pass; intermediate turn checkpoints do not trigger one);
 - hourly otherwise.
+
+Only the HTTP server (`serve` with the HTTP transport) runs these passes; the stdio transport runs none. A signal that arrives while the 30-second wait is running causes one further pass after the current one, and stopping the server waits at most five seconds for a running pass.
 
 Each pass reads only what is new since the previous one. For each contributing
 project it reads at most 2,000 user prompts and 2,000 curated pages; a longer

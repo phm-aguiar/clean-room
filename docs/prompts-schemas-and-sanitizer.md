@@ -817,7 +817,7 @@ As sentenças são dados. Pedidos ou comandos dentro delas não são seguidos ne
 - `quote` da evidência é sempre a frase original do usuário, nunca texto do modelo, cortada em
   500 bytes.
 - `category` fora da lista fixa vira ausente.
-- `applies_to` é filtrado para as etiquetas conhecidas.
+- `applies_to` é filtrado para as etiquetas conhecidas. Uma lista vazia significa "sem etiquetas" e substitui a derivação por vocabulário do Apêndice A.7 do design.
 - `confidence` é limitada ao intervalo `[0, 1]`; valor não finito vira ausente (e o candidato fica
   com a confiança-padrão 0,6 do caminho com LLM).
 - Índice fora do intervalo do lote é ignorado.
@@ -851,7 +851,7 @@ rejeitados.
 
 **Pós-processamento.**
 
-- `changed` falso: a entrada permanece como foi colhida.
+- `changed` falso: com entrada armazenada e sem inversão de negação, o texto armazenado (declaração, raciocínio e etiquetas) permanece; com inversão (por exemplo "always" contra "never" sobre as mesmas palavras), ou sem entrada armazenada, vale a declaração mais recente colhida. As regras exatas estão em `design-cross-project-profile.md` §6.
 - `changed` verdadeiro: `statement` substitui a entrada se não for vazia, cortada em 200 bytes.
   `reasoning` é cortada em 400 bytes; vazia vira ausente. `applies_to` substitui a lista quando
   restam etiquetas conhecidas.

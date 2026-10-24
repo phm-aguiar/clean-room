@@ -272,9 +272,9 @@ Fluxo:
     bastão;
   - a autorização de criação ocorre **antes** da inserção; os observadores são notificados depois;
   - o retorno traz `{ handoff_id, created_at }`.
-- `list`: não reivindica nada. Aceita `state` (`"open"` [padrão], `"accepted"`, `"expired"` ou `"all"`), `limit` (padrão **20**, limitado a **1..100**) e `all_owners` (booleano; só o administrador pode usar `all_owners=true`). Retorna `{ handoffs: [...] }`.
-- `accept`: reivindica um bastão pelo identificador exato (`handoff_id`) ou o melhor candidato para `cwd`, com comparação atômica (só uma sessão concorrente vence). Não aplica o filtro de 10 minutos de sessão viva, mas executa a varredura pós-reivindicação quando reivindica um handoff automático. `all_owners=true` só para administrador. Retorna `{ handoff: <objeto|null>, status: "claimed" | "consumed_by_hook" | "none_pending" }`.
-- `cancel`: marca como expirado o bastão com o identificador exato (`handoff_id`). `all_owners=true` só para administrador. Se não encontrado ou invisível ao operador, retorna erro JSON-RPC `-32603`; se cancelado agora, retorna `{ handoff_id, cancelled: true, state: "expired" }`; se já estava fechado, retorna `{ handoff_id, cancelled: false, state: "accepted" | "expired" }`.
+- `list`: não reivindica nada. Aceita `state` (`"open"` [padrão], `"accepted"`, `"expired"` ou `"all"`), `limit` (padrão **20**, limitado a **1..100**) e `any_owner` (booleano; só o administrador pode usar `any_owner=true`). Retorna `{ handoffs: [...] }`.
+- `accept`: reivindica um bastão pelo identificador exato (`handoff_id`) ou o melhor candidato para `cwd`, com comparação atômica (só uma sessão concorrente vence). Não aplica o filtro de 10 minutos de sessão viva, mas executa a varredura pós-reivindicação quando reivindica um handoff automático. `any_owner=true` só para administrador. Retorna `{ handoff: <objeto|null>, status: "claimed" | "consumed_by_hook" | "none_pending" }`.
+- `cancel`: marca como expirado o bastão com o identificador exato (`handoff_id`). `any_owner=true` só para administrador. Se não encontrado ou invisível ao operador, retorna erro JSON-RPC `-32603`; se cancelado agora, retorna `{ handoff_id, cancelled: true, state: "expired" }`; se já estava fechado, retorna `{ handoff_id, cancelled: false, state: "accepted" | "expired" }`.
 
 **Mensagens entre projetos:**
 
