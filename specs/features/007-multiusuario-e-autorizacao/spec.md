@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 007
-- **Status:** draft (revisada contra os docs em 2026-10-13; **auditada contra o comportamento do original e corrigida em 2026-10-19** — `users.md`, `cli.md`, `api-reference.md`, `mcp-server.md` e `install.md` atualizados; `plan.md` e `tasks.md` precisam ser regenerados)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (servidor HTTP com token de administrador, MCP, hooks, handoffs com dono)
@@ -79,7 +79,7 @@ Um servidor compartilhado precisa responder "quem fez esta requisição" e "quem
 - [ ] Regra de decisão de `docs/design-per-project-authz.md` coberta passo a passo, incluindo degradação e escopo global
 - [ ] Testes adversariais de `docs/mcp-server.md` §7 que se aplicam (token repetido, escopo de outro projeto, `any_owner` sem root)
 - [ ] Recusas da inicialização testadas uma a uma
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Um ponto único de autenticação no middleware (resolução do token portador e da sessão) que produz o contexto do ator, e um ponto único de autorização (capacidade por nível e decisão por projeto) consultado pelo resolvedor de escopo. Contas, chaves, sessões e grants no `storage`, sobre as tabelas da V01. Senhas em processamento separado do escritor, limitado a 2 verificações simultâneas.
@@ -96,3 +96,16 @@ Um ponto único de autenticação no middleware (resolução do token portador e
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria 012 (Chinese Wall, contra o código original). Relatório: `reports/012-auditoria-006-007-009.md`.
+
+- `docs/users.md`: nomes dos cookies (`ai_memory_session`, `ai_memory_csrf`, legado `ai_memory_auth`), forma exata do `Set-Cookie`, regra CSRF completa (cabeçalho `x-csrf-token` = cookie, tempo constante, e SHA-256 = hash guardado; 403 `csrf required`); bearer em rota só de sessão → 401; sessão de conta desativada → 401 mesmo sem revogação.
+- `docs/users.md`: nova seção da introspecção interna de sessão (`/internal/auth/session-introspect`): ordem das checagens, CSRF só para POST/PUT/PATCH/DELETE e sem comparação com cookie, `can_manage_api_keys`, e o fato de a rota não recusar por si conta desativada.
+- `docs/users.md`: resolvido o "a confirmar" da sessão alheia em hook (evento descartado como colisão, sem detalhes da linha); mensagens literais das checagens de segredos na inicialização; token root sem mínimo; inexistência de rota de exclusão de conta.
+- `docs/users.md`: **erro corrigido** — `generate-auth-token 32` não existe; o tamanho é a opção `--bytes` (padrão 32). Hash da chave nativa: SHA-256 de segredo ‖ `:` ‖ pepper, com o pepper usado como texto (hex não decodificado).
+- `docs/security.md`: nomes dos cookies e CSRF; `generate-auth-token` (hex minúsculo, sem mínimo, mensagem de falha); hooks em script não usam token OIDC (resolvido).
+- `docs/threat-model-and-data-handling.md`: resolvidos `new_projects_restricted` (desligado por omissão), ACL no Windows (herdada, sem código), mínimo do token de recuperação (32 bytes, sem prefixo reservado), ausência de exclusão de conta.
+- `docs/design-per-project-authz.md`: "page evidence counts" fechado (não há entrada por id cru; contagem só em recuperação já escopada); aplicação estrutural **não** aplicada (consultas por id sem escopo seguem públicas na camada de leitura); consolidação sem alvo permanece com a feature 020.
+- Verificados sem divergência: Argon2id (m=19456 KiB, t=2, p=1, sal 16 bytes, PHC), fila de KDF (2 simultâneos, 32 pendentes, 429 `kdf saturated`), verificação fictícia, senha temporária (24 bytes → 32 caracteres URL-safe), sessão `ams_`+43, CSRF 24 bytes→32 caracteres, TTL 7 dias, toque ≥ 60 s, SHA-256 sem pepper.

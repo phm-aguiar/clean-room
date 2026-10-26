@@ -620,10 +620,12 @@ process exits, so a crashed server never locks you out.
 - The reset, restore, reindex, and `uninstall --purge-data` commands use a
   separate check. They refuse to run while another ai-memory process is
   alive and list the process identifiers. The server does not run that
-  check. On Windows, the process check must match both `ai-memory` and
-  `ai-memory.exe` (case-insensitively), excluding the current process ID and
-  thread entries (and honoring test overrides `AI_MEMORY_TEST_NO_PROCESS_GUARD`
-  and `AI_MEMORY_TEST_FORCE_SIBLING_PIDS`).
+  check. The process check matches the exact name `ai-memory`, excluding the
+  current process ID and thread entries (and honoring test overrides
+  `AI_MEMORY_TEST_NO_PROCESS_GUARD` and `AI_MEMORY_TEST_FORCE_SIBLING_PIDS`).
+  On Windows the image name is `ai-memory.exe`, so the exact match misses live
+  siblings and the check does not refuse. Original behavior, reproduce as is
+  (no `.exe` variant, no case folding).
 
 ### Exposure and authentication
 

@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 009
-- **Status:** draft (revisada contra os docs em 2026-10-13; **auditada contra o comportamento do original e corrigida em 2026-10-19** — `sso.md` e `users.md` atualizados; `plan.md` e `tasks.md` precisam ser revistos/regenerados)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 007 (níveis, chaves de identidade, ponto único de autenticação)
@@ -66,7 +66,7 @@ Equipes com um provedor de identidade central (IdP OIDC) precisam que cada desen
 - [ ] Tabela de desfechos da sondagem e tabela de falhas de `docs/sso.md` cobertas por teste contra um IdP de teste
 - [ ] Ordem de bearer de hooks e CLI testada
 - [ ] Regras do proxy (400, nível, chave de identidade) testadas, incluindo os adversariais do `docs/mcp-server.md` §7
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Cliente OIDC no `cli` (fluxo de dispositivo, armazenamento e renovação), usado pela resolução de bearer do hook e dos comandos. No servidor, um degrau novo no ponto único de autenticação da 007, entre o root e as credenciais de banco, que produz o contexto do ator a partir dos cabeçalhos.
@@ -84,3 +84,12 @@ Cliente OIDC no `cli` (fluxo de dispositivo, armazenamento e renovação), usado
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria 012 (Chinese Wall, contra o código original). Relatório: `reports/012-auditoria-006-007-009.md`.
+
+- `docs/sso.md` verificado contra o original sem divergência material: escopo `openid profile offline_access`, sufixo de descoberta, regra https/loopback, parâmetros do device grant e do refresh, desfechos da sondagem, gravação em `auth.json` sob `oidc`, e ausência total de validação do token no servidor.
+- `docs/threat-model-and-data-handling.md`: o "a confirmar" sobre validação de JWT OIDC no servidor foi resolvido — não existe; a validação cabe ao gateway.
+- `docs/security.md`: resolvido que hooks em script (curl) não usam o token OIDC; só o comando de hook nativo tem spool e o token OIDC como último recurso.
+- Observação: esta spec cita bibliotecas de uma linguagem específica em Constraints; os docs permanecem agnósticos.

@@ -78,11 +78,11 @@ Regras:
 
 Todo identificador é um UUID do tipo **v7** (ordenado por tempo), gerado na criação. Cada
 tipo de identificador é distinto: um identificador de projeto não pode ser passado no lugar
-de um de workspace. Tipos:
+de um de workspace. Tipos de identificador:
 
-`WorkspaceId`, `ProjectId`, `SessionId`, `ObservationId`, `PageId`, `EntityId`,
-`HandoffId`, `MessageId`, `WorkstreamId`, `ManagedRunId`, `UserId`, `ApiCredentialId`,
-`AutoImproveRunId`, `AutoImproveProposalId`, `PageFeedbackId`.
+workspace, projeto, sessão, observação, página (versão), entidade, handoff, mensagem, workstream,
+execução gerenciada, usuário, credencial de API, execução de auto-melhoria, proposta de auto-melhoria e
+feedback de página.
 
 Comportamento comum:
 
@@ -101,9 +101,9 @@ Comportamento comum:
 
 Casos especiais:
 
-- **`PageId` identifica uma versão da página**, não o caminho. Cada atualização gera um novo
-  `PageId` (§6.3).
-- **`SessionId` vindo de um harness**: se o identificador nativo é lido como UUID (pelas
+- **O identificador de página identifica uma versão da página**, não o caminho. Cada atualização
+  gera um novo identificador (§6.3).
+- **Identificador de sessão vindo de um harness**: se o identificador nativo é lido como UUID (pelas
   formas aceitas acima), ele é usado como está, em forma canônica. Qualquer outra string (Codex,
   OpenCode e similares) é convertida de forma **determinística** em UUID versão 5 (SHA-1), com:
   - namespace: o namespace padrão **OID** da RFC 9562, `6ba7b812-9dad-11d1-80b4-00c04fd430c8`;
@@ -114,7 +114,7 @@ Casos especiais:
   Qualquer ferramenta offline que cruze transcrições por identificador nativo deve aplicar a
   mesma regra. Outra escolha de namespace gera chaves incompatíveis com bancos existentes.
 
-### 4.2 Caminho da página (`PagePath`)
+### 4.2 Caminho da página
 
 Caminho relativo da página dentro da árvore da wiki. A validação ocorre na construção, então
 o armazenamento pode tratar o caminho como chave plana.
@@ -169,7 +169,7 @@ A conversão para minúsculas é a **completa** do Unicode, não a de um caracte
 - depende do contexto: `Σ` no fim de palavra vira `ς` (sigma final), e no meio vira `σ`. Uma
   conversão sem contexto gera `σ` sempre, e a chave diverge.
 
-### 4.3 Tipo de agente (`AgentKind`)
+### 4.3 Tipo de agente
 
 Discriminador do agente de código que capturou uma observação ou handoff. São **27 valores**,
 incluindo `other`. A tabela dá o valor no fio (forma canônica, sempre a que é escrita) e os
@@ -230,7 +230,7 @@ de aceite de handoff.
 
 ## 5. Observações e sessões
 
-### 5.1 Tipo de observação (`ObservationKind`)
+### 5.1 Tipo de observação
 
 Eventos do ciclo de vida, em forma canônica de texto (kebab-case):
 `session-start`, `user-prompt`, `pre-tool-use`, `post-tool-use`, `pre-compact`,
@@ -430,7 +430,7 @@ física pela varredura de retenção está a confirmar** (ver evidência).
 
 ### 6.8 Links e relações tipadas
 
-`LinkTarget`: escopo opcional de workspace, escopo opcional de projeto, caminho e relação opcional.
+Alvo de link: escopo opcional de workspace, escopo opcional de projeto, caminho e relação opcional.
 
 | Forma no corpo | Significado |
 |---|---|
@@ -458,7 +458,7 @@ chave recusa o pedido.
 
 Links sem relação são gravados com o tipo `references`.
 
-### 6.9 Feedback (`FeedbackKind`)
+### 6.9 Feedback
 
 Quatro sinais de utilidade de uma página recuperada, via ferramenta de feedback:
 
@@ -619,7 +619,7 @@ vírgulas; espaços nas bordas de cada item são aparados e itens vazios são de
 o cabeçalho é controlado pelo cliente, e um usuário comum não pode furar um webhook de admissão
 com política de rejeição.
 
-### 8.4 Chave de identidade (`IdentityKey`)
+### 8.4 Chave de identidade
 
 Identidade **qualificada** do operador. É o único valor pelo qual a propriedade de um registro
 é decidida. Duas formas:
@@ -649,7 +649,7 @@ inversa reconstrói a identidade e a revalida.
 Qualificar a identidade torna **impossível** que um nome de usuário igual ao sujeito de outra
 pessoa compartilhe registros.
 
-### 8.5 Filtro de dono (`OwnerFilter`)
+### 8.5 Filtro de dono
 
 Três formas: **usuário** (só registros desse dono), **não atribuído** (só registros compartilhados)
 e **qualquer** (sem filtro).
@@ -674,7 +674,7 @@ Invariante: o filtro de dono vale para **handoffs e sessões**, nunca para **lei
 Problema: as ferramentas MCP não conhecem o diretório de trabalho do usuário. Os hooks conhecem.
 O roteador dos hooks publica um "projeto ativo" neste ponteiro e as ferramentas o leem como padrão.
 
-### 9.1 Modos de isolamento (`ActiveProjectMode`)
+### 9.1 Modos de isolamento
 
 | Modo | Chave | Quando |
 |---|---|---|
@@ -685,7 +685,7 @@ O roteador dos hooks publica um "projeto ativo" neste ponteiro e as ferramentas 
 Chamador sem nenhuma coordenada (nem usuário nem sessão) lê o **slot compartilhado**. É o que mantém
 uma instalação de um só harness funcionando como sempre.
 
-### 9.2 Roteamento no meio da sessão (`MidSessionRouting`)
+### 9.2 Roteamento no meio da sessão
 
 Configurado em `[routing] mid_session`. Decide qual projeto **durável** é gravado nas observações
 quando o diretório de trabalho muda durante a sessão. **Nunca afeta** a abertura da sessão, que
@@ -711,7 +711,7 @@ Em **ambos** os modos, um marcador de projeto (`.ai-memory.toml`) sempre vence: 
 
 ### 9.4 Resultados de consulta
 
-Consulta de escrita (`ActiveProjectLookup`):
+Consulta de escrita do ponteiro de projeto ativo:
 
 - **Resolvido**: achou workspace e projeto.
 - **Divergência** (`Mismatch`): o chamador tem coordenada, o ponteiro está ativo e nada casou. **Nunca
@@ -723,11 +723,11 @@ Consulta de escrita (`ActiveProjectLookup`):
 marca nunca é apagada, mesmo quando as entradas expiram: uma instalação que já teve hooks não volta a
 ser tratada como sem hooks.
 
-Consulta de leitura (`ReadPointer`), com a origem da resposta:
+Consulta de leitura do ponteiro, com a origem da resposta:
 
-- `Session`: entrada própria do chamador;
-- `SharedSlot`: slot de processo, ou seja, o último projeto publicado (usado por chamador sem coordenada e em modo `single`);
-- `StartupSeed`: semente de inicialização, usada enquanto não chega o primeiro evento de hook;
+- sessão (`session`): entrada própria do chamador;
+- slot compartilhado (`shared_slot`): slot de processo, ou seja, o último projeto publicado (usado por chamador sem coordenada e em modo `single`);
+- semente de startup (`startup_seed`): semente de inicialização, usada enquanto não chega o primeiro evento de hook;
 - `Mismatch` e `Unset`, com o mesmo significado de §9.4 acima.
 
 A semente de inicialização é **só para leitura**. Nunca é usada para gravar: gravar com ela poderia
@@ -742,11 +742,11 @@ Snapshot tipado de "onde paramos", deixado por uma sessão para a próxima de ou
 Estados: `open` → `accepted` ou `expired`. Um handoff é reivindicado **exatamente uma vez**, por
 uma operação atômica de aceite.
 
-Criação (`NewHandoff`): escopo (workspace e projeto), sessão de origem (opcional), agente de origem,
+Criação: escopo (workspace e projeto), sessão de origem (opcional), agente de origem,
 agente de destino (opcional), diretório de trabalho (opcional), resumo, perguntas em aberto, próximos
 passos, arquivos tocados e **dono** (opcional; ausente = compartilhado com o projeto).
 
-Aceite (`HandoffAcceptance`): identificador do handoff, escopo, agente, sessão e usuário que aceitam,
+Aceite: identificador do handoff, escopo, agente, sessão e usuário que aceitam,
 filtro de dono e diretório de quem recebe. O diretório de quem recebe **limita a expiração de handoffs
 automáticos** [a confirmar].
 
@@ -911,17 +911,17 @@ Constantes:
   instrução é citado como evidência. Motivo: a sanitização remove segredos e limita tamanho, mas não
   consegue saber se um texto tenta manipular o modelo.
 
-Tipos de evento (`WorkstreamEventKind`): `message`, `tool_call`, `tool_result`, `compaction`,
+Tipos de evento: `message`, `tool_call`, `tool_result`, `compaction`,
 `checkpoint`, `annotation`. Chamada de ferramenta histórica **nunca** é reexecutada como pendente.
 
-Evento novo (`NewWorkstreamEvent`): identificador de evento, **estável e derivado da fonte**, que torna
+Evento novo: identificador de evento, **estável e derivado da fonte**, que torna
 as retentativas idempotentes; agente; identificador de sessão nativa; identificador opcional do registro
 de origem; tipo; papel (opcional); conteúdo; instante (opcional); metadados.
 
 Checkpoint: cabeça do repositório, ramo, hash do estado sujo e caminhos alterados. Lê o estado do git
 **sem alterar** o checkout.
 
-Identidade de sessão nativa (`NativeSessionIdentity`): aceita o identificador **original, byte a byte**,
+Identidade de sessão nativa: aceita o identificador **original, byte a byte**,
 sem reescrever, se for válido. Recusa, como **desconhecido**, o identificador que: está vazio ou só tem
 espaços; passa de 512 bytes; contém caractere de controle ou de formatação invisível (espaço de largura
 zero, marcadores de direção, `U+FEFF`); contém marcador de redação; ou muda ao ser passado pela sanitização.

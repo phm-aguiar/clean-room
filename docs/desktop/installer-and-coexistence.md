@@ -171,14 +171,14 @@ Esse caminho não é o destino dos hooks de uma instalação nativa, que ficam e
 ### 6.5 Cópias de segurança
 
 - Alterações em configurações de projeto do Claude Code guardam a cópia anterior no diretório de dados, em `backups/claude-settings-local`. Não ficam no repositório, para não aparecerem como arquivos não rastreados.
-- Alterações em configurações globais guardam uma cópia com timestamp ao lado do original, antes de cada escrita. O local exato é a confirmar.
+- Alterações em configurações globais guardam uma cópia ao lado do original, antes de cada escrita que muda o conteúdo (confirmado na auditoria de 2026-10-25): o nome é `<caminho>.bak-<segundos Unix>`, formado a partir do caminho pedido (se ele for um link simbólico, a escrita segue o link, mas o nome da cópia usa o caminho do link). Uma reexecução que não muda nada não grava nem copia. Duas escritas no mesmo segundo reusam o mesmo nome, e a segunda cópia substitui a primeira. Arquivo inexistente é criado sem cópia. Cadeias de links com mais de 40 saltos são recusadas.
 
 ## 7. Convivência com instalações existentes
 
 ### 7.1 Um único escritor por diretório de dados
 
 - O banco de dados tem escritor único. Todas as escritas passam por um canal para uma única thread dedicada.
-- Dois servidores sobre o mesmo diretório de dados não devem coexistir. Um bloqueio explícito que impeça isso é a confirmar.
+- Dois servidores sobre o mesmo diretório de dados não devem coexistir. **Há bloqueio explícito** (confirmado na auditoria de 2026-10-25): o servidor toma uma trava exclusiva em `.serve.lock` no diretório de dados e grava o detentor (`pid=<n>`) em `.serve.lock.holder`. Um segundo servidor recusa a subida citando o detentor, salvo com `--force`; um sistema de arquivos sem suporte a trava só gera aviso. Detalhes e textos em [cli.md](../cli.md) e [windows.md](../windows.md).
 - Operações que mexem em disco diretamente (reset, restore, reindex e uninstall com purge) verificam processos ativos antes de agir.
 
 ### 7.2 Descoberta de servidor (requisito para a bandeja)
@@ -233,9 +233,9 @@ Perfis permitem que cada repositório envie eventos de hook a um servidor regist
 ### 7.6 Configuração de clientes MCP
 
 - A instalação de MCP é feita por cliente. A escrita é idempotente (repetir a instalação não duplica entradas) e preserva entradas não relacionadas.
-- Para o Claude Desktop no Windows, há uma variante empacotada (MSIX) em `%LOCALAPPDATA%\Packages`. Um pacote que já tenha arquivo de configuração é preferido. Sem arquivo, um único pacote basta. Com vários pacotes e nenhum configurado, o comportamento é a confirmar. Veja também [Claude Desktop](claude-desktop.md).
+- Para o Claude Desktop no Windows, há uma variante empacotada (MSIX) em `%LOCALAPPDATA%\Packages`. Um pacote que já tenha arquivo de configuração é preferido. Sem arquivo, um único pacote basta. Com vários pacotes e nenhum configurado (ou mais de um configurado), a instalação falha com um erro que lista os pacotes e pede o caminho explícito do arquivo `LocalCache\Roaming\Claude\claude_desktop_config.json` do pacote ativo (confirmado na auditoria de 2026-10-25; regra completa em [design-backup-agent-assets.md](../design-backup-agent-assets.md) §2). Veja também [Claude Desktop](claude-desktop.md).
 - Uma aplicação de bandeja deve reutilizar essa lógica e mostrar uma lista de aplicativos detectados (requisito proposto).
-- A lista de clientes suportados e a inclusão do Zed são a confirmar.
+- Clientes aceitos pela instalação de MCP (confirmado na auditoria de 2026-10-25; nomes de opção e apelidos): `claude-code`, `codex`, `open-code` (`opencode`), `opencode2` (`opencode-v2`, `open-code2`), `cursor`, `claude-desktop`, `gemini-cli`, `openclaw`, `pi`, `omp` (`oh-my-pi`), `antigravity-cli` (`antigravity`, `agy`), `zero`, `zcode`, `devin`, `grok`, `kimi-code` (`kimi`), `kiro-cli` (`kiro`), `command-code` (`commandcode`, `cmdc`, `cmd`), `ibm-bob` (`bob`), `copilot-cli`, `droid` (`factory-droid`), `swival`, `vscode-copilot` (`copilot`, `github-copilot`), `zed`, `muse` (`muse-code`, `musecode`), `dsh` (`deepseek-harness`; só imprime, recusa aplicar) e `prime-agent`. **O Zed está incluído**, como cliente só MCP (`context_servers` no `settings.json` do usuário).
 
 ## 8. Pacotes e serviços por sistema
 

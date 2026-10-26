@@ -866,3 +866,9 @@ Todo o resto é estado só do banco (sessões, observações, handoffs, mensagen
 auditoria, embeddings, feedback, acesso, evidências, auto-melhoria, workstreams, perfil, lápides e
 agendadores) e precisa de backup do arquivo do banco. Versões antigas de página (`is_latest = 0`) também não
 voltam numa reindexação: o histórico delas fica só no banco e no Git.
+
+Efeitos colaterais da reindexação (referência 3.1.1): cada página gravada passa pelo upsert comum, que
+também grava uma linha de `audit_log` (`create_page`, ou `supersede_page`/`resurrect_tombstoned_page`
+quando já havia linha) e, com embedder configurado, um embedding quando a versão é nova
+([wiki-files-layer.md](wiki-files-layer.md) §5.5). A reindexação não cria `page_evidence` nem
+`author_id`.

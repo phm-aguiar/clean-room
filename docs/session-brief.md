@@ -58,7 +58,7 @@ Precisely, the text before the page sections is `title line + "> **Security boun
 
 - Heading: `"\n## " + T + (" 📌" if pinned) + " (`" + P + "`)\n"`. The pin is a space followed by U+1F4CC.
 - Tier `L0`: heading + L0 excerpt + `"\n"`. Tier `L1`: heading + L1 excerpt + `"\n"`. Tier `L2` (whole body): heading + the whole body (trimmed) + `"\n"`; a body is taken only whole, never truncated, and only if its trimmed length is at most 20,000 bytes and non-zero.
-- Tier `TitleOnly` (page without excerpt): `"\n- `" + P + "`\n"`.
+- Title-only tier (page without excerpt): `"\n- `" + P + "`\n"`.
 - Tier `Omitted`: nothing (the page goes to the omitted section).
 
 **Family index.** Pages left at `L0` that are not *privileged* (privileged = pinned, or path under `_slots/`) and whose first path segment is `_rules`, `gotchas`, `decisions` or `procedures` are grouped by that segment. A family with **at least four** such pages is rendered as one list, `"\n### `" + family + "/`\n"` followed by one line `"- `" + path + "`: " + L0 + "\n"` per page, instead of separate sections, and only if the list is not longer than the sum of the separate L0 sections it replaces. The list is written at the position of the family's first page; its other pages are skipped in the page order.
@@ -84,11 +84,11 @@ Each core page `i` has: `privileged`, `title_only_cost`, and either no tiers or 
 
 **Step 1: reserves.** `variable = max(0, content_ceiling − prefix)`. `recent_share(left) = min(recent_full, max(floor(left / 4), recent_first))`. `recent_cap = recent_share(variable)`. `omitted_floor = 0` when there are no core pages, else `count_only(number of core pages)`. `coverage_ceiling = max(0, content_ceiling − (recent_cap + omitted_floor))`.
 
-**Step 2: coverage (every page gets the cheapest useful depth, in order).** `spent = prefix`. For each core page in order: its coverage tier is `L2` when it has excerpts and `c2 < c0` (the whole body is cheaper than the excerpt), else `L0` when it has excerpts, else `TitleOnly`; let `cost` be that tier's cost. If `spent + cost > coverage_ceiling`, this page and every later page are `Omitted` (`omitted_from` = its index) and the loop ends; otherwise assign the tier and add `cost` to `spent`.
+**Step 2: coverage (every page gets the cheapest useful depth, in order).** `spent = prefix`. For each core page in order: its coverage tier is `L2` when it has excerpts and `c2 < c0` (the whole body is cheaper than the excerpt), else `L0` when it has excerpts, else title-only; let `cost` be that tier's cost. If `spent + cost > coverage_ceiling`, this page and every later page are `Omitted` (`omitted_from` = its index) and the loop ends; otherwise assign the tier and add `cost` to `spent`.
 
 **Step 3: reserves for the sections after the pages.** `remaining = max(0, content_ceiling − spent)`. `omitted_reserve = 0` when nothing is omitted, else `min( max( min(omitted_full(omitted_from), floor(remaining / 4)), count_only(number omitted) ), remaining )`. `after_omitted = remaining − omitted_reserve`. `recent_reserve = min(recent_share(after_omitted), after_omitted)`. `room = remaining − omitted_reserve − recent_reserve`.
 
-**Step 4: deepen with the room that is left.** Split the non-omitted pages into *privileged* and *unprivileged*, keeping order. Define, for a page currently at tier `cur` (only pages with excerpts and not at `TitleOnly` can be deepened) and a target tier `t` above `cur`:
+**Step 4: deepen with the room that is left.** Split the non-omitted pages into *privileged* and *unprivileged*, keeping order. Define, for a page currently at tier `cur` (only pages with excerpts and not at title-only can be deepened) and a target tier `t` above `cur`:
 
 - `saving(i, t)`: only for `t = L2`: `cost(cur) − cost(L2)` when positive (the body is cheaper than the excerpt currently shown; the swap is free and *adds* the difference back to `room`);
 - `delta(i, t)`: `cost(t) − cost(cur)` when positive.

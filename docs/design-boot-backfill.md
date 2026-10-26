@@ -212,7 +212,7 @@ Como a sentinela é por caminho, o mesmo projeto aberto em outro diretório tem 
 
 A ordem de importação é cronológica entre as selecionadas. Por isso, quando o limite de eventos é atingido, **as sessões que ficam de fora são as mais recentes** do conjunto. Não há limite por sessão, nem limite total em bytes, nem registro de truncamento nas perdas (ver Propostas).
 
-Limites de tamanho por evento específicos desse caminho: a confirmar. O limite de corpo por requisição do servidor existe, mas não foi conferido para o caminho de lote.
+Limites de tamanho (conferidos na auditoria 002): o servidor limita o corpo de qualquer requisição de hook ou MCP, inclusive `POST /hook/batch`, a **10 MiB** (só `POST /admin/bootstrap` aceita até 32 MiB); acima disso a requisição é recusada antes de qualquer processamento. O orçamento de 8 MiB por requisição do cliente existe para ficar abaixo desse teto com folga para o enquadramento JSON. Não há limite por evento específico do backfill além dos cortes de corpo do ingresso (lifecycle-event-ingestion.md §3.6), aplicados no servidor depois da sanitização.
 
 ### 11. Segurança
 
@@ -228,7 +228,7 @@ Limites de tamanho por evento específicos desse caminho: a confirmar. O limite 
 - Variável de ambiente **`AI_MEMORY_BACKFILL_ON_START`** sobrescreve a chave. O valor documentado para desligar é `false`.
 - O desligamento afeta só a execução automática. O comando manual ignora o desligamento e sempre roda.
 - Opt-out por marcador de projeto: **proposta**, não implementada (ver Propostas).
-- O modelo padrão de configuração não lista a chave (a confirmar).
+- O modelo padrão de configuração gerado pelo `init` **não** lista a chave (confirmado na auditoria 002); vale o padrão verdadeiro.
 
 ### 13. Cobertura de harness
 

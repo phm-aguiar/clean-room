@@ -6,7 +6,7 @@
 > [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md) seção 12; aqui ficam as
 > regras de negócio, os orçamentos e as fórmulas. Onde o texto diz "caracteres" em orçamentos de
 > prompt, a unidade é o ponto de código Unicode; nos limites de **validação de propostas** (§5.2) a
-> unidade é o **byte** UTF-8 (em Go, `len(string)`).
+> unidade é o **byte** UTF-8 (comprimento da codificação UTF-8, não contagem de caracteres).
 
 ## 1. Áreas funcionais
 
@@ -305,7 +305,7 @@ Tabela e transições: `storage-and-retrieval.md` §15 e `database-schema.md`. R
   `superseded`, sem tocar em `running`. Falha aqui só gera aviso.
 - **Trabalhador** (um por servidor HTTP): laço que reivindica; sem job, espera a notificação ou
   **15 s**; antes de consolidar, se a página de sessão foi escrita pelo próprio agente, completa o job
-  sem chamar o LLM; senão consolida **em página única** (`consolidate_session`) como o dono da
+  sem chamar o LLM; senão consolida **em página única** como o dono da
   sessão (identidade qualificada gravada na sessão; sem dono ou identidade inválida: anônimo);
   cancelamento do servidor libera o job e encerra; sucesso completa; erro falha com o resumo
   redigido e a data de nova tentativa (ou terminal). O tempo do lease (10 min) é o limite de
@@ -880,8 +880,8 @@ cada escopo e antes de cada cluster. O relatório é sempre devolvido, inclusive
 
 ## 9. Filtro de entropia (A4)
 
-`classify(texto, configuração)` devolve `Keep` ou `Skip(motivo)`. É uma função pura. Desligado por
-padrão, sempre devolve `Keep`. Ordem das verificações, parâmetros e validação: ver
+A classificação de um texto (dada a configuração) decide manter ou pular, com motivo. É uma função pura. Desligado por
+padrão, sempre decide manter. Ordem das verificações, parâmetros e validação: ver
 [design-memory-aging.md](design-memory-aging.md) §8 (padrões `min_chars` 16,
 `min_entropy_bits_per_char` 2,0, `max_repetition_ratio` 0,7, `repetition_min_tokens` 6). Pontos
 precisos: os caracteres em branco entram na distribuição da entropia; os tokens da repetição são
@@ -943,9 +943,9 @@ fontes localmente; o **servidor** poda, divide em chunks, chama o modelo e grava
   original (as linhas de documentação de módulo no topo de cada arquivo-fonte; ignora os diretórios
   `target`, `node_modules`, `.git` e `vendor`; sem seguir links simbólicos; para na primeira linha
   que não é documentação, tolerando linhas em branco só antes da primeira). Rótulo
-  `rust: <caminho>`. **Decisão para a versão em Go:** definir o equivalente (por exemplo o comentário
-  de pacote em `doc.go`) e manter o tipo `module_header`; não há comportamento original a copiar para
-  Go.
+  `rust: <caminho>`. Comportamento do original, reproduzir tal como está: a coleta examina só os arquivos Rust (`.rs`)
+  do repositório analisado e só as linhas de documentação de módulo (`//!`) do topo; arquivos de outras linguagens não
+  geram `module_header`, qualquer que seja a linguagem da reimplementação.
 - *Regras do projeto* (`project_rules`): sempre coletadas. Entre `CLAUDE.md`, `AGENTS.md`, `AGENT.md`
   e `claude.md`, só os nomes que o diretório **lista de fato** (um sistema de arquivos que ignora
   caixa não pode ler o mesmo arquivo duas vezes), sem repetir texto idêntico. Rótulo `rules: <nome>`.
@@ -1039,16 +1039,16 @@ recusada (422). Execução com `force` regrava o manifesto. O `dry_run` **não**
 
 **Nome do projeto** (resolução usada pelo cliente e pelo roteador de hooks):
 
-- `Basename`: último componente do caminho, tolerando `/` e `\` (um agente no Windows envia caminho
+- Por basename: último componente do caminho, tolerando `/` e `\` (um agente no Windows envia caminho
   Windows a um servidor em outro sistema).
-- `MainRepoRoot`: raiz do repositório principal, resolvendo worktrees pelo diretório comum do git. Sem
+- Pela raiz do repositório principal: raiz do repositório principal, resolvendo worktrees pelo diretório comum do git. Sem
   repositório (ou repositório "bare"), usa o basename.
 
 **Rota `POST /admin/bootstrap`:** corpo `{workspace, project, sources[], sources_collected?,
 max_input_tokens, chunk_input_tokens, dry_run, force, resume}`. `dry_run` responde sem criar projeto, sem
 provedor e sem lock. Execução real: sem provedor 503 `LLM provider not configured on server`; cria o
 workspace e o projeto se faltarem; **serializa** execuções reais (uma por vez, as outras esperam o lock);
-`NoSources`/`AlreadyBootstrapped` → 422; erro de LLM → 502; outros → 500. Resposta (sucesso e
+nenhuma fonte coletada ou bootstrap já existente → 422; erro de LLM → 502; outros → 500. Resposta (sucesso e
 `dry_run`): `{sources_collected, sources_sent, sources_dropped, sources_by_kind:{git_commits, readme,
 doc_files, module_headers, project_rules}, estimated_input_tokens, pages_written[], rationale, dry_run,
 llm_chunks, manifest_warning?}` (`manifest_warning` só quando houve aviso de reparo do manifesto de

@@ -61,8 +61,12 @@ managed-workstream continuity ledger.
    at-least-once: a crash during them can repeat an already applied effect, but
    it does not silently drop the rest. An interrupted SessionEnd replay converges
    the wiki commit and the pending key, without
-   appending another observation (a confirmar). Each wiki write appends a line
-   of the form `## [YYYY-MM-DDTHH:MM:SSZ] <event> | <title>` to the wiki log.
+   appending another observation (a confirmar). Each captured hook event appends
+   a line of the form `## [YYYY-MM-DDTHH:MM:SSZ] <event> | <title>` to the
+   project's monthly event ledger `log-YYYY-MM.md` (UTC month of the event;
+   a legacy `log.md` is recognized but never appended to). A page write
+   does **not** append to the ledger (corrected against reference 3.1.1; see
+   [wiki-files-layer.md](wiki-files-layer.md) §5.2 and §9).
 3. **Session end.** On a true SessionEnd event, the server writes a rule-based
    session summary page (no LLM) under `sessions/` and opens a handoff for the
    next agent. The automatic handoff, the session's ended stamp, and the

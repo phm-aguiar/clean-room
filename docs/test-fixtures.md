@@ -27,7 +27,30 @@ onde o comportamento está descrito.
 | `capture-policy.json` | Normalização e casamento de `ignore_paths`; decisões por agente (`drop`, `keep`, `metadata-only`); vetores de comandos de terminal; envelope de protocolo `_ai_memory_capture`. | [lifecycle-event-ingestion.md](lifecycle-event-ingestion.md) §4; [marker-file.md](marker-file.md), seção "Capture exclusions" |
 | `home_route_cases.json` | Gramática e seleção das rotas do arquivo pessoal de marcação. Ver 2.1. | Esta página (2.1) |
 | `remote_identity_cases.json` | Normalização de remote git, derivação de nomes, estilo de identidade e aliases do marcador. Ver 2.2. | Esta página (2.2); [complementary-contracts.md](complementary-contracts.md), seção de identidade de repositório |
+| `01-rust-bug-fix.json` a `05-multi-topic-session.json` | Sessões sintéticas (nome, descrição e lista de observações com `kind`, `title` e `body`) usadas na avaliação da consolidação por LLM: extrair decisão e armadilha como páginas separadas, sessão de pouco sinal, sessão com vários temas. Fora do escopo zero-LLM da feature 001. A referência 3.1.1 tem também `06-pt-br-tail-and-error-forms.json` e `07-injection-and-traps.json`, ausentes deste conjunto. | [consolidation-llm.md](consolidation-llm.md) |
 | `kiro-v3-hook-payloads.json` | Cinco eventos de uma sessão real sanitizada do Kiro CLI v3 (2026-08-07): início de sessão, envio de prompt, antes e depois de ferramenta, e parada. | [lifecycle-event-ingestion.md](lifecycle-event-ingestion.md) §3 |
+
+**Estado das cópias (auditoria de 2026-10-25):** os arquivos em `docs/assets/fixtures` são iguais
+aos da referência 3.1.1. `capture-policy.json` estava defasado e foi **sincronizado na auditoria
+002**: os dados de teste agora são iguais aos do original (120 decisões, 256 vetores de shell,
+`ignore_paths` de shell com `secrets.env` e um padrão não ASCII); só as notas foram reescritas sem
+nomes de implementação. Seções acrescentadas:
+- `read_many_files_directories`: listas `include` do Gemini CLI, em que uma entrada sem glob vale
+  como diretório (`docs` lê `docs/**`); cada vetor traz `include` e `disposition`.
+- `windows` e `windows_posix_controls`: um `cwd`, `ignore_paths` e listas `files` (lidos como
+  caminho de `edit`) e `shell` (lidos como chamada `bash`), cada item com a `disposition`
+  esperada (`windows_posix_controls` só tem `files`). Esse segundo grupo prova que as leituras do
+  Windows nunca valem numa sessão POSIX.
+- `windows_scopes`: casos com `cwd` de dispositivo, UNC, Git Bash e provedor do PowerShell, cada
+  um com `note`, `cwd`, `ignore_paths`, `files` e `shell`.
+- `marker_spellings`: grafias TOML da tabela de captura que devem ser `honoured`, as que devem ser
+  `rejected` (por exemplo, tabela inline `capture = { … }` ou array de tabelas `[[capture]]`) e
+  as `unrelated` (a chave fica sob outra tabela, como `[tool]`, ou não existe; não declaram
+  exclusão).
+- `tool_families`: pares `{name, family}` com a família esperada de cada nome de ferramenta
+  (seção 3.5 do doc de ingestão).
+Os vetores de shell podem trazer `fold_case`, que roda o caso como num anfitrião sem diferença
+entre maiúsculas e minúsculas (macOS).
 
 Os cinco eventos do fixture de Kiro compartilham o mesmo diretório de trabalho e o mesmo
 identificador de sessão. Um teste deve confirmar que o contexto extraído é igual para

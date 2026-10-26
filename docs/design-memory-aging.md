@@ -101,8 +101,8 @@ same tiers are excluded from the sweep for every decay operation.
 Stored in `pages.salience`, changed by the page-feedback operation.
 
 - Bounds `[0.25, 2.0]`, step `0.25`.
-- `Helpful` adds one step; `NotHelpful` subtracts one step. Both are clamped.
-- `Stale` and `Wrong` set salience directly to `0.25`.
+- `helpful` adds one step; `not_helpful` subtracts one step. Both are clamped.
+- `stale` and `wrong` set salience directly to `0.25`.
 - A page with NULL salience starts from `salience_default` before the step is
   applied.
 - One transaction appends a `page_feedback` row (kind, optional reason, resulting salience, author, instant),
@@ -125,8 +125,10 @@ Stored in `pages.salience`, changed by the page-feedback operation.
   count is `0.6 / lambda`, which is 30 days at the default `lambda`, so the
   threshold moves with the operator's `lambda` (lint behavior, not a decay
   window).
-- Callers in other areas (embedding, the wiki layer, the reader, the server) also
-  reference the score. Whether any of them feeds search ranking is "a confirmar".
+- Verified against the original: the retention score is computed **only** by the
+  forget sweep (and the passes that reuse its cold set) and by the curator
+  `cold_episodic` signal. No search, reader or ranking path computes it, so it
+  does not feed search ranking.
   The belief-strength discussion is in [design-hindsight-borrowings.md](design-hindsight-borrowings.md).
 
 Salience and breadth do not change search ranking in the code paths checked for
@@ -141,12 +143,13 @@ An id deleted in between is skipped without failing the batch. The search index
 is not touched.
 
 Triggering tools (all fire-and-forget, after the response is built, only on
-success; failures are logged and never surface to the caller). The exact list of
-tools per row is "a confirmar" beyond the entries below:
+success; failures are logged and never surface to the caller). Verified against
+the original, this list is complete: only these four MCP tools bump access (no
+HTTP/web route, CLI or background job does):
 
 | Tool | Pages bumped |
 |---|---|
-| `memory_query` (including the raw-observation fallback path's hits) | returned pages |
+| `memory_query` (including the raw-observation fallback path's hits) | returned pages, plus the hits merged in from the reserved global scope and from the shared profile scope (each bumped as its own batch) |
 | `memory_recent` | returned pages |
 | `memory_read_page` | the page itself plus every page returned in its `related` walk |
 | `memory_explore` | rules, slots, recent pages, pinned and settled pages in the snapshot |
@@ -174,8 +177,10 @@ Entry points:
 - The HTTP route `POST /admin/forget-sweep` (body `{workspace, project, dry_run}`).
 - The CLI `forget-sweep`, a thin client of that route, which prints the JSON report.
 
-Workspace and project must already exist on the admin route (a missing one is a request error and the
-sweep creates nothing); omitted names default to workspace `default` and project `scratch`. The sweep
+Workspace and project must already exist on the admin route (a missing one is **404** and the
+sweep creates nothing; any sweep error, including invalid `[decay]` coefficients, is **500** `{error}`;
+the route passes compaction, observation retention and ledger retention from the server config, with
+dedup always off); omitted names default to workspace `default` and project `scratch`. The sweep
 is always per (workspace, project) scope; only the scheduler iterates all scopes.
 
 Difference between entry points: the scheduled job applies all passes, including
@@ -186,8 +191,12 @@ with compaction (section 6) and the other passes, but **not** cold-cluster dedup
 
 1. **Load**: all latest pages of the scope. The breadth map (one grouped read) is
    loaded only if `breadth_weight > 0`. Validate that `breadth_weight` is finite
-   and >= 0, and that `observation_retention_days >= 0`. Otherwise the sweep fails
-   before any mutation.
+   and >= 0, that `observation_retention_days >= 0` and that
+   `ledger_retention_months >= 0`. Otherwise the sweep fails before any read or
+   mutation. With observation retention on, `observations_prunable` is counted
+   right after classification, **before** any mutation of this run (in a real run
+   it can therefore include rows whose session loses its page later in the same
+   run, which the prune itself then skips).
 2. **Classify** each candidate:
    - `expires_at <= now`: **expired** (TTL), any tier, pinned or not.
    - Else, if decayable (tier `episodic`, not pinned in the column nor in the
@@ -291,8 +300,14 @@ live. Complete predicate: an observation of the scope is deleted when ALL hold:
 3. the session has **no** consolidation job in state `pending` or `running` (terminal states
    `completed`, `failed`, `superseded` do not block);
 4. the session's `ended_observation_count` (the observation count recorded when the session last ended)
-   is `>=` its current observation count (a session that resumed and received new observations after
-   ending is skipped until it ends again).
+   is `>=` its current observation count, counted over **all** scopes (a session that resumed and received
+   new observations after ending is skipped until it ends again).
+
+Verified details: the audit row is written only for a batch that deleted something. The batch loop
+always runs at least once, so `observation_prune_batches` counts the final short (possibly empty) batch.
+A batch error aborts the sweep with an error (passes already applied stay applied; the report is lost).
+A page path that fails validation is silently skipped by the TTL, compaction and eviction passes
+(`deleted`/`compacted` stay false).
 
 Sessions with no row or that never ended match nothing. Each batch deletes the oldest matching rows first
 (`created_at` order, `LIMIT batch`) in one transaction, then, for each session that lost rows, lowers
@@ -640,7 +655,7 @@ no embedding triple is configured, or when no provider is configured. Otherwise:
    surprisal, descending (most novel first), and truncated to `max_clusters_per_run`.
 6. `dry_run`: return the plan (`merges[]` with `applied = false`). The LLM is not
    called and nothing is written.
-7. For each cluster (checking cancel before each one), run `merge_one_cluster`:
+7. For each cluster (checking cancel before each one), run the per-cluster merge:
    - Run the admission preflight for operation `consolidate` on the survivor path
      before spending an LLM call. A rejection skips the cluster.
    - Read the survivor and member pages. Any read failure skips the cluster.
@@ -746,8 +761,8 @@ Items below are proposals or known gaps. They are not current behavior.
 - A persisted `contradicts` edge generated by the contradiction band. Only an
   advisory lint finding exists.
 - Ranking influence from retention, access or evidence. Retrieval ranking does not
-  read the retention score in the paths checked for this doc (other callers are
-  "a confirmar"). Belief strength as a ranking factor is discussed in
+  read the retention score (verified: only the sweep and the curator compute
+  it). Belief strength as a ranking factor is discussed in
   [design-hindsight-borrowings.md](design-hindsight-borrowings.md).
 - Type or kind-dependent retention beyond the four tiers.
 - Dedup in the manual sweep entry points (MCP tool, admin route, CLI). Only the

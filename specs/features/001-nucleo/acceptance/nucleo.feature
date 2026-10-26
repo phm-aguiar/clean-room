@@ -1,6 +1,7 @@
 # language: pt
-# Revisado na auditoria contra a referência de 2026-10-18 (passada 2). Fontes: docs/wiki-files-layer.md,
-# docs/storage-and-retrieval.md, docs/prompts-schemas-and-sanitizer.md §11. O doc vence este arquivo.
+# Revisado contra o original (auditorias de 2026-10-18 e 2026-10-25). Fontes: docs/wiki-files-layer.md,
+# docs/storage-and-retrieval.md, docs/prompts-schemas-and-sanitizer.md §11. O doc vence este arquivo;
+# em toda dúvida vale o comportamento do original.
 Funcionalidade: Núcleo do ai-memory-go (domínio, armazenamento e wiki)
   Como agente de código
   Quero escrever, buscar e ler páginas de memória de longo prazo
@@ -26,11 +27,12 @@ Funcionalidade: Núcleo do ai-memory-go (domínio, armazenamento e wiki)
     E nenhum workspace nem projeto é criado
     E nenhum arquivo é instalado
 
-  Cenário: Reescrever conteúdo idêntico não cria versão e mantém os bytes
+  Cenário: Reescrever conteúdo idêntico não cria versão e regrava os mesmos bytes
     Dado que a página "decisions/db.md" foi escrita com corpo e frontmatter X
     Quando o chamador escreve a mesma página com o mesmo corpo, frontmatter, título, tier e fixação
     Então nenhuma nova versão é criada e o identificador devolvido é o da versão atual
     E o "generated.at" do arquivo atual é herdado, de modo que os bytes do arquivo são os mesmos
+    E o arquivo é regravado mesmo assim, com nova data de modificação
     E nenhuma linha de auditoria é gravada
     E a evidência da escrita é registrada contra a versão atual
 

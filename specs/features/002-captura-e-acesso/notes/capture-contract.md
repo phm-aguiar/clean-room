@@ -2,7 +2,7 @@
 
 Wiki-Keywords: marker-file, capture exclusions, ignore_paths, MetadataOnly
 
-Hierarquia de fontes: `docs/` vence a spec e o plan. Siglas de citação: **MF** = `docs/marker-file.md`; **LEI** = `docs/lifecycle-event-ingestion.md`; **SPEC** = `specs/features/002-captura-e-acesso/spec.md`; **PLAN** = `specs/features/002-captura-e-acesso/plan.md`. Onde o doc é omisso aparece "decisão nossa".
+Hierarquia de fontes: `docs/` vence a spec. Siglas de citação: **MF** = `docs/marker-file.md`; **LEI** = `docs/lifecycle-event-ingestion.md`; **SPEC** = `specs/features/002-captura-e-acesso/spec.md`. Em toda dúvida vale o comportamento do original; os vetores de `docs/assets/fixtures/capture-policy.json` (sincronizados com o original) são o teste de aceitação.
 
 ## 1. Localização e caminhada (MF "Discovery")
 
@@ -20,8 +20,8 @@ Hierarquia de fontes: `docs/` vence a spec e o plan. Siglas de citação: **MF**
 - **Duas caminhadas** sobre o mesmo conjunto de arquivos (MF "Two walks"):
   - *Scope walk*: pula marcadores que declaram apenas `[capture]`. Marcador "declara algo" se contém, em qualquer lugar, uma das chaves: `workspace`, `project`, `project_strategy`, `drop_subagent_captures`, `identity`, `identity_style`, `aliases`, `server`, `default_global`, `inject_on_session_start`, `max_chars`, `contribute`, `consume`. Detecção por linha, ignora cabeçalhos de seção.
   - *Capture walk*: usada **só** para `[capture]`; pega o marcador mais próximo de **qualquer tipo**, inclusive o que só tem `[capture]`. Esse marcador substitui por completo as regras de captura dos externos.
-- Marcador em `$HOME` (home marker) nunca é declaração local para os diretórios abaixo; é só fallback (MF "Home marker"). Rotas `[routes.*]` são só do home marker (MF "Keys"). Fora do escopo da captura da 002 (decisão nossa: a 002 usa o home marker apenas se o plano de escopo o exigir; não há texto da SPEC/PLAN sobre rotas).
-- Modo denylist (padrão): sem marcador, tudo é capturado. Modo allowlist: a presença de marcador na capture walk é o opt-in; sem marcador nenhum evento é emitido, nem prompts, descartados no processo do hook antes de spool ou rede (MF "Allowlist mode"; LEI §4.1). Persistido por instalação, `install-hooks --capture-mode allowlist` (MF "Allowlist mode"; PLAN Q-11).
+- Marcador em `$HOME` (home marker) nunca é declaração local para os diretórios abaixo; é só fallback (MF "Home marker"). Rotas `[routes.*]` são só do home marker (MF "Keys"); seguem MF e `docs/assets/fixtures/home_route_cases.json`, como no original.
+- Modo denylist (padrão): sem marcador, tudo é capturado. Modo allowlist: a presença de marcador na capture walk é o opt-in; sem marcador nenhum evento é emitido, nem prompts, descartados no processo do hook antes de spool ou rede (MF "Allowlist mode"; LEI §4.1). Persistido por instalação, `install-hooks --capture-mode allowlist` (MF "Allowlist mode").
 
 ## 2. Leitura do arquivo (MF "File format and reading")
 
@@ -31,7 +31,7 @@ Hierarquia de fontes: `docs/` vence a spec e o plan. Siglas de citação: **MF**
 - **Resolução tolerante, captura estrita**: arquivo com TOML inválido ainda fornece campos de escopo à resolução; só a inspeção o marca `invalid`. A captura de ciclo de vida usa a leitura estrita para `[capture]`, então `[capture]` quebrado torna a política de captura **inválida** (MF "Inspection states", último parágrafo).
 - Verdadeiros: `1`, `true`, `yes`, `on`; falsos: `0`, `false`, `no`, `off` (sem distinguir caixa, com ou sem aspas) (MF "File format and reading").
 - Estados de inspeção, na ordem: `ignored`, `invalid_home_routes`, `absent`/`invalid`, `unreadable` (>64 KiB ou ilegível), `invalid`, `conflicting`, `valid`/`home_*_route` (MF "Inspection states"). Marcador ilegível como texto na etapa 3 conta como `absent`.
-- Chave `drop_subagent_captures` (truthy, raiz) é o nome no MF "Keys" e "Subagent captures". A LEI §4.5 chama a opção de `drop_subagent`. **Conflito entre docs**; o MF é o doc do marcador e a LEI §2.1/PLAN §2.1 usam `drop_subagent` como parâmetro de consulta de `/hook`. Decisão nossa: chave do arquivo = `drop_subagent_captures`; parâmetro de consulta = `drop_subagent` (PLAN §2.1).
+- Chave `drop_subagent_captures` (truthy, raiz) é o nome no MF "Keys" e "Subagent captures". Não há conflito: no original, a chave do arquivo é `drop_subagent_captures` e o parâmetro de consulta de `/hook` é `drop_subagent` (MF; LEI §2.1 e §4.5).
 
 ## 3. Seção `[capture]` estrita (MF "Capture exclusions", "Parsing and failure")
 
@@ -111,10 +111,10 @@ Pergunta que a política responde: manter, descartar ou reduzir a metadados um e
 ## 9. Descarte de subagente (relacionado; LEI §4.5, MF "Subagent captures")
 
 - Opt-in por projeto (`drop_subagent_captures` no marcador; `drop_subagent` na query string de `/hook`). Com valor truthy, o servidor aceita (202 `subagent capture dropped`) mas não armazena capturas de subagentes.
-- Claude Code não marca a sessão pai: só eventos marcados (e início/fim de subagente) são descartados (LEI §4.5; PLAN Q-09).
+- Claude Code não marca a sessão pai: só eventos marcados (e início/fim de subagente) são descartados (LEI §4.5).
 
 ## 10. Aplicação na feature 002
 
-- Escopo: política de captura por marcador pertence ao CLI de hook e à reinspeção do servidor (`internal/ingest/capture`).
-- Leitura: campos de escopo pela regra de linha e `[capture]` por TOML estrito, com os limites acima (PLAN Q-09).
+- Escopo: política de captura por marcador pertence ao CLI de hook e à reinspeção do servidor.
+- Leitura: campos de escopo pela regra de linha e `[capture]` por TOML estrito, com os limites acima (MF).
 - `last_assistant_message` é sempre removido antes de qualquer etapa (LEI §5).

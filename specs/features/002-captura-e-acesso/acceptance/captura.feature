@@ -4,7 +4,8 @@
 #   @alternativo = itens de "Cenários Alternativos" da spec.md (5 cenários)
 #   @borda       = itens de "Edge Cases" da spec.md (6 cenários)
 # Conferência (linhas de cenário, sem os comentários): grep -c "^  Cenário:" -> 12; grep -c "^  @principal" -> 1; grep -c "^  @alternativo" -> 5; grep -c "^  @borda" -> 6.
-# Fonte: specs/features/002-captura-e-acesso/spec.md. Escopo: sem cenário de admissão recusada (fora da 002, phase0-findings.md item 3.5).
+# Fonte: specs/features/002-captura-e-acesso/spec.md (o doc vence; em toda dúvida vale o comportamento do original).
+# Escopo: sem cenário de admissão recusada (cenário 6 de docs/design-handoff-offer-not-claim.md §9, feature 008).
 
 Funcionalidade: Captura e acesso (hooks, sessões, handoffs, MCP e CLI)
   Como autor que alterna entre agentes no mesmo diretório

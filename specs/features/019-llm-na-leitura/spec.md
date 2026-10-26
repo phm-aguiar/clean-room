@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 019
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 018 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (provedor), 017 (fluxo vetorial na mesma consulta), 005 (`explain`), 002 (`memory_query`, `memory_briefing`)
@@ -49,7 +49,7 @@ Com um provedor configurado, a leitura pode melhorar em três pontos opcionais: 
 ## Critérios de Sucesso
 - [ ] Todas as regras de rerank do §3.1 passo 4 cobertas por teste com provedor falso
 - [ ] Tabela de baldes e de multiplicadores coberta por teste
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 `internal/llm/rerank.go` (reranqueador por LLM sobre o `Provider` da 016) e a orquestração no `mcp` (`memory_query` e `memory_explore`), com semáforo de 4 vagas e `context.WithTimeout` de 20 s.

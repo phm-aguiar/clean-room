@@ -1208,8 +1208,8 @@ Os padrões são aplicados na ordem da tabela. Notas de leitura:
     redação;
   - um padrão extra que casa texto vazio é aplicado em cada posição e insere `[REDACTED:custom]`
     entre todos os caracteres.
-  Uma reimplementação que recuse essas entradas na construção (erro que impede o início do serviço)
-  diverge da referência. Esse desvio precisa ser uma decisão registrada.
+  Comportamento do original, reproduzir tal como está: essas entradas são aceitas na construção (não
+  impedem o início do serviço).
 - O sanitizador só recebe texto Unicode válido. Bytes UTF-8 inválidos são tratados antes, na
   decodificação da entrada, fora do sanitizador. Ele não tem regra própria para esses bytes.
 

@@ -17,7 +17,8 @@ Para configurar o provedor de LLM em geral, veja [llm-providers.md](llm-provider
 
 ### 1.2 Quando age
 
-- Atua apenas sobre `memory_query` por projeto ou por escopos. Consultas com `global=true` não invocam o reranqueador.
+- Atua sobre `memory_query` por projeto ou por escopos. Consultas com `global=true` não invocam o reranqueador.
+- **Também atua na busca por projeto da interface web** (corrigido na auditoria de 2026-10-25; antes o doc dizia "apenas `memory_query`"). A busca web roda as mesmas três etapas (embedding da consulta, fusão, reranqueamento) com o mesmo cálculo de candidatos, o mesmo orçamento de 20 s e o **mesmo limite de 4 chamadas simultâneas, compartilhado** com `memory_query`: as duas superfícies juntas nunca passam de 4. A intenção declarada é que a mesma consulta devolva a mesma ordem na web e no MCP. Com detalhes de explicação, a busca web registra a pontuação de cada resultado e o tempo gasto no reranqueamento.
 - Consultas com `as_of` (viagem no tempo) retornam antes da etapa de reranqueamento e não o invocam.
 - Se sobrarem menos de 2 candidatos, o provedor não é chamado e a ordem anterior é mantida.
 

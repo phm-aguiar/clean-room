@@ -81,10 +81,12 @@ frontmatter). Para trazer um conjunto de documentos existente como memória do p
 - **Um vault OKF/Obsidian inteiro ou uma exportação de outra ferramenta**: use o
   importador de companions (veja [`companions.md`](companions.md)). Pelo que foi
   verificado, ele lê exportações do wiki OMC e conversas externas. Se ele cobre
-  diretamente um vault OKF/Obsidian, a confirmar. O comando `ai-memory export-okf` faz o
+  diretamente um vault OKF/Obsidian: **não** (auditoria 002: não há comando de importação de
+  vault OKF/Obsidian no código original; use `write-page` por documento ou copie os arquivos
+  para a pasta da wiki, abaixo). O comando `ai-memory export-okf` faz o
   caminho inverso (exporta a wiki de um projeto como bundle OKF), útil para ver o formato
   exato que seus documentos devem ter em disco.
-- A wiki fica em `<data_dir>/wiki/<workspace>/<project>/` e é markdown puro versionado
+- A wiki fica em `<data_dir>/wiki/<id do workspace>/<id do projeto>/` (pastas nomeadas pelos UUIDs internos, não pelos nomes; corrigido na auditoria 002) e é markdown puro versionado
   em git. Você pode colocar arquivos ali. Um observador de arquivos reindexa os arquivos
   markdown criados ou alterados. Mantenha-os sob um prefixo claro e faça commit.
 

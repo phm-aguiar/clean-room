@@ -585,16 +585,16 @@ Reúne em uma chamada o que a tela inicial costuma precisar. Cache:
 | `contradictions` | inteiro | Sempre `0` nesta versão. |
 | `orphans` | inteiro | Páginas atuais e não expiradas sem nenhuma linha de link de saída **nem** de entrada. |
 | `audited_at` | `null` | Sempre `null` nesta versão. |
-| `stale_pages` | array de `HealthPage` | Até `limit` itens, `updated_at` crescente (as mais antigas primeiro). |
-| `duplicate_pages` | array de `HealthPage` | Até `limit` itens das páginas cujo título se repete, ordenadas por título e depois nome do projeto. |
-| `orphan_pages` | array de `HealthPage` | Até `limit` itens, `updated_at` decrescente. |
+| `stale_pages` | array de páginas de saúde | Até `limit` itens, `updated_at` crescente (as mais antigas primeiro). |
+| `duplicate_pages` | array de páginas de saúde | Até `limit` itens das páginas cujo título se repete, ordenadas por título e depois nome do projeto. |
+| `orphan_pages` | array de páginas de saúde | Até `limit` itens, `updated_at` decrescente. |
 
 Os contadores são calculados sobre o workspace (overview de workspace, só nos
 projetos legíveis pelo chamador) ou sobre o projeto (overview de projeto);
 nas listas de duplicatas e no contador, uma página oculta ao chamador também
 não faz outra parecer duplicada.
 
-`HealthPage` tem `workspace`, `project`, `path`, `title` e `kind`.
+Cada página de saúde tem `workspace`, `project`, `path`, `title` e `kind`.
 
 ```json
 {

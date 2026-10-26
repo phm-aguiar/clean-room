@@ -1,6 +1,6 @@
-# Contrato do evento de hook do Claude Code (T001)
+# Contrato do evento de hook do Claude Code
 
-Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-captura-e-acesso/spec.md` e `plan.md`. Cada afirmação cita arquivo e seção. Onde o doc é omisso, o texto marca **decisão nossa** ou **não definido no doc**.
+Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-captura-e-acesso/spec.md`. Cada afirmação cita arquivo e seção. Em toda dúvida vale o comportamento do original.
 
 Abreviações: LEI = `docs/lifecycle-event-ingestion.md`; HSC = `docs/hook-scripts-and-container-deploy.md`; API = `docs/api-reference.md`; CDX = `docs/desktop/codex-desktop.md`.
 
@@ -45,7 +45,7 @@ Todos os nomes abaixo são de topo do corpo JSON, salvo indicação.
 | `ingest_key` | Chave de idempotência (seção 9) | LEI §3.3; spec.md |
 | `agent_id` ou `subagentType` (string não vazia) | Marca o evento como de subagente | LEI §3.3, "Subagente" |
 
-Campos vistos no payload do Codex pela doc: `hook_event_name`, `model`, `permission_mode` (CDX, "Payload fields", marcado como "Observed" para o Codex). **Não definido no doc** para Claude Code. A leitura desses campos pelo servidor também não é definida, e o doc de ingestão não os usa. **Decisão nossa**: as fixtures podem incluí-los para realismo, e a normalização não deve depender deles. Fica para o Analyst confirmar.
+Campos vistos no payload do Codex pela doc: `hook_event_name`, `model`, `permission_mode` (CDX, "Payload fields", marcado como "Observed" para o Codex). O doc de ingestão não os usa, então o servidor não depende deles (como no original); as fixtures podem incluí-los para realismo.
 
 ### 3.2 Por evento
 
@@ -112,7 +112,7 @@ Campos vistos no payload do Codex pela doc: `hook_event_name`, `model`, `permiss
 
 - `202 queued`: aceito. `202` com motivo: descarte reconhecido (`invalid marker aliases`, `capture policy dropped`, `cursor draft placeholder dropped`, `subagent capture dropped`). `429 hook queue full` e `429 hook source rate limited` (LEI §2.3).
 - `/hook/batch`: até 256 itens `{url, body}`, 413 acima disso. A falha de processamento interrompe o lote e devolve 200 com `failed_index` (LEI §2.2).
-- O hook tem timeout curto (1 segundo no hook de shell, LEI §1). A spec fixa o POST do hook em 2 s por padrão e configurável (spec.md, "Performance", ADR-04).
+- O hook tem timeout curto (1 segundo no hook de shell, LEI §1). A spec fixa o POST do hook em 2 s por padrão e configurável (spec.md, "Performance").
 
 ## 8. Privacidade e segurança no payload
 
@@ -126,17 +126,13 @@ Campos vistos no payload do Codex pela doc: `hook_event_name`, `model`, `permiss
 - `ingest_key`: de 1 a 64 caracteres entre letras ASCII, dígitos, `-` e `_`. Se inválida, é ignorada, sem erro 4xx (LEI §3.3).
 - Marca de versão do Cursor no corpo faz o agente virar Cursor, mesmo com hook instalado como Claude Code (LEI §3.3). Não deve ocorrer nas fixtures do Claude Code.
 
-## 10. Lacunas do doc, a decidir no plan
+## 10. Estado das antigas lacunas
 
-1. Esquema completo do payload do Claude Code (`hook_event_name`, `transcript_path`, `permission_mode`, `source` no SessionStart etc.). O doc só observa isso para o Codex (CDX).
-2. Mapeamento nome de ferramenta para família.
-3. Chaves do `tool_input` lidas pela política de captura (ver LEI §4.3 e §4.4).
-4. Critério de "tool_use_id válido".
-5. Se `tool_response` do Claude Code pode ser objeto e não string. O doc não diz. **Decisão nossa**: tratar objeto, string e ausente nas fixtures.
+Fechadas pelos docs corrigidos contra o original: mapeamento nome de ferramenta → família (LEI §3.5, §4.3), chaves do `tool_input` lidas pela política de captura (LEI §4.3; `docs/marker-file.md`), validade de `tool_use_id` (seção 6) e `tool_response` como string, array de blocos ou objeto serializado em JSON compacto (LEI §3.5). O esquema completo do payload do Claude Code depende do produto externo; o servidor só lê os campos listados aqui.
 
 ## 11. Fixtures de payload a versionar
 
-O plan (plan.md, Contexto e decisões) diz que o adaptador de hooks do Claude Code fica isolado, com fixtures de payload versionadas. Sugestão de diretório: `testdata/hooks/claude-code/` (**decisão nossa**; o doc não fixa o caminho).
+O adaptador de hooks do Claude Code fica isolado, com fixtures de payload versionadas no `testdata/` do pacote de ingestão (convenção Go; o doc não fixa o caminho).
 
 | Arquivo | Evento coberto | O que valida |
 |---|---|---|

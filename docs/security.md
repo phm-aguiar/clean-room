@@ -69,7 +69,8 @@ aceita até 32 MiB. A autenticação de login aceita no máximo 64 KiB de corpo.
 
 - Vem de `AI_MEMORY_AUTH_TOKEN` ou de `[auth].bearer_token` no arquivo de configuração.
 - Gere com `ai-memory generate-auth-token`. O padrão são 32 bytes aleatórios, impressos como 64
-  caracteres hexadecimais. O parâmetro `--bytes` altera o tamanho.
+  caracteres hexadecimais (minúsculos, CSPRNG do sistema). O parâmetro `--bytes` altera o tamanho; não
+  há mínimo validado (`--bytes 0` imprime linha vazia). Falha do gerador: `generating random token: <erro>`.
 - A comparação é em tempo constante, para que o tempo de resposta não revele o token byte a byte.
 - Valor vazio ou só com espaços é tratado como ausente. Nunca autentica como raiz.
 - Com token raiz configurado, credencial ausente ou inválida recebe **401** com
@@ -152,6 +153,9 @@ Para um SSO que termina no proxy e não repassa a credencial do usuário:
 
 - Ao entrar com `POST /auth/login`, o servidor emite um segredo de sessão de 32 bytes com prefixo
   `ams_` e um token CSRF de 24 bytes. O servidor guarda só o SHA-256 de cada um, sem pepper.
+- Nomes (confirmados no original): sessão `ai_memory_session`, CSRF `ai_memory_csrf`, legado
+  `ai_memory_auth`. O CSRF exige cabeçalho e cookie presentes, iguais (tamanho e conteúdo, tempo
+  constante) e o SHA-256 do cabeçalho igual ao hash guardado.
 - Cookie de sessão: `HttpOnly`, `SameSite=Strict`, `Path=/`, com `Max-Age` igual ao tempo restante
   da sessão. Recebe o atributo `Secure` quando `[auth].secure_cookie` ou
   `AI_MEMORY_AUTH__SECURE_COOKIE=true` estiver ativo.
@@ -307,6 +311,9 @@ Esse exemplo usa HTTP puro. Antes de usá-lo em rede, ponha um proxy com TLS na 
   compartilhado, use escopo explícito (workspace e projeto) ou um intermediário que repasse o id real da
   sessão de hook (ver [auto-scope.md](auto-scope.md)); a regra exata de isolamento de `[auto_scope]`
   está a confirmar.
-- Hooks em script, que são o padrão em contêiner, não usam o token OIDC armazenado: a confirmar.
+- Hooks em script, que são o padrão em contêiner, não usam o token OIDC armazenado (confirmado no
+  original: o script envia o evento direto por HTTP, sem spool local nem token OIDC; só o comando de
+  hook nativo do binário, padrão no Windows e em Linux/macOS nativos, tem spool e o token OIDC como
+  último recurso).
 - Autenticação OIDC de gateways que traduzem a identidade para o servidor segue o mesmo caminho de
   proxy confiável descrito acima. Ver [sso.md](sso.md).

@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 020
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 019 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (provedor), 008 (admissão `consolidate`), 007 (slots por usuário), 004 (lint), 012 (perfil), 002 (fim de sessão, checkpoints, página de sessão por regras)
@@ -59,7 +59,7 @@ Sem LLM, a página de sessão é sintetizada por regras. Com um provedor, a sess
 - [ ] Projeção de observações determinística, com golden de seleção
 - [ ] Fila com teste multi-sessão de `claim_id`
 - [ ] Bootstrap com retomada por prefixo contíguo coberta por teste
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Partes puras (tipos, projeção, orçamento, slug e sanitização de caminho) em `internal/domain/consolidate`; orquestração que chama o modelo e escreve páginas na `wiki` (onde a 004 e a 012 já puseram lint e passada de perfil), recebendo o `Provider` da 016 por interface; fila no `storage`; trabalhador, rotas e cliente de bootstrap no `cli`; ferramenta no `mcp`.
@@ -88,7 +88,7 @@ Equívocos corrigidos que mudam o código a escrever:
 4. **Projeção:** a lista de termos de alto sinal (22), as frases de boilerplate (3), a fórmula da amostra uniforme, a recência `floor(i×80/(N−1))`, os marcadores e o formato do bloco de cada observação estão agora no doc. O **resíduo literal** (`verbatim_residue`) não existia nos docs e foi documentado (§4.3).
 5. **Prompts:** a seção "Terminal state and carried detail" e o texto completo do lote/bootstrap/lint/perfil não estavam nos docs; a mensagem de usuário do lote (campos, `tier`/`kind`/`slot_kind`/`entities`) agora é literal.
 6. **Fila:** esperas 30/60/120/240 s, erros de forma terminais imediatos, lease 10 min, devolução de tentativa no `release`, checkpoints enfileiram independente de `consolidate_on_session_end`, trabalhador pula página escrita pelo agente.
-7. **Bootstrap:** impressão digital (SHA-256 com bytes exatos), prefixo contíguo, primeiro-caminho-vence, `since` inválido ignorado em silêncio, nomes de arquivos de regras (`AGENT.md`, `claude.md`), manifesto literal, páginas sem admissão, serialização das execuções, dry-run sem verificar manifesto. Cabeçalhos de módulo são específicos da linguagem original — **decisão a tomar no Go** (equivalente em `doc.go`).
+7. **Bootstrap:** impressão digital (SHA-256 com bytes exatos), prefixo contíguo, primeiro-caminho-vence, `since` inválido ignorado em silêncio, nomes de arquivos de regras (`AGENT.md`, `claude.md`), manifesto literal, páginas sem admissão, serialização das execuções, dry-run sem verificar manifesto. Cabeçalhos de módulo: resolvido, reproduzir o original tal como está — só arquivos `.rs` do repositório analisado e só as linhas `//!` do topo, com rótulo `rust: <caminho>`, qualquer que seja a linguagem da reimplementação (sem equivalente em `doc.go`; `docs/consolidation-llm.md`).
 8. **Guarda de links gerados** (cross-escopo e relações) e sanitização de caminho/portabilidade por item.
 9. **Lint por LLM** só no lint pedido (nunca no agendado); filtro `_lint/` não se aplica a ele.
 10. **Perfil por LLM:** prompts literais e consistência com `design-cross-project-profile.md` §6 conferida (confiança ausente → 0,6).

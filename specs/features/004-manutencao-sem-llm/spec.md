@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 004
-- **Status:** draft (revisada contra os docs em 2026-10-13; **auditada contra o comportamento do original e corrigida em 2026-10-19** — docs `design-memory-aging`, `consolidation`, `temporal`, `wiki-files-layer`, `api-reference` atualizados; `plan.md` e `tasks.md` precisam ser regenerados a partir desta versão)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 003 (purga, tombstones e compactação do banco), 002 (servidor, MCP, `/admin/*`)
@@ -34,7 +34,7 @@ Esta feature também é a produtora da lápide de decaimento que a ressurreiçã
 - **Curador** em modo relatório (`docs/consolidation.md` §3.2, `docs/api-reference.md` §3.4): `cold_episodic` (exclui compactadas), `stale_slot`, `duplicate_title`, `dangling_cross_project_link`, até 25 por tipo; `POST /admin/curator` (`dry_run` padrão; `dry_run`+`stage` ou `mode` desconhecido = 422), CLI `curator`.
 - **Agendadores** (`docs/cli.md` §4, `docs/design-memory-aging.md` §5.6): varredura de esquecimento (padrão 86 400 s) e lint de regras (padrão 86 400 s), com último sucesso persistido em `maintenance_scheduler_state` (`forget_sweep`, `rule_lint`), atraso de início `min(intervalo, 60 s)` ou o restante do intervalo, nova tentativa em `min(intervalo, 60 s)` após falha; varredura de projetos vazios (primeira execução 60 s após o início, depois a cada 24 h, sem estado persistido, 7 dias, nunca `scratch`, `_global`, `_profile` nem `_profile.*`). Cada tick percorre todos os projetos de todos os workspaces.
 - **`reorg`** (`POST /admin/reorg`, CLI `reorg`; `docs/consolidation.md` §3.3): só no workspace `default`; projeto = último componente do `cwd`; cria projetos mesmo em `dry_run`; reatribui sessões e observações; "cemitério" = aposenta (`is_latest = 0`, `valid_to`) **todas** as páginas atuais do workspace numa transação, sem `superseded_at` e **sem tocar nos arquivos** (não usa `_graveyard/`).
-- **`reclaim-ledger-versions`** (`POST /admin/reclaim-ledger-versions`, CLI; `docs/consolidation.md` §3.4): global; só linhas substituídas sem `superseded_at` de ledgers aprovados pelo reconhecimento de conteúdo da 002 (T022); `confirm` obrigatório fora de `dry_run`; `drop_latest` e `compact` opcionais.
+- **`reclaim-ledger-versions`** (`POST /admin/reclaim-ledger-versions`, CLI; `docs/consolidation.md` §3.4): global; só linhas substituídas sem `superseded_at` de ledgers aprovados pelo reconhecimento de conteúdo da 002; `confirm` obrigatório fora de `dry_run`; `drop_latest` e `compact` opcionais.
 
 ### Fora do escopo (explicitamente)
 - Deduplicação de clusters frios e banda de contradição (precisam de embeddings armazenados; feature 021).
@@ -82,15 +82,15 @@ Esta feature também é a produtora da lápide de decaimento que a ressurreiçã
 - [ ] Poda de ledgers nunca apaga o mês atual nem o anterior; `reorg` não altera arquivos
 - [ ] Lint e curador produzem os achados por regra de `docs/consolidation.md` §3 sem editar páginas
 - [ ] Agendadores persistem o último sucesso e não reexecutam após reinício
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Passadas como funções puras sobre dados carregados (classificação, retenção, keep-tokens, compactação, lint, curador), com a aplicação feita pela camada wiki em lote no escritor. As entradas (MCP, rota, CLI e agendador) chamam a mesma função de varredura. Os agendadores ficam no `serve`, com estado em `maintenance_scheduler_state`.
 
 ## Dependências
 - 003: tombstones de purga, remoção de árvore, compactação do banco e trava de mutação da wiki.
-- 002: servidor, MCP, `/admin/*`, escritas rastreadas no git, reconhecimento de ledger (T022).
-- 001: `UpsertPage`, `BumpAccess`, cadeia de supersessão e ressurreição corrigida (002/T088).
+- 002: servidor, MCP, `/admin/*`, escritas rastreadas no git, reconhecimento de ledger.
+- 001: `UpsertPage`, `BumpAccess`, cadeia de supersessão e ressurreição de lápide que limpa o `superseded_at`.
 
 ## Checklist de Prontidão
 - [x] Propósito claro e sem ambiguidade
@@ -100,3 +100,22 @@ Passadas como funções puras sobre dados carregados (classificação, retençã
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria 011 (2026-10-25), validação linha a linha contra o original. Relatório: `reports/011-auditoria-003-004-005.md`.
+
+- Fórmula de retenção, feedback de saliência, limiar de `stale` (0,6/λ, com retorno a 30 dias), regras de lint (lista completa: `stale`, `rule_suggestion`, `pinned_expiring`, `duplicate`, `broken_link`, `contradiction` declarada, `feedback_flagged`, `contradiction` por faixa de similaridade, mais as do LLM, nessa ordem), curador (4 sinais, 25 por tipo, 7/30 dias) e compactação A2 (L1 de 500 bytes, 48 keep-tokens de 2 a 128 bytes, rodapé literal): **conferidos e fiéis**.
+- **Resolvidos três "a confirmar"** em `docs/design-memory-aging.md`: (1) a pontuação de retenção só é calculada pela varredura (e pelas passadas que reaproveitam o conjunto frio) e pelo curador, e **não** entra no ranking da busca; (2) a lista de ferramentas que reforçam acesso está completa: `memory_query`, `memory_recent`, `memory_read_page` e `memory_explore`, só via MCP; (3) `memory_query` também reforça os acertos vindos do escopo global reservado e do escopo de perfil.
+- **Lint `broken_link`:** "outro projeto" = qualquer alvo gravado com qualificador de projeto, inclusive o próprio; a comparação de nomes é exata.
+- **Lint `contradiction` (aresta declarada):** a mensagem usa só o caminho do alvo, sem qualificador.
+- **Lint `duplicate`:** o título vai entre aspas com escape de string.
+### Correções da auditoria (rodada 2)
+
+- Varredura de esquecimento revalidada linha a linha. Ordem das passadas, guardas, relatório, poda de observações (4 condições, laço de lotes, auditoria só com exclusão) e poda de ledgers: **fiéis**.
+- Acréscimos:
+  - `ledger_retention_months < 0` também falha antes de qualquer leitura;
+  - `observations_prunable` é contado antes das mutações;
+  - a contagem de observações da 4ª condição cobre todos os escopos;
+  - caminho inválido é pulado em silêncio;
+  - a rota administrativa responde 404 para escopo ausente e 500 para erro da varredura, e passa compactação e retenções da configuração, com dedup sempre desligado.

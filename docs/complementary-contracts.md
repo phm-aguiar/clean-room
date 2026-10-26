@@ -129,7 +129,7 @@ Módulo de lógica pura, sem I/O.
 
 ### 3.1 Cadeia de resolução (o primeiro degrau que produzir um valor vence)
 
-| # | Degrau (`IdentitySource`) | Origem | Único globalmente? | Roteia por identidade? |
+| # | Degrau (origem da identidade) | Origem | Único globalmente? | Roteia por identidade? |
 |---|---|---|---|---|
 | 1 | `explicit` | `identity = "…"` no `.ai-memory.toml` | sim (como o autor quis) | **sim** |
 | 2 | `manifest` | `project = "…"` no `.ai-memory.toml` | por acordo | não (roteia por nome) |
@@ -174,12 +174,12 @@ Os quatro clientes que implementam a mesma lógica são: o núcleo, os scripts d
 
 ### 3.4 Aliases e estilo da chave
 
-- **Aliases do marcador** (`MarkerAliases`): nomes antigos do projeto, em no máximo **16** aliases de até **128** bytes cada.
+- **Aliases do marcador**: nomes antigos do projeto, em no máximo **16** aliases de até **128** bytes cada.
   - Cada alias é aparado. Deve começar com letra ou dígito, e depois aceita letras, dígitos, `.`, `_` e `-`.
   - Duplicatas dentro da lista são removidas, mantendo a primeira ocorrência. A contagem de limite é feita antes da remoção.
   - Gramática portável **mínima**: uma única declaração `aliases = [...]`, na raiz do marcador, numa linha, com um array JSON de strings. Não são aceitos escapes, tabelas, arrays multilinha, vírgula final, comentários nem uma segunda declaração.
-  - Erros possíveis: `TooMany` (mais de 16 entradas), `Invalid` (alias fora da gramática ou mais longo que 128) e `InvalidWire` (formato que não é o array esperado).
-- **Estilo da chave** (`IdentityStyle`):
+  - Erros possíveis: `too many marker aliases` (mais de 16 entradas), `invalid marker alias` (alias fora da gramática ou mais longo que 128) e `invalid marker aliases wire value` (formato que não é o array esperado).
+- **Estilo da chave**:
   - `host_path` (padrão e formato legado no fio): `github.com/acme/api`.
   - `path`: `acme/api`.
   - Só a identidade de `git_remote` tem host a remover. Declaração, nome de manifesto e nome de pasta passam inalterados.
@@ -247,8 +247,8 @@ ai-memory restore-agents -i backup.tar.gz --apply   # aplica
 
 **Tipos:**
 
-- Tipos de ativo: `McpConfig`, `Skill`, `Plugin` e `Instruction`.
-- Escopo do ativo: `Global` (perfil do usuário) ou `Project` (repositório).
+- Tipos de ativo: `mcp-config`, `skill`, `plugin` e `instruction`.
+- Escopo do ativo: `global` (perfil do usuário) ou `project` (repositório).
 - Manifesto (versão do esquema `1`): data de criação, sistema operacional, arquitetura, diretório home (opcional), indicador de sanitização e lista de entradas.
 - Cada entrada tem: agente, tipo de ativo, escopo, caminho no arquivo, caminho relativo de destino, indicador de sanitização, SHA-256 (opcional) e modo (opcional).
 - O modo guarda os bits de permissão do Unix, **sem** bits set-id nem sticky.

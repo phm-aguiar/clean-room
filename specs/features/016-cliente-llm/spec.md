@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 016
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 015 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (configuração, servidor, `/admin/status`, `status`), 015
@@ -61,7 +61,7 @@ Todo recurso opcional que usa modelo (consolidação, rerank, `answer`, `memory_
 - [ ] Tabela de classificação de erros e a cadeia com circuito cobertas por teste
 - [ ] Validações de carga de `llm_*` e `llm_fallbacks` cobertas por teste
 - [ ] Suíte inteira passa sem provedor configurado
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Pacote `internal/llm` sem dependência de `storage` nem de `wiki`: interface `Provider`, wrapper tipado, um arquivo por provedor, cadeia e saúde. A configuração resolve credenciais e entrega material tipado (`internal/config`). O servidor monta o provedor (ou a cadeia) uma vez no boot.
@@ -80,7 +80,7 @@ Pacote `internal/llm` sem dependência de `storage` nem de `wiki`: interface `Pr
 
 ## Correções da auditoria
 
-Auditoria de 2026-10-20/22 contra o comportamento original (relatório `reports/004-auditoria-016-017-018.md`). Os docs foram corrigidos; esta spec passa a exigir:
+Auditoria de 2026-10-20/22 contra o comportamento original (o relatório dessa rodada não está mais em `reports/`). Os docs foram corrigidos; esta spec passa a exigir:
 
 - **Classes de erro:** além das listadas, `serde` (rótulo literal), `truncated-response` (resposta estruturada com `finish_reason=length`) e `empty-content` (2xx sem conteúdo). Ambas são terminais, livres de conteúdo, e o modo estrito do `openai-compat` não recorre ao tolerante para elas. Textos de erro literais em `llm-client.md` §3.1.
 - **Corpo de erro:** segredos são redigidos e sequências de controle removidas **antes** do corte em 1 KiB; marcador de leitura `<failed to read provider error body: ...>`; excesso vira `provider response exceeded <N> bytes`.
@@ -97,4 +97,4 @@ Auditoria de 2026-10-20/22 contra o comportamento original (relatório `reports/
 - **Provedor `cursor`** (CLI `agent` do Cursor) existia no original e não estava nos docs: agora documentado (`llm-client.md` §5.10). Entra na 018 (assinatura), mas o nome e o modelo padrão fazem parte do catálogo da 016.
 
 ### Status
-**Ainda incompleta**: precisa de nova rodada de plano/tarefas (apagados de propósito) para incorporar os itens acima; os docs agora bastam para reimplementar. Pendência herdada do original: o analisador de ambiente do `AI_MEMORY_LLM_HEADERS` não foi reproduzido literalmente (aceitar vírgula e, por segurança, quebra de linha).
+Os docs agora bastam para reimplementar (não há plano nem tasks). `AI_MEMORY_LLM_HEADERS` pela variável de ambiente: entradas separadas só por vírgula, como no original (resolvido: reproduzir o original; a quebra de linha como separador extra, permitida por `docs/llm-client.md` §2.5, não é adotada).

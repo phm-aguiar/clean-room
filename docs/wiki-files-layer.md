@@ -40,7 +40,7 @@ Regras:
   nenhum componente monta caminhos por concatenação manual.
 - O diretório do projeto usa **identificadores (UUID)**, não nomes: renomear projeto
   ou workspace não move arquivos. `_meta.md` guarda os nomes humanos e permite que a
-  reindexação reconstrua os escopos a partir do disco (ver `ReindexSummary` na seção 5).
+  reindexação reconstrua os escopos a partir do disco (ver o resumo da reconstrução na seção 5.4).
 - Autor e e-mail dos commits automáticos são fixos: nome `ai-memory` e e-mail
   `ai-memory@local`. Não vazam a identidade Git do usuário.
 - Os nomes de diretório são a forma canônica do UUID (minúsculas, com hífens). Na leitura da árvore
@@ -420,8 +420,15 @@ Detalhes:
   (códigos de sistema 32 e 33), geralmente causada por antivírus ou indexador que
   está lendo o arquivo recém-criado. Nesses casos a troca é repetida até 5 vezes, com
   espera linear de 10, 20, 30, 40 e 50 ms (no máximo cerca de 150 ms). Se o problema
-  persistir, o erro original é propagado.
-- **Em outras plataformas** nenhum erro é considerado transitório.
+  persistir, o erro original é propagado. **Acesso negado (código 5) não é repetido**: costuma ser
+  problema real de permissão e propaga na primeira falha. A repetição reaproveita o mesmo temporário
+  (os bytes já gravados e sincronizados continuam lá), sem reescrevê-lo. A espera bloqueia a thread que
+  escreve. O mesmo primitivo (com a mesma repetição) é usado por toda gravação atômica da wiki, inclusive
+  as do adaptador Git (conferido na referência 3.1.1).
+- **Em outras plataformas** nenhum erro é considerado transitório (no Unix o código 32 é outro erro, de
+  pipe quebrado, e não deve ser repetido).
+- A sincronização depois da troca é só dos **dados** do arquivo (não dos metadados); a do diretório pai
+  é uma sincronização completa, em melhor esforço.
 - A gravação devolve um identificador do arquivo gravado (número de inode no Unix;
   índice de arquivo NTFS no Windows). Se o identificador não pode ser lido, ou o volume não o
   expõe (FAT), o valor é zero, não erro. **Nenhum componente usa esse identificador hoje:** o
@@ -440,8 +447,9 @@ O componente Wiki é compartilhável entre tarefas e mantém:
 - embedder opcional (ausente = nenhum embedding é gerado);
 - higienizador de texto, cadeia de admissão opcional e leitor do banco opcional;
 - **guarda de mutação** do tipo leitor/escritor: escrita de página usa a guarda
-  compartilhada; remoções, purgas, movimentações e manutenção de escopo usam a guarda
-  exclusiva;
+  compartilhada; remoções condicionais (por versão esperada, por decaimento, lápide da
+  reconciliação e remoção definitiva de lápide), purgas, movimentações e manutenção de escopo
+  usam a guarda exclusiva. A remoção simples de página usa a guarda **compartilhada** (seção 5.4);
 - **trava por página**: uma trava assíncrona por combinação (workspace, projeto,
   caminho), com coleta oportunista das travas sem uso;
 - conjunto de escopos cujo manifesto já foi garantido nesta sessão.
@@ -518,6 +526,13 @@ Ordem fixa:
    superada. Se a gravação falhar, o arquivo anterior é restaurado. Se a restauração
    também falhar, o sistema retorna um erro explícito de **estado inconsistente**
    (arquivos mudaram, o índice não, e a reversão falhou), em vez de mascarar o problema.
+   Texto literal do erro (referência 3.1.1): `INCONSISTENT STATE: wiki files changed but store
+   write failed (<causa>) and rollback failed (<erro da reversão>)`. Regras da reversão: o conteúdo
+   anterior é lido **antes** de instalar (arquivo ausente = "não existia"; qualquer outro erro de
+   leitura aborta a escrita antes de tocar o disco); a reversão percorre os arquivos instalados na
+   **ordem inversa**; arquivo que existia é regravado com os bytes antigos pela escrita atômica;
+   arquivo que não existia é apagado (já ausente não é erro), com sincronização do diretório em melhor
+   esforço. Quando a reversão dá certo, quem chama recebe o erro original do banco.
 10. **Embedding.** Se houver embedder, o corpo é embutido **na mesma execução** que a
     escrita, sem indexação em segundo plano. Se o resumo existir, ele recebe um embedding
     próprio. Falha de embedding gera aviso e registro da falha no índice, mas **não
@@ -565,37 +580,64 @@ checkpoints recentes e checkpoint de linha de base para atualização (ver seç�
 
 **Remoção:**
 
-- `delete_page`: remove a página. A cadeia de admissão é consultada **antes** de qualquer
+- **Remover página:** remove a página. A cadeia de admissão é consultada **antes** de qualquer
   alteração, e um webhook bloqueante que rejeite interrompe a operação.
-- `delete_page_if_latest`: só remove se a versão atual ainda for a esperada (verificação
-  de versão, para evitar apagar algo que foi reescrito no meio do caminho).
-- `evict_page_if_latest` (remoção por decaimento): segue a mesma verificação de versão.
-  Move o arquivo para uma área de quarentena, apaga a versão no índice e cria um
-  marcador de decaimento (tombstone). Se a remoção no índice falhar, o arquivo é
-  restaurado da quarentena. Em caso de sucesso, a cópia em quarentena é apagada.
-- `hard_delete_decay_tombstone`: apaga definitivamente um marcador de decaimento antigo e
-  sua cadeia de versões. Nunca apaga um arquivo que existe. Se um arquivo recriado no
+- **Remover página se a versão for a esperada:** só remove se a versão atual ainda for a esperada
+  (verificação de versão, para evitar apagar algo que foi reescrito no meio do caminho).
+- **Evicção por decaimento:** segue a mesma verificação de versão. Move o arquivo para uma área
+  de quarentena, apaga a versão no índice e cria um marcador de decaimento (tombstone). Se a remoção
+  no índice falhar, o arquivo é restaurado da quarentena. Em caso de sucesso, a cópia em quarentena
+  é apagada.
+  A quarentena é um arquivo **no mesmo diretório** da página, com prefixo `.ai-memory-delete.` e
+  sufixo aleatório (sem extensão `.md`, por isso o observador o ignora): o nome é reservado criando
+  um temporário, que é apagado e então recebe a página por renomeação. Se a renomeação falha, o nome
+  reservado é apagado e o erro propaga, sem tocar no índice.
+
+**Fluxo comum das três remoções acima** (conferido na referência 3.1.1; corrige a impressão de que só
+a remoção por decaimento usa quarentena):
+
+1. confinamento do caminho (sem criar diretórios); a remoção simples adquire a guarda de mutação
+   **compartilhada**, e as duas condicionais (por versão esperada e por decaimento) adquirem a guarda
+   **exclusiva**, que mantém escritas normais fora entre a comparação e a quarentena;
+2. confere que o projeto existe e pertence ao workspace (nunca cria escopo);
+3. nas condicionais, compara a versão corrente do índice com a esperada; divergente devolve "não
+   removeu" sem tocar disco nem índice (a comparação é repetida dentro da transação do banco);
+4. cadeia de admissão (bloqueante), operação `delete`: uma rejeição interrompe antes de qualquer
+   alteração;
+5. quarentena do arquivo (descrita acima). Arquivo já ausente não é erro: segue sem quarentena;
+6. remoção no índice (física para remoção simples ou condicional, lápide para decaimento). Se falha,
+   ou se a condição deixou de valer dentro da transação, o arquivo volta da quarentena para o caminho
+   original e o resultado é o erro, ou "não removeu";
+7. sucesso: a cópia em quarentena é apagada e os webhooks não bloqueantes são disparados.
+
+A lápide criada pela reconciliação quando o arquivo sumiu (opção desligada por padrão, seção 8) não
+usa esse fluxo: não roda a cadeia bloqueante nem mexe no disco; confere de novo, sob a guarda
+exclusiva, a versão esperada **e** que o arquivo continua ausente (se voltou, nada é feito) e, no
+sucesso, só dispara os webhooks não bloqueantes da operação `delete`.
+
+- **Remoção definitiva de lápide de decaimento:** apaga definitivamente um marcador de decaimento
+  antigo e sua cadeia de versões. Nunca apaga um arquivo que existe. Se um arquivo recriado no
   mesmo caminho ainda não foi indexado, ele é reindexado antes.
 
 **Escopo:**
 
-- `purge_project`, `purge_session`, `purge_workspace`: removem dados de um escopo. Antes de
-  tocar em qualquer coisa, consultam a cadeia de admissão (`admit_purge_*`).
-- `move_project_workspace`: move um projeto para outro workspace **sem mudar o identificador
-  do projeto**. Usa a guarda exclusiva, renomeia o diretório e atualiza o índice.
-- `move_session_page`: move a página de uma sessão para outro projeto.
-- `remove_project_dir`, `remove_workspace_dir`: removem diretórios de escopo.
-- Propostas de automelhoria: escrevem um sidecar de revisão que **não é indexado**
-  (`write_auto_improve_sidecar`). A aprovação (`approve_auto_improve_proposal`) aplica a
-  proposta pelo mesmo caminho de escrita da seção 5.2 e trata conflito revertendo o
-  arquivo instalado.
+- **Purgar projeto, sessão ou workspace:** removem dados de um escopo. Antes de tocar em qualquer
+  coisa, consultam a cadeia de admissão (operações `purge_project`, `purge_session`,
+  `purge_workspace` da seção 6.1).
+- **Mover projeto para outro workspace:** move **sem mudar o identificador do projeto**. Usa a
+  guarda exclusiva, renomeia o diretório e atualiza o índice.
+- **Mover página de sessão:** move a página de uma sessão para outro projeto.
+- **Remover diretório de projeto ou de workspace:** removem os diretórios de escopo.
+- Propostas de automelhoria: escrevem um arquivo lateral de revisão que **não é indexado**. A
+  aprovação aplica a proposta pelo mesmo caminho de escrita da seção 5.2 e trata conflito
+  revertendo o arquivo instalado.
 
 **Restauração e reindexação:**
 
-- `restore_page_from_checkpoint`: lê a página na revisão indicada pelo histórico Git e a
+- **Restaurar página de um checkpoint:** lê a página na revisão indicada pelo histórico Git e a
   regrava pelo caminho normal.
-- `reindex_page`: reindexa uma página a partir do disco (seção 5.5).
-- `reindex_all`: reconstrói o índice inteiro a partir do disco:
+- **Reindexar uma página:** reindexa uma página a partir do disco (seção 5.5).
+- **Reconstruir o índice inteiro** a partir do disco:
   1. valida a árvore inteira (seção 12);
   2. percorre os diretórios `<workspace_id>/<project_id>/` com dois UUIDs válidos;
   3. pula escopos purgados (tombstone de escopo): não os ressuscita;
@@ -608,22 +650,22 @@ checkpoints recentes e checkpoint de linha de base para atualização (ver seç�
   6. uma página que colide com outra já indexada (só difere por caixa ou Unicode) é pulada e contada
      em `skipped_collisions`. **Qualquer outro erro de página interrompe a reconstrução inteira.**
 
-  O resumo (`ReindexSummary`) informa workspaces, projetos, páginas, `skipped_purged`,
+  O resumo da reconstrução informa workspaces, projetos, páginas, `skipped_purged`,
   `skipped_purged_sessions` e `skipped_collisions`.
-- `backfill_scope_manifests`: cria o `_meta.md` de escopos que não o têm.
-- `repair_date_only_stale_after`: converte validades só com data para o instante de fim
-  do dia, no formato OKF.
+- **Preencher manifestos faltantes:** cria o `_meta.md` de escopos que não o têm.
+- **Reparar validade só com data:** converte validades só com data para o instante de fim do dia,
+  no formato OKF.
 
-**Ledger:** `append_under_project` acrescenta bytes a um arquivo `log*.md` do projeto e
-reporta a alteração ao Git.
+**Ledger:** o acréscimo ao ledger grava bytes no fim de um arquivo `log*.md` do projeto e
+reporta a alteração ao Git (seção 9).
 
-**Admissão:** `preflight_admission` consulta a cadeia **antes** de trabalho caro (por
-exemplo, antes de chamar um modelo de linguagem), sem gravar nada. `authorize_operation`,
-`notify_operation_observers` e `dispatch_purge` seguem a regra da seção 6.
+**Admissão:** a **consulta prévia** à cadeia roda **antes** de trabalho caro (por exemplo, antes de
+chamar um modelo de linguagem), sem gravar nada. A autorização de operação, o aviso aos
+observadores de operação e o disparo de purga seguem a regra da seção 6.
 
 ### 5.5 Reindexação de uma página a partir do disco
 
-Usada pelo observador (seção 8) e pela reconstrução (`reindex_all`). A restauração de checkpoint não
+Usada pelo observador (seção 8) e pela reconstrução do índice inteiro. A restauração de checkpoint não
 usa este fluxo: ela regrava a página pelo fluxo da seção 5.2. Difere da escrita da seção 5.2 em pontos
 que mudam o resultado:
 
@@ -741,12 +783,12 @@ Execução sequencial, na ordem da configuração. Cada webhook vê a saída do 
   componente proíbe chamadas diretas de gravação de arquivo fora desse caminho.
 - **Commit por caminho.** Só os caminhos registrados são incluídos. Uma **varredura
   completa** da árvore é feita quando:
-  - o último registro não é confiável (`walk_needed`);
+  - o último registro não é confiável (o adaptador marcou que precisa varrer);
   - nenhum caminho foi registrado desde o último commit;
   - passaram 600 s desde a última varredura.
 
   A varredura compara a árvore com os caminhos registrados e conta as escritas que não
-  foram reportadas (`unreported_writes`), guardando uma amostra de até 5 caminhos.
+  foram reportadas (contador interno, só usado em diagnóstico e não exposto em nenhuma API), guardando uma amostra de até 5 caminhos.
   Escrita não reportada significa que alguém contornou o wiki.
 - Se o HEAD mudou por fora do adaptador, o índice é relido e a próxima passagem varre
   a árvore.
@@ -774,7 +816,7 @@ Execução sequencial, na ordem da configuração. Cada webhook vê a saída do 
      assinatura que o usuário configurou no repositório podem rodar;
   7. se a gravação da árvore falha porque o índice aponta para um objeto que não existe mais, o índice é
      esvaziado, a árvore inteira é preparada de novo e a gravação é repetida uma vez.
-- `commit_all` devolve nenhum identificador de commit quando não há mudança.
+- O commit de tudo devolve nenhum identificador de commit quando não há mudança.
 - Mensagens fixas usadas pelo próprio wiki: `okf-migration: conform wiki to OKF v0.2` (migração) e
   `okf: repair date-only stale_after on existing pages` (reparo). As demais mensagens vêm de quem chama
   o commit.
@@ -906,6 +948,21 @@ manutenção do arquivo de configuração.
 
 `log.md` e `log-AAAA-MM.md` são o ledger bruto dos hooks: entradas no formato
 `## [timestamp] evento | título`.
+
+**Quem escreve e como** (conferido na referência 3.1.1):
+
+- O servidor só **escreve** no arquivo mensal `log-AAAA-MM.md`, na raiz do projeto, com ano e mês do
+  instante do evento em UTC (um evento perto da virada do mês cai no arquivo do mês dele). `log.md`
+  só é **reconhecido** (instalações antigas, migração OKF); nada novo é acrescentado a ele.
+- Uma linha por evento, terminada em LF: `## [AAAA-MM-DDTHH:MM:SSZ] <evento> | <título>`, com o
+  instante em UTC e precisão de segundos. `<evento>` é um de `session-start`, `user-prompt`,
+  `pre-tool-use`, `post-tool-use`, `pre-compact`, `post-compaction`, `notification`, `stop`,
+  `session-end`, `subagent-start`, `subagent-stop`, `other`. No título, cada `\n` e cada `\r` vira
+  espaço e só os primeiros **120** caracteres Unicode são mantidos (sem reticências).
+- O acréscimo é por abertura em modo de acréscimo (sem escrita atômica por troca); uma linha curta
+  não se intercala com a de outro escritor. O caminho é informado ao Git como alterado, mas o ledger
+  **nunca** entra no índice do Git (seção 7). Não há varredura de retenção dos arquivos mensais além
+  da regra de meses da varredura de manutenção.
 
 Um arquivo só é tratado como ledger se o **nome casa e o conteúdo também**:
 
@@ -1052,7 +1109,7 @@ motivo.
   - **pais:** cria os diretórios pais do alvo;
   - **diretório:** cria também o alvo.
   O alvo final, se existir, não pode ser link.
-- **Validação da árvore inteira** (`validate_wiki_tree`), usada por rotinas administrativas
+- **Validação da árvore inteira**, usada por rotinas administrativas
   de verificação:
   - o diretório de metadados Git precisa existir **dentro da raiz**, ser diretório comum e
     não ser link;

@@ -25,8 +25,12 @@ O ai-memory é um binário único que:
    estão na seção 6.
 3. **Mantém uma wiki em Markdown** com páginas, links entre páginas, supersessão
    de versões e um log de eventos (`log.md`). *Comportamento verificado* para o
-   log e a supersessão. A existência de um índice (`index.md`) é **a confirmar**.
-4. **Expõe uma superfície MCP estreita**: 23 ferramentas, não dezenas. A lista
+   log e a supersessão. **Conferido (referência 3.1.1):** o `log.md` é ledger de
+   eventos de hook, não de escritas de página (a escrita de página não acrescenta
+   linha nele, ver [wiki-files-layer.md](wiki-files-layer.md) §5.2 e §9). O
+   `index.md` existe só como arquivo criado pela migração OKF da wiki
+   ([okf.md](okf.md)); a escrita de página não o garante nem o atualiza.
+4. **Expõe uma superfície MCP estreita**: 24 ferramentas, não dezenas. A lista
    está na seção 10. *Comportamento verificado.* Essa escolha é uma decisão de
    produto: menos ferramentas reduzem a confusão do usuário e do agente.
 5. **Distribui-se como imagem de contêiner e binário**, para trocar de máquina
@@ -35,9 +39,15 @@ O ai-memory é um binário único que:
    *Comportamento verificado.* O nome e o volume da imagem no exemplo de uso são
    **a confirmar**.
 6. **Recupera-se sozinho em alguns pontos**: aplica migrações de esquema na
-   inicialização, tira um snapshot dos dados antes de migrar, e ignora vetores
-   de embedding incompatíveis em vez de bloquear o arranque.
-   *Comportamento verificado.* A auditoria periódica de integridade é **a confirmar**.
+   inicialização e ignora vetores de embedding incompatíveis em vez de bloquear
+   o arranque. *Comportamento verificado.* **Correção (referência 3.1.1):** a
+   abertura do banco **não** tira cópia antes de migrar; cada migração roda na
+   própria transação. O único backup automático da inicialização é o do
+   diretório de dados, feito só quando a wiki ainda tem arquivos fora da
+   conformidade OKF e não há recibo de backup válido
+   ([storage-and-retrieval.md](storage-and-retrieval.md) §2,
+   [wiki-files-layer.md](wiki-files-layer.md) §10.2). A auditoria periódica de
+   integridade é **a confirmar**.
 
 ## 2. Requisitos de engenharia
 
@@ -74,11 +84,26 @@ Comportamento verificado:
   de um lote de páginas são as únicas entradas para gravar arquivos. Assim,
   sanitização, admissão, atribuição, reversão e atualização do banco ficam juntas.
   Handlers não gravam arquivos da wiki diretamente. *Decisão verificada na
-  interface de escrita; a regra de que nenhum handler escreve diretamente é a confirmar.*
+  interface de escrita.* **Regra conferida (referência 3.1.1, varredura de todos os
+  componentes fora da camada de wiki, excluídos os testes):** nenhum handler do servidor
+  (ferramentas MCP, rotas de administração, ingestão de hooks, navegador web, consolidação,
+  bootstrap, auto-melhoria) grava, renomeia ou apaga arquivo dentro da árvore da wiki; todos
+  passam pelas operações da camada de wiki (escrita de página ou de lote, remoções, purgas,
+  movimentações, acréscimo ao ledger). As únicas escritas diretas no diretório de dados fora
+  dela ficam em `raw/` (segmentos de workstream e sua remoção na purga), não na wiki. Dentro
+  da camada de wiki, um lint proíbe gravar, renomear, copiar ou apagar arquivo sem passar pelo
+  adaptador Git, para que todo caminho tocado seja registrado no próximo commit. **Exceção:**
+  os comandos de ciclo de vida da CLI que rodam com o servidor parado e com a guarda de
+  processo vivo (`reset`, `uninstall --purge-data`, `restore`) apagam ou trocam diretórios
+  inteiros (`wiki/`, `db/`, `raw/`) diretamente; eles não são handlers e não editam páginas.
 - **Não há transação atômica entre arquivo e banco.** Se uma escrita no banco
   falhar depois que o arquivo foi instalado, o sistema tenta desfazer o arquivo
   de forma best-effort. Falhas entre as duas etapas são resolvidas pelo caminho
-  de reindexação a partir do Markdown. *A reversão é a confirmar.*
+  de reindexação a partir do Markdown. *Reversão conferida (referência 3.1.1):*
+  o conteúdo anterior do arquivo é guardado antes da instalação; se a gravação no
+  banco falha, ele é restaurado (ou o arquivo novo é apagado, quando não existia),
+  e, se a restauração também falha, o erro devolvido é de **estado inconsistente**
+  ([wiki-files-layer.md](wiki-files-layer.md) §5.2, passos 8 e 9).
 - **O observador de arquivos é rede de segurança**, não a entrada principal. Ele
   faz uma reconciliação completa a cada 30 segundos para capturar eventos
   perdidos de edição externa.
@@ -423,8 +448,17 @@ anterior deste documento.
   diretórios irmãos e de outros donos continuam abertos. *Comportamento verificado.*
 - **Prioridade entre candidatos.** Um handoff manual tem prioridade sobre o
   automático de fim de sessão. Entre automáticos elegíveis, o mais recente vence,
-  e a especificidade do diretório só desempata timestamps iguais. **A confirmar**
-  para ambas as regras.
+  e a especificidade do diretório só desempata timestamps iguais. *Comportamento
+  verificado* (auditoria 002). Chave de escolha, em ordem: (1) manual vence automático
+  (manual = sem sessão de origem, o que vale sempre para `memory_handoff_begin`);
+  (2) criação mais recente, em microssegundos; (3) só entre automáticos com o mesmo
+  instante, o diretório normalizado mais longo (barra final ignorada); para manuais
+  esse critério é neutro, então o manual mais novo vence mesmo que um mais antigo
+  tenha diretório mais específico; (4) desempate final determinístico pelos bytes do
+  identificador. Antes da escolha, o filtro de dono vem **primeiro**; manuais são
+  candidatos em todo o projeto, qualquer que seja o diretório gravado; automáticos
+  passam pela fronteira de caminho, e um automático sem diretório gravado conta como
+  de projeto inteiro.
 
 ### Handoffs de checkpoint
 
@@ -434,7 +468,7 @@ de turno) pode publicar um checkpoint de continuação sem encerrar a sessão.
 
 ## 10. Superfície MCP
 
-Há 23 ferramentas. A coluna "Anotação" traduz as dicas de tipo de operação
+Há 24 ferramentas. A coluna "Anotação" traduz as dicas de tipo de operação
 declaradas pelo servidor: *leitura* (somente leitura), *escrita* (não
 destrutiva) e *escrita destrutiva*.
 
@@ -457,6 +491,7 @@ destrutiva) e *escrita destrutiva*.
 | `memory_handoff_cancel` | Expira um handoff aberto por engano | escrita destrutiva |
 | `memory_message_pop` | Consome uma mensagem da caixa de entrada | escrita destrutiva |
 | `memory_message_cancel` | Cancela mensagens pendentes enviadas pelo projeto | escrita destrutiva |
+| `memory_restore_page` | Lista checkpoints de uma página ou restaura uma versão (só administrador) | escrita destrutiva |
 | `memory_lint` | Auditoria da wiki; grava relatório em `_lint` | escrita |
 | `memory_consolidate` | Consolidação por LLM da sessão; `multi_page` gera lote atômico | escrita |
 | `memory_auto_improve` | Revisão manual de aprendizado de sessão concluída | escrita |

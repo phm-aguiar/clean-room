@@ -46,7 +46,7 @@ UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:8000").rstrip("/")
 LISTEN = os.environ.get("LISTEN", "127.0.0.1:18097")
 
 # Fixed prefix of the reranker's system prompt; see
-# crates/ai-memory-llm/src/reranker.rs in the ai-memory tree.
+# docs/prompts-schemas-and-sanitizer.md (reranker prompt).
 RERANK_SYSTEM_PREFIX = "You are a retrieval reranker for a software project's memory wiki."
 
 # Mirrors the four grades of the reranker prompt (1.0 / 0.7 / 0.3 / 0.0).

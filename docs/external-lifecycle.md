@@ -337,8 +337,10 @@ section 2.2.
   existing rules for ended sessions. See [lifecycle-event-ingestion.md](lifecycle-event-ingestion.md),
   section 8.3.
 - Stopping a parent does not make the server end its child sessions. The producer must
-  report each child's lifecycle transition. (a confirmar: no code that infers child
-  endings was located in this review.)
+  report each child's lifecycle transition. (Confirmed in audit 002: the server never
+  infers a child ending from its parent. The only child-specific rule is that an OpenCode
+  child session, marked as subagent in its own `session-end`, is closed and summarized
+  **without** an automatic handoff; see lifecycle-event-ingestion.md §8.3.)
 
 ## 8. Native spool and drain limits
 
@@ -394,8 +396,12 @@ Failure behavior of the native drain:
   variable grants no permissions. `extension` is self-declared provenance, not an
   identity.
 - Project access modes and grants apply to database-user tokens. See [users.md](users.md).
-  Pages are shared by authorized project members. (a confirmar: these two access rules
-  were not re-verified in this review.)
+  Pages are shared by authorized project members. (Confirmed in audit 002 for the
+  ingestion path: the per-repository check only runs for a database-user viewer, and only
+  when per-repository authorization is on; root and single-operator installs are not
+  checked. A capture whose author may not write the project is acknowledged and dropped
+  (`dropped_unauthorized` in a batch), never retried. `GET /recap` answers a project the
+  viewer cannot read exactly like an unknown session.)
 - This document does not introduce a framework adapter, a workflow engine or a generic
   plugin runtime. A future adapter for an observability standard can map conversation
   and tool-call identities at the boundary. Keep the ingestion producer identity separate

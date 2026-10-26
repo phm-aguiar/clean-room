@@ -134,7 +134,10 @@ Seções agrupadas: `[decay]`, `[maintenance]`, `[dream]`, `[retrieval]`, `[slot
 Campos da seção `[auth]`: token bearer, usuário, e-mail e nome do usuário raiz,
 par emissor/assunto OIDC do usuário raiz, *pepper* de tokens, token de proxy de
 identidade, token de recuperação, indicador de cookie seguro e lista de redes de proxy
-confiáveis. A representação textual da configuração deve redigir segredos (a confirmar).
+confiáveis. A representação textual (de depuração) da seção `[auth]` **redige** os segredos
+como `<redacted>` (confirmado na auditoria 002): token bearer, *pepper*, token do proxy de
+identidade, senha inicial do usuário raiz e token de recuperação. Os demais campos (caminhos
+de arquivo de token, cookie seguro, dados do usuário raiz, redes confiáveis) aparecem como estão.
 
 Caminhos derivados de arquivos de credenciais: token de autenticação, token OAuth do
 provedor OpenAI, arquivo de autenticação do Codex, token do Copilot e token do
@@ -269,8 +272,14 @@ A confirmar: lista completa das rotas de sessão e de autenticação interna.
   mortos até o limite do sistema. Detalhes em [windows-native-extras.md](windows-native-extras.md) §11.
 - **Encerramento:** há uma **janela de graça de 5 s** para drenar conexões. Clientes com
   fluxo de eventos ou sessão não se encerram sozinhos. O trabalhador de consolidação
-  também é limitado por essa janela. Escritas pendentes no escritor podem ser
-  descartadas (a confirmar).
+  também é limitado por essa janela. Confirmado na auditoria 002: cada espera do encerramento
+  é limitada **separadamente** a 5 s (drenagem de conexões, transporte stdio, trabalhador de
+  perfil, trabalhador de consolidação de fim de sessão e fechamento do armazenamento), então
+  uma parada pode levar um pequeno múltiplo de 5 s. Ao final, o servidor faz checkpoint do
+  WAL e fecha as conexões do armazenamento (também limitado a 5 s, porque o fechamento entra
+  na fila atrás do que o escritor estiver executando); se estourar, sai mesmo assim e o WAL é
+  reaplicado na próxima subida. Uma passada de perfil no meio de uma escrita termina a página
+  atual dentro da janela ou é abandonada e retomada na próxima subida pelas marcas gravadas.
 
 ---
 
@@ -327,7 +336,7 @@ entrada padrão. Ordem de processamento:
      nem mesmo prompts.
    - A decisão pode resultar em descartar o evento, substituir o corpo por apenas
      metadados, ou manter o evento com um campo indicando a política aplicada.
-    - `--check-capture` imprime a decisão em JSON (sem capturar, sem usar spool ou rede), com 15 campos fixos (`version`, `capture_mode`, `marker_present`, `admits_capture`, `policy_admits_capture`, `event_admits_capture`, `policy_state`, `tool_family`, `path_count`, `disposition` [que reporta `"drop"` também quando a disposição interna é `MetadataOnly`], `extraction_state`, `scope`, `scope_resolution`, `server_profile`, `server_resolution`) e `external_capture: true` opcional. Serve para diagnóstico.
+    - `--check-capture` imprime a decisão em JSON (sem capturar, sem usar spool ou rede), com 15 campos fixos (`version`, `capture_mode`, `marker_present`, `admits_capture`, `policy_admits_capture`, `event_admits_capture`, `policy_state`, `tool_family`, `path_count`, `disposition` [que reporta `"drop"` também quando a disposição é só metadados], `extraction_state`, `scope`, `scope_resolution`, `server_profile`, `server_resolution`) e `external_capture: true` opcional. Serve para diagnóstico.
 5. **Montagem da requisição:** diretório atual, identificadores do marcador do
    repositório (espaço, projeto, estratégia de nome de projeto, descarte de capturas de
    subagentes, escopo padrão, briefing), identificador de sessão e identificador de
@@ -348,9 +357,31 @@ entrada padrão. Ordem de processamento:
    `GET /handoff` com timeout de **3 s** e imprime o envelope que o agente espera (para Claude Code: `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}` quando há contexto, ou `{}` quando vazio).
    Atenção: essa leitura de handoff é **destrutiva** no servidor. Agentes que não
    injetam esse conteúdo recebem o handoff sob demanda, por ferramenta MCP. O agente Kimi recebe o briefing opt-in no primeiro prompt (`UserPromptSubmit`).
+9a. **Pedido "reload context"** (registrado pela auditoria 002; ausente antes). Um prompt que
+   **começa** com `reload context` (após espaços iniciais, sem diferenciar maiúsculas ASCII, como
+   palavras inteiras: o caractere seguinte não pode ser letra, dígito ou `_`) pede a
+   recapitulação da última compactação (`GET /recap`, ver lifecycle-event-ingestion.md §2.5).
+   Uma frase que só menciona a expressão no meio não dispara.
+   - Agentes que injetam a saída do `UserPromptSubmit` (Claude Code e Codex; payload de Cursor é
+     excluído porque o tratamento do envelope não foi verificado), com identificador de sessão:
+     drena a fila (orçamento de início, 3 s) para que o marco de pré-compactação já esteja gravado,
+     chama `GET /recap?agent=<agente>&session_id=<id>[&budget=<n>]` com o timeout do handoff e
+     imprime `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"<recap>"}}`.
+     O Codex pede `budget=6000`; os demais usam o padrão do servidor.
+   - Grok (descarta a saída do prompt): grava um marcador `<data_dir>/recap-pending/<chave>` com o
+     horário; no próximo resultado de ferramenta, se o marcador tiver menos de **30 min**, o
+     recap vai junto do handoff no mesmo `additionalContext` (limite de 10 000 caracteres; o
+     orçamento pedido é o espaço que o handoff deixa, e se for menor que 2000 o recap espera o
+     próximo resultado). Marcador velho ou ilegível é apagado; `session-end` apaga o marcador.
+   - Os plugins gerados do OpenCode aplicam a mesma regra como expressão regular.
 10. **Fronteiras** (`stop`, `pre-compact`, `session-end`): dispara um drenador em segundo
     plano (`hook-drain`), com entrada/saída padrão nulas, saída de erro em `logs/hook-drain.log`, trava exclusiva de sistema operacional na fila (`.drain.lock`, esperada por até 30 s; se continuar ocupada, o drenador escreve um aviso em `hook-drain.log` e não envia nada nessa passada) e orçamento de
     **5 min**.
+    Exceção (auditoria 002): para o agente **Zero**, que mata o drenador destacado, o
+    `session-end` é drenado **no próprio processo do hook**, com orçamento fixo de **10 s**
+    (espera da trava incluída; timeout por evento = o menor entre o configurado e 10 s) e parada
+    rígida em **20 s**, ambos abaixo do limite de 30 s do Zero e sem sobrescrita por ambiente.
+    O que não for entregue continua na fila para a próxima fronteira.
 11. Sempre responde sucesso ao agente.
 
 ### 5.3 Fila local (spool)
@@ -361,7 +392,7 @@ Diretório: `<diretório de dados>/hook-spool/`.
 |---|---|
 | Máximo de tentativas por evento | **8** (padrão em `[hook_spool].max_attempts` ou `AI_MEMORY_SPOOL_MAX_ATTEMPTS`; `0` desativa descarte por tentativas) |
 | Idade máxima | **7 dias**. Eventos mais antigos são descartados. |
-| Máximo de arquivos na fila | **10 000** (coordenado por `<data_dir>/hook-spool.capacity.lock`, espera de até 50 ms). Ao atingir 10 000 arquivos, a fila existente é preservada e o **novo evento recebido é descartado** na inserção (com aviso em stderr). |
+| Máximo de arquivos na fila | **10 000** (coordenado por um arquivo de trava irmão do diretório da fila, espera de até 50 ms; no código original o nome resultante é `<data_dir>/hook-spool..capacity.lock`, com dois pontos, porque o sufixo `.capacity.lock` é anexado como extensão; comportamento do original, reproduzir tal como está). Passados os 50 ms, o evento é gravado mesmo assim. Ao atingir 10 000 arquivos, a fila existente é preservada e o **novo evento recebido é descartado** na inserção (com aviso em stderr). |
 | Lote de envio | Até **256 itens** e **8 MiB** por lote. Sempre pelo menos 1 evento. |
 
 No início da drenagem, arquivos `.json.tmp` órfãos com mais de **5 minutos** (300 000 ms) são inspecionados: se tiverem até 10 MiB, JSON válido e `created_ms` idêntico ao prefixo do nome, são recuperados (renomeados para `.json`); caso contrário, são apagados.
@@ -453,13 +484,13 @@ Cada `root` deve ser absoluto ou começar com `~/`.
 2. Registro carregável.
 3. Perfil existe.
 4. Se o perfil **não tem `roots`** e há mais de um perfil registrado, o resultado é
-   `RootsRequired`.
+   `rejected-roots-required`.
 5. Se o perfil tem `roots`, o diretório do marcador que declarou a chave deve estar
    sob algum root, **comparando componente por componente**. Exemplo: o root
    `~/work/team-b` aceita `~/work/team-b/repo`, mas não `~/work/team-bb`. Caso contrário,
-   o resultado é `OutsideRoots`.
+   o resultado é `rejected-outside-roots`.
 6. Leitura do token (quebra de linha final removida). Token vazio equivale a ausente,
-   resultado `NoToken`.
+   resultado `rejected-no-token`.
 
 **Busca sem checagem de roots:** existe para quem age sobre uma seleção já validada pelo
 hook (importação disparada pelo hook e drenagem da fila).
@@ -483,7 +514,7 @@ aparecem em `--check-capture` e nos avisos: `rejected-invalid-profile-name`,
 - Sem `--root`, mantém os roots já registrados. Assim, rotacionar token não remove a
   restrição.
 - `remove` apaga o perfil e o token.
-- `clear_tokens` (chamado pela desinstalação) apaga só os tokens e mantém o registro, que
+- A limpeza de tokens (chamada pela desinstalação) apaga só os tokens e mantém o registro, que
   não tem segredos. Reinstalar lista cada perfil com `token: missing`.
 
 **Comandos (locais, nunca contatam servidor):**
@@ -548,9 +579,9 @@ Comandos de navegação sobre este fluxo: `show`, `continue`, `resume`, `workstr
   hooks do agente. Com `--apply`, **mescla** a configuração no arquivo do agente. Formatos
   suportados: JSON e TOML, plugins ou extensões gerados como scripts de extensão, pacotes de plugin
   e outros. A lista de eventos de cada agente fica em um único lugar.
-- **Escrita idempotente** (`apply_atomic`): resolve links simbólicos sem substituí-los.
+- **Escrita idempotente**: resolve links simbólicos sem substituí-los.
   Executa a transformação sobre o conteúdo atual. Se o resultado for igual, não toca o
-  disco (`NoOp`). Caso contrário, copia o arquivo para `<arquivo>.bak-<timestamp Unix>`
+  disco (nada a fazer). Caso contrário, copia o arquivo para `<arquivo>.bak-<timestamp Unix>`
   e grava com escrita atômica (temporário, sincronização, troca e sincronização do
   diretório).
 - **`install-mcp`:** imprime ou aplica o registro do servidor MCP no cliente escolhido.
@@ -733,8 +764,8 @@ Regras de implementação dos comandos:
   Remove o prefixo de caminho estendido do Windows só nas formas seguras.
 
 - **Nomes de instalação:** nome do executável `ai-memory`. No pacote do Windows, o
-  arquivo é `ai-memory.exe`. A pasta de hooks é irmã do executável (a confirmar nome
-  exato).
+  arquivo é `ai-memory.exe`. A pasta de hooks é irmã do executável e se chama `hooks`
+  (confirmado na auditoria 002), tanto no pacote de release quanto no prefixo de instalação.
 
 ---
 
@@ -745,10 +776,13 @@ Endereço do servidor: URL configurada, com `base_path` se houver.
 **Precedência do bearer:**
 
 1. Token estático passado na linha de comando ou na configuração **sempre vence**.
-2. Senão, token OIDC armazenado em `auth.json`. Se vencido, é renovado (a confirmar).
+2. Senão, token OIDC armazenado em `auth.json`. Confirmado na auditoria 002: é renovado
+   quando faltam **60 s ou menos** para vencer; o token renovado é gravado em `auth.json` antes
+   de ser usado. Se a renovação falhar, ou se a gravação falhar, usa o token antigo (pode ainda
+   estar dentro da tolerância de relógio do provedor). Token estático vazio conta como ausente.
 3. Senão, requisição anônima.
 
-Funções auxiliares (`get_json`, `post_json`, `post_json_no_content` e outras) concentram
+Funções auxiliares de requisição (GET e POST com JSON, POST sem conteúdo de resposta e outras) concentram
 URL e autenticação em um único lugar.
 
 ---

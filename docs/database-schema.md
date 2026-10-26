@@ -25,7 +25,7 @@
 | Listas/objetos | `TEXT` com JSON (padrões `'[]'` e `'{}'`) |
 | Texto de dono | `owner_user`, `actor_user`, `accepted_by_user` e similares são `TEXT`: a chave de armazenamento da identidade do operador. **Não** são chave estrangeira para `users` |
 | Pragmas na abertura | `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` (ms), `foreign_keys=ON` em execução e **OFF durante as migrações** (que reconstroem tabelas) |
-| Migrações | Aplicadas em ordem numérica, cada uma em uma transação. O histórico fica na tabela de controle `refinery_schema_history` (colunas: `version`, `name`, `applied_on`, `checksum`). Uma migração aplicada que o binário não conhece faz a abertura ser **recusada** com erro de schema mais novo que o binário. Checksum divergente de migração já aplicada é **tolerado** (a versão 62 foi reduzida a DDL; o preenchimento de janelas roda na abertura, ver [temporal.md](temporal.md)) |
+| Migrações | Aplicadas em ordem numérica, cada uma em uma transação. O histórico fica na tabela de controle `refinery_schema_history` (colunas: `version` inteiro, chave; `name` texto; `applied_on` texto em RFC 3339; `checksum` texto com um inteiro de 64 bits sem sinal em decimal; a leitura do histórico interpreta as duas últimas de forma estrita, então uma linha mal formada impede a abertura). Uma migração aplicada que o binário não conhece faz a abertura ser **recusada** com erro de schema mais novo que o binário. Checksum divergente de migração já aplicada é **tolerado** (a versão 62 foi reduzida a DDL; o preenchimento de janelas roda na abertura, ver [temporal.md](temporal.md)) |
 | Backfills na abertura | Após as migrações, rodam backfills idempotentes e de execução única antes de aceitar tráfego: índice de entidades a partir do frontmatter, janelas de ingestão das páginas (em lotes, com checkpoint de WAL) e chaves de coordenada dos projetos. Em um banco já preenchido são no-ops |
 | Escritor | **Uma** thread/conexão de escrita, alimentada por fila de comandos com capacidade de 1024 mensagens; pool de conexões somente leitura com limite flexível de 4 |
 
@@ -259,9 +259,8 @@ CREATE INDEX idx_sessions_open_owner ON sessions(workspace_id, project_id, agent
 
 > **O `CHECK` de `agent_kind` é fechado.** Cada novo tipo de agente exige uma migração que reconstrói a
 > tabela (versões 9, 11, 20, 25, 26, 28, 30, 32, 44, 45, 47, 50, 51, 72, 73, 78, 80, 81 e 83). A aplicação mapeia
-> qualquer tipo desconhecido para `'other'` (fronteira tolerante). Em uma reimplementação, prefira
-> **não** colocar o `CHECK` (use a validação na aplicação) ou aceite que adicionar um tipo de agente é
-> uma migração de reconstrução.
+> qualquer tipo desconhecido para `'other'` (fronteira tolerante). Comportamento do original, reproduzir
+> tal como está: o `CHECK` existe, e adicionar um tipo de agente é uma migração de reconstrução.
 
 `ended_observation_count` registra quantas observações da sessão estavam cobertas pelo último encerramento.
 Na atualização para a versão 35, as sessões já encerradas receberam como linha de base a contagem atual de
@@ -860,7 +859,9 @@ e para entender a origem de cada coluna.
 | `profile_candidates, profile_entry_ledger, profile_harvest_marks` | 75 | colhedor de perfil |
 
 A reconstrução de `sessions` para ampliar o tipo de agente acontece nas versões 9, 11, 20, 25, 26, 28, 30,
-32, 44, 45, 47, 50, 51, 72 e 73. A reconstrução de `links` está na versão 13 e a de `users` na versão 54.
+32, 44, 45, 47, 50, 51, 72, 73, 78, 80, 81 e 83. A reconstrução de `links` está na versão 13 e a de `users`
+nas versões 54 e 79. Também alteram tabelas do mapa acima: 77 (`ingest_keys`, colunas de recuperação), 79
+(`users`, remoção das colunas legadas de token) e 82 (`managed_runs`, sessão nativa anterior).
 
 **Migrações sem tabela nova (só dados ou índice):**
 

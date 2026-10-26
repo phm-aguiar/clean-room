@@ -83,7 +83,8 @@ Cada invariante nasceu de um defeito observado em outro sistema ou de um inciden
 6. **A remoção de privacidade é uma fronteira de tipo.** Uma observação só pode ser armazenada
    depois de passar pela sanitização, que remove segredos antes de limitar o tamanho: título em
    no máximo 80 caracteres e corpo em no máximo 16 KiB. O sanitizador é o caminho para o
-   armazenamento de texto não confiável (**a confirmar** que não há outro caminho).
+   armazenamento de texto não confiável. Na referência, só a observação é protegida pelo tipo; os
+   outros textos são higienizados pelo chamador (detalhe na tabela abaixo, linha 6).
 7. **Somente saídas estruturadas por JSON Schema** nas chamadas de LLM (sem XML nem bibliotecas-invólucro).
 8. **`{provider, model, dim}` desnormalizado ao lado de todo embedding**; vetores velhos geram
    aviso e são ignorados quando a configuração diverge.
@@ -150,14 +151,14 @@ completa não foi verificada no código de referência.
 | 1 | Carregamento de configuração na CLI, feito uma vez no início. **A confirmar:** o caminho de hook faz carregamento próprio e tolerante; instaladores de agentes, o componente de workstream e o de backup/migração leem variáveis de ambiente diretamente. |
 | 2 | Camada de armazenamento: escritor único em thread dedicada, com fila de capacidade 1024. |
 | 3 | Upsert de página no armazenamento, dentro da transação. A gravação da wiki desfaz o arquivo se o upsert falhar. A ingestão de hook grava sessão, observação e chave de ingestão na mesma transação. |
-| 4 | Tipos de identidade do domínio e colunas de workspace e projeto no esquema inicial. **A confirmar:** cobertura por tabela. |
+| 4 | Tipos de identidade do domínio e colunas de workspace e projeto no esquema inicial. **Conferido (esquema da 3.1.1):** carregam `workspace_id` **e** `project_id` não nulos: `pages`, `sessions`, `observations`, `handoffs`, `entities`, `session_consolidation_jobs`, `page_feedback`, `purged_sessions`, `project_grants`, `workstreams` e as tabelas `auto_improve_*` com escopo. Só parte delas tem gatilho de pareamento (lista exata em `database-schema.md` §0.1); `page_feedback`, `purged_sessions` e `project_grants` não têm. Herdam o escopo pela chave estrangeira, sem colunas próprias: `links`, `page_embeddings`, `page_abstract_embeddings`, `page_embed_failures`, `page_access`, `page_evidence`, `entity_page_links` (com gatilho próprio de escopo), `auto_improve_proposal_events`. Exceções: `ingest_keys` só tem `project_id`; `agent_messages` tem par de origem e par de destino; `audit_log` tem escopo opcional e sem chave estrangeira; `purged_scopes` guarda o par sem chave estrangeira de propósito; tabelas globais (`workspaces`, `users`, credenciais, `client_activity`, manutenção, `wiki_migrations`) não têm escopo de projeto. A identidade com `path` vale só para páginas. |
 | 5 | Roteador de ingestão de hooks (202, 429 por saturação, limite de lote e limite de taxa por origem) e comando de hook da CLI com spool local. **A confirmar:** valor-alvo do timeout de hooks em script (ver texto da invariante). |
-| 6 | Tipo de observação sanitizada no domínio, criável apenas pela função de sanitização. **A confirmar:** se todo texto não confiável que chega ao armazenamento passa por ela (há outros pontos de chamada, no servidor MCP, na administração e no armazenamento). |
+| 6 | Tipo de observação sanitizada no domínio, criável apenas pela função de sanitização. **Conferido (referência 3.1.1):** a barreira **de tipo** só existe para observações (as três formas de inserir observação no armazenamento exigem o tipo sanitizado). Os demais textos não confiáveis são higienizados **pelo chamador**, com o sanitizador configurado, sem barreira de tipo: escrita de página (corpo e strings do frontmatter, duas vezes, `wiki-files-layer.md` §5.2), handoff manual (resumo e cada item das listas), mensagem entre projetos (corpo e assunto, depois cortados), motivo de feedback (higienizado, numa linha só, e limitado) e eventos de workstream (higienizados pelo próprio armazenamento antes de gravar). A reindexação a partir do disco **não** higieniza (`wiki-files-layer.md` §5.5). Comportamento do original, reproduzir tal como está (sem exigir o tipo sanitizado nessas entradas). |
 | 7 | Adaptador de provedor LLM (saída com JSON Schema) e tipos de saída da consolidação. |
 | 8 | Armazenamento de embeddings (colunas `provider`, `model`, `dim`; remoção de vetores obsoletos) e interface de embedder do cliente LLM. **A confirmar:** aviso ao detectar divergência. |
 | 9 | Guarda de processos vivos na CLI (`reset`, `restore`, `reindex`, `uninstall` com purge). O backup usa snapshot online do armazenamento. |
 | 10 | Helper de escrita atômica da wiki (arquivo temporário, sincronização de dados, rename, sincronização do diretório) e aplicação de lote da wiki. O watcher ignora arquivos temporários pelo prefixo. |
-| 11 | Configuração e inicialização da CLI. O caminho é canonicalizado e registrado no log de nível informação na inicialização. **A confirmar:** caminho absoluto garantido só quando o caminho ou seu diretório pai existe. |
+| 11 | Configuração e inicialização da CLI. O caminho é canonicalizado e registrado no log de nível informação na inicialização. **Conferido (referência 3.1.1):** a canonicalização tenta o caminho; se ele ainda não existe, canonicaliza o diretório pai e reanexa o último componente; se nem o pai existe, o caminho fica **como foi dado** (pode continuar relativo). Sem diretório local do usuário conhecido, o padrão é `ai-memory` relativo ao diretório atual. No Windows a forma canônica traz o prefixo `\\?\`. A garantia de caminho absoluto, portanto, só vale quando o caminho ou o pai existe. |
 | 12 | Não existe (ver a nota sobre a entrada 12). |
 | 13 | Consolidação (varredura, lint, curador) no componente de consolidação; síntese de sessão no componente de ingestão de hooks. |
 | 14 | Autenticação de provedores: material tipado resolvido na CLI antes de construir o cliente. Clientes não leem variáveis de ambiente (as leituras que existem no componente LLM estão em testes). |
@@ -196,7 +197,7 @@ completa não foi verificada no código de referência.
 | Configuração | leitura de TOML com variáveis `AI_MEMORY_*`, usando `__` como separador de níveis (comportamento do produto) |
 | CLI | framework de subcomandos |
 | JSON Schema de saída estruturada | geração a partir dos tipos de saída |
-| Sanitizador | motor de expressões regulares sem retrocesso; os padrões de `prompts-schemas-and-sanitizer.md` devem rodar nele (**a confirmar**) |
+| Sanitizador | motor de expressões regulares sem retrocesso; os padrões de `prompts-schemas-and-sanitizer.md` rodam num motor desse tipo na referência 3.1.1 (sem retrovisores nem *lookaround*), **com** classes `\s`, `\d` e `\b` Unicode e configuração padrão do motor (sem limites próprios de tamanho). Um motor de mesma família mas com classes só ASCII precisa de ajuste (ver `prompts-schemas-and-sanitizer.md` §11.2) |
 | Hash de senha | algoritmo memory-hard Argon2id, em formato PHC |
 | Hashes, comparação em tempo constante, aleatoriedade | SHA-256; comparação de tokens em tempo constante; gerador criptográfico do sistema |
 | Identificadores | UUIDv7 (é comportamento do produto) |

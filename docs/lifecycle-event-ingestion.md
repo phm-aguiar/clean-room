@@ -24,15 +24,19 @@ Agente -> hook nativo (cliente) -> spool local -> POST /hook/batch  (ou POST /ho
                                                        v
  1. remove o campo bruto da mensagem final do assistente (sempre)
  2. normaliza o JSON em evento (parsing tolerante)
- 3. recusa o evento se os aliases do marcador de projeto forem inválidos       -> 202, descartado
- 4. aplica o excerto do assistente (somente com o opt-in duplo)
- 5. política de captura: Keep / Drop / MetadataOnly                             -> Drop: 202
+ 3. aplica o excerto do assistente (somente com o opt-in duplo; consome a marca)
+ 4. recusa o evento se os aliases do marcador de projeto forem inválidos       -> 202, descartado
+ 5. política de captura: keep / drop / metadata-only                             -> drop: 202
  6. descarta o rascunho reservado do Cursor                                     -> 202, descartado
- 7. descarte de subagente (somente se o projeto optou)                          -> 202, descartado
- 8. limite global de processamento simultâneo (cheio)                           -> 429
- 9. limite por fonte (sem token)                                                -> 429
-10. responde 202 "queued" e processa em segundo plano
+ 7. lista de descarte do servidor `[ingest]` (seção 4.6)                         -> 202, descartado
+ 8. descarte de subagente (somente se o projeto optou)                          -> 202, descartado
+ 9. limite global de processamento simultâneo (cheio)                           -> 429
+10. limite por fonte (sem token)                                                -> 429
+11. responde 202 "queued" e processa em segundo plano
 ```
+
+(Ordem conferida no código original pela auditoria 002. No lote, entre os passos 8 e 9 há
+ainda o descarte de item sem identificador de sessão, seção 2.2.)
 
 **Garantias de projeto**
 
@@ -43,6 +47,10 @@ Agente -> hook nativo (cliente) -> spool local -> POST /hook/batch  (ou POST /ho
   transação do dado).
 - Falhas no processamento em segundo plano não alteram a resposta já enviada no caminho
   de evento único. Para lotes, a falha aparece no reconhecimento (seção 2.2).
+- **Exceção do lote:** em `POST /hook/batch` os itens são processados **dentro da requisição**
+  (em sequência, sem tarefa de segundo plano), para que os efeitos de cada item (por exemplo,
+  página de sessão e handoff de um fim de sessão) estejam gravados quando o reconhecimento
+  volta. Só `POST /hook` responde antes de processar.
 
 ---
 
@@ -53,6 +61,7 @@ Agente -> hook nativo (cliente) -> spool local -> POST /hook/batch  (ou POST /ho
 | `/hook` | POST | Um evento: parâmetros de consulta + corpo JSON. |
 | `/hook/batch` | POST | Lote de até **256** itens `{url, body}`; confirmações parciais. |
 | `/handoff` | GET | Contexto síncrono de início de sessão (handoff, bloco de contexto, aviso de caixa de entrada). |
+| `/recap` | GET | Recapitulação somente leitura do trecho perdido na última compactação (seção 2.5). |
 
 Antes destas rotas, o middleware de autenticação identifica o ator e o nível de
 autorização. A lista de webhooks a pular, enviada no cabeçalho `X-Memory-Skip-Admission-Chain`,
@@ -74,7 +83,13 @@ A resposta traz:
 - `accepted`: prefixo contínuo confirmado, mantido por compatibilidade com drenagens antigas.
 - `accepted_indices`: índices confirmados, quando não coincidem com o prefixo.
 - `failed_index`: item que falhou no processamento, quando houver.
-- `results`: desfecho de cada item confirmado.
+- `results`: desfecho de cada item confirmado, como lista de `{index, outcome}` (índice a partir
+  de zero na requisição). Valores de `outcome`: `stored`, `replayed`, `resumed`, `ignored_end`,
+  `dropped_policy` (política de captura ou lista `[ingest]`), `dropped_subagent`,
+  `dropped_unauthorized`, `dropped_collision`, `dropped_invalid` (aliases inválidos, rascunho do
+  Cursor, sem identificador de sessão, ou sessão já expurgada).
+- `accepted_indices` é omitido quando coincide exatamente com o prefixo contínuo; `failed_index`
+  é omitido quando não houve falha. Com falha, `accepted_indices` é sempre enviado (mesmo vazio).
 
 Regras:
 
@@ -95,7 +110,7 @@ Regras:
 
 - **202 "queued"**: evento aceito para processamento.
 - **202** com motivo (`invalid marker aliases`, `capture policy dropped`,
-  `cursor draft placeholder dropped`, `subagent capture dropped`): descarte reconhecido,
+  `cursor draft placeholder dropped`, `ingest drop list`, `subagent capture dropped`): descarte reconhecido,
   sem consumir capacidade.
 - **429** `hook queue full`: limite global atingido.
 - **429** `hook source rate limited`: limite por fonte atingido.
@@ -106,6 +121,46 @@ Regras:
 - **200** com corpo vazio quando não há nada a entregar ou quando a busca falha (a falha é registrada).
 - **403** com o motivo quando a identidade ou o escopo do repositório são recusados. Esse
   erro nunca é injetado como contexto do agente.
+
+### 2.5 `GET /recap` (recapitulação de compactação)
+
+Rota somente leitura, usada quando o operador pede "reload context" depois de uma compactação.
+**Nunca** reivindica handoff, nunca publica o projeto ativo e nunca grava observação.
+
+- Parâmetros: `session_id` (obrigatório; o identificador nativo, convertido como na seção 3.3),
+  `budget` (orçamento em caracteres; ausente ou não numérico vale **8000**; limitado ao intervalo
+  **2000–9500**) e `agent` (só para log).
+- Respostas: **400** `session_id is required` (ausente ou só espaços); **200** com o texto; **200**
+  com corpo vazio em erro interno (registrado em log).
+- Sessão desconhecida, de outro dono (filtro de dono igual ao do `/handoff`) ou de projeto sem
+  permissão de leitura recebem o **mesmo** aviso:
+  `> 🧭 **ai-memory: compaction recap**: no session is recorded under this id for you, so there is nothing to reload.`
+  (assim o identificador não serve de sonda).
+- Leitura: até **400** observações dos tipos prompt do usuário, parada e pré-compactação, da mais
+  nova para a mais antiga. Sem pré-compactação: aviso
+  `> 🧭 **ai-memory: compaction recap**: no compaction is recorded for session `<id>` yet, so there is nothing to reload.`
+- Janela: do último marco de pré-compactação até o anterior (ou até a linha mais antiga lida).
+  Marcos de pré-compactação adjacentes sem prompt entre eles contam como **uma** compactação.
+  Prompts que são marcação do harness ou instruções injetadas não contam. A resposta mais nova
+  não vazia (corpo da parada) é a "última resposta". Se a leitura bateu no limite de 400 sem
+  achar o início, a janela é marcada como truncada.
+- Lista até **5** handoffs abertos do projeto (com o filtro de dono), os da própria sessão
+  primeiro, cada um como `- <resumo> Next: <passo>; <passo>. (created <AAAA-MM-DD HH:MM UTC>, from this session)`.
+- Formato: cabeçalho `> 🧭 **ai-memory: compaction recap** (requested with "reload context")`, a
+  linha `> **Security boundary:** <aviso fixo de conteúdo não confiável>`, a frase
+  ``Session `<id>`: what was captured from <início ou "the session start"> to the compaction at <horário>. Session page: `sessions/<id>.md`.``;
+  depois, entre as cercas `<!-- ai-memory:untrusted-history:start -->` e
+  `<!-- ai-memory:untrusted-history:end -->`: `_Earlier rows of this window were not read._` (se
+  truncada), `## Your prompts before the compaction (oldest first)` (linhas `- [<AAAA-MM-DD HH:MM UTC>] <prompt>`
+  ou `_No prompts were captured in this window._`), `## The agent's last reply before the compaction`
+  (a resposta, ou `_Replies were not captured. Install the hooks with `--capture-assistant` and enable `capture_assistant` on the server to include them._`)
+  e, se houver, `## Open handoffs in this project (none claimed)`. Rodapé:
+  ``Full record: `memory_read_session_observations` with `session_id: "<id>"` and `kinds: ["user-prompt", "stop"]`.``
+- Orçamento: a resposta e os handoffs reservam até 1000 e 500 caracteres; os prompts mais novos
+  ficam inteiros, o próximo é cortado se sobrarem ao menos 300 caracteres (ou se nenhum coube), os
+  mais antigos são omitidos com a linha `- _<N> earlier prompts omitted to fit; see the full record below._`.
+  Todo corte acrescenta `\n[truncated]`; o texto final é cortado no orçamento. Textos armazenados são
+  escapados contra fechamento das cercas.
 
 ---
 
@@ -201,7 +256,7 @@ Grizzybot, Kiro CLI, Droid, Muse, CodeBuddy e IBM Bob), eventos de pré e pós-f
 seguem estas regras:
 
 - **Título**: `tool <família>`, onde a família é `file`, `search-list`, `non-file` ou
-  `unknown`. No pré-ferramenta, exige-se a presença de `tool_input` (ou `args`); sem esse objeto, o título cai para `pre-tool-use` e o corpo fica vazio. Quando o evento já vem reduzido a `MetadataOnly` pelo cliente, o título traz apenas `<família>` (ex.: `file`), enquanto a redução no servidor produz `tool <família>`.
+  `unknown`. No pré-ferramenta, exige-se a presença de `tool_input` (ou `args`); sem esse objeto, o título cai para `pre-tool-use` e o corpo fica vazio. Quando o evento já vem reduzido a `metadata-only` pelo cliente, o título traz apenas `<família>` (ex.: `file`), enquanto a redução no servidor produz `tool <família>`.
 - **Corpo**: `tool_family: <família>`, mais `tool_call_id: <id>` quando existir e for válido (1 a 128 caracteres ASCII em `[A-Za-z0-9_.-]`).
   No pós-ferramenta, acrescenta `outcome: success | error | unknown` e, **somente se a família não for `unknown`**, o separador `---` e a saída. Quando a família é `unknown`, o corpo contém apenas o cabeçalho (sem `---` e sem saída). Quando não há saída e a família é conhecida, o texto após `---` é `(no output captured)`.
 - **Famílias de ferramentas** (comparação sem diferenciar maiúsculas/minúsculas):
@@ -289,38 +344,38 @@ ignorados (`[capture] ignore_paths`) do marcador `.ai-memory.toml` mais próximo
 | Orçamento de comparações por chamada | 1 000 000 |
 
 Se o orçamento de comparações for excedido em um caminho de arquivo, o resultado é
-`MetadataOnly` (fail-safe). Em comandos de shell, o resultado é `Drop` (seção 4.4).
+`metadata-only` (fail-safe). Em comandos de shell, o resultado é `drop` (seção 4.4).
 
 ### 4.3 Estado do marcador e decisão
 
 O marcador é lido por quem faz a E/S, e a política recebe um de três estados:
 
-- **Inativa** (sem marcador, em modo denylist): `Keep`.
+- **Inativa** (sem marcador, em modo denylist): `keep`.
 - **Inválida** (marcador malformado, ou padrão que a compilação recusa): para ferramenta de
-  arquivo, de busca/listagem, comando de shell ou leitora de saída de processo, `MetadataOnly`.
-  Para as demais, `Keep`. Um marcador quebrado não prova que o argumento de um comando de shell
+  arquivo, de busca/listagem, comando de shell ou leitora de saída de processo, `metadata-only`.
+  Para as demais, `keep`. Um marcador quebrado não prova que o argumento de um comando de shell
   (nem uma busca) evita os caminhos ignorados, então falha fechado.
 - **Ativa** (em ordem de avaliação):
   1. ferramenta leitora de saída de processo (`bashoutput`, `taskoutput`, `write_stdin`,
      `process`, `read_bash`, `write_bash`, `read_powershell`, `write_powershell`; para o Muse
-     também `bash_input`): `MetadataOnly` (nada prova que o comando original evitou os caminhos);
-  2. busca ou listagem: `Drop`, sem extrair caminho algum (estado de extração "não se aplica");
+     também `bash_input`): `metadata-only` (nada prova que o comando original evitou os caminhos);
+  2. busca ou listagem: `drop`, sem extrair caminho algum (estado de extração "não se aplica");
   3. ferramenta de arquivo: sem caminho extraível, ou algum caminho inutilizável (vazio, mais de
-     4096 caracteres, "relativo de unidade" como `C:foo`, nome de dispositivo): `MetadataOnly` com
-     estado de extração `MissingOrMalformed`; orçamento de comparações estourado: o mesmo; algum
-     caminho casa com um padrão: `Drop`; nenhum casa, mas algum caminho aponta para arquivo de
-     saída que o próprio harness gravou em disco: `MetadataOnly`; senão `Keep`;
+     4096 caracteres, "relativo de unidade" como `C:foo`, nome de dispositivo): `metadata-only` com
+     estado de extração `missing-or-malformed`; orçamento de comparações estourado: o mesmo; algum
+     caminho casa com um padrão: `drop`; nenhum casa, mas algum caminho aponta para arquivo de
+     saída que o próprio harness gravou em disco: `metadata-only`; senão `keep`;
   4. a ferramenta `execute_code` (cuja entrada é código-fonte, que monta caminhos em tempo de
      execução) ou um comando de shell acima de 1 MiB (1 048 576 caracteres, somando os elementos
-     de um argv, não analisado): `MetadataOnly`;
-  5. comando de shell: alguma palavra casa com um padrão, **ou o orçamento estoura**: `Drop`;
+     de um argv, não analisado): `metadata-only`;
+  5. comando de shell: alguma palavra casa com um padrão, **ou o orçamento estoura**: `drop`;
      nenhuma casa, mas o comando usa sintaxe que o casamento léxico não avalia (expansão de
      chaves `{a,b}`, classe `[ab]`, grupo de glob `(a|b)`/`@(x)`, escape ANSI-C numérico
      `$'\x64'`, `~usuário`/`~N`/`~-`, código inline de interpretador, script aninhado além de
      4 níveis, valor padrão de parâmetro aninhado além de 4 níveis), ou nomeia arquivo de saída
-     do harness, ou (sessão Windows) nomeia arquivo que não se consegue situar: `MetadataOnly`;
-     senão `Keep`;
-  6. demais famílias (`unknown`): `Keep`.
+     do harness, ou (sessão Windows) nomeia arquivo que não se consegue situar: `metadata-only`;
+     senão `keep`;
+  6. demais famílias (`unknown`): `keep`.
 - Nenhuma decisão guarda argumentos, caminhos ou nomes brutos; o corpo substituto é o da seção
   acima.
 
@@ -334,7 +389,7 @@ protocolo.
 ### 4.4 Protocolo cliente e servidor
 
 - O cliente anexa a marca de protocolo (versão 1) quando aplica a política.
-- O servidor **reinspeciona** o evento. Se o cliente pediu `Drop`, o servidor responde 202 e
+- O servidor **reinspeciona** o evento. Se o cliente pediu `drop`, o servidor responde 202 e
   conta como "descartado pela política", sem gastar capacidade. Essa checagem protege contra
   clientes antigos.
 - Um evento descartado reconhecido **nunca** entra em spool, fila, transporte, log ou
@@ -348,29 +403,29 @@ protocolo.
 - Resolução: `~/x` vira `<home>/x`; absoluto fica; relativo vira `<diretório do marcador>/x`. Depois os segmentos são normalizados (`.` e vazios somem). O padrão é do tipo **Windows** se, depois de expandido, começar com `\\`, `//` ou `X:`; senão POSIX. Um padrão Windows é escrito como os candidatos (ver adiante).
 - Linguagem: `*` casa qualquer sequência **sem** `/`; `**` (só entre barras ou nas pontas) casa qualquer profundidade; `?` casa um caractere que não seja `/`. Um padrão que termina em `/**` também casa o próprio diretório-base (`docs/**` casa `docs`), e o diretório-base pode conter globs (`docs/a?r/**`). Cada padrão guarda o **prefixo literal** (segmentos inteiros antes do primeiro `*` ou `?`); só um candidato que comece por esse prefixo é comparado (um candidato com `*`/`?` usa a regra de "alcance" abaixo).
 - Comparação: sensível a maiúsculas em POSIX; **insensível** em candidatos Windows e, num anfitrião macOS, em tudo (nesse caso padrões e candidatos são antes normalizados para composição NFC e minúsculas Unicode completas; só a máquina cliente conhece os padrões, então a reinspeção do servidor não depende disso). A comparação sem diferenciar caixa só vale para ASCII.
-- Orçamento: cada comparação padrão×candidato custa (caracteres do padrão + do diretório-base) × (caracteres do candidato); soma acima de **1 000 000** por inspeção é "estouro" (arquivo: `MetadataOnly`; shell: `Drop`).
+- Orçamento: cada comparação padrão×candidato custa (caracteres do padrão + do diretório-base) × (caracteres do candidato); soma acima de **1 000 000** por inspeção é "estouro" (arquivo: `metadata-only`; shell: `drop`).
 
-**Candidatos de arquivo.** O caminho vem de campos fixos, em ordem: `file_path`, `filePath`, `path`, `absolute_path`, `AbsolutePath`, `notebook_path`, `TargetFile` (cada um precisa ser texto; qualquer outro tipo torna a extração malformada), mais a lista `paths` (de textos). No máximo 32 candidatos por chamada, cada um não vazio e com no máximo 4 096 caracteres. Ferramentas `multi_edit`/`multiedit`/`replace_all` acrescentam os caminhos de cada item de `edits` (ou `replacements`; lista não vazia, até 32); `read`/`fs_read` aceitam `operations[]` do mesmo modo; `read_many_files` usa a lista `include` (as globs; `exclude` só restringe e não conta). O Muse `read_memory`/`add_memory`/`edit_memory` só tem caminho conhecido com `scope == "project"` (`<repositório>/.agents/memory/<path>`, ou o caminho absoluto dado); nos escopos pessoais (padrão) o arquivo fica fora do repositório e a extração falha (resultado `MetadataOnly`). O texto de patch do `apply_patch`/`patch` (cabeçalhos `*** Add File:`, `*** Update File:`, `*** Delete File:`, `*** Move to:`) **não** é lido pela decisão de captura, só pela busca de marcadores (abaixo): um `apply_patch` sem campo de caminho direto fica `MetadataOnly` sob política ativa.
+**Candidatos de arquivo.** O caminho vem de campos fixos, em ordem: `file_path`, `filePath`, `path`, `absolute_path`, `AbsolutePath`, `notebook_path`, `TargetFile` (cada um precisa ser texto; qualquer outro tipo torna a extração malformada), mais a lista `paths` (de textos). No máximo 32 candidatos por chamada, cada um não vazio e com no máximo 4 096 caracteres. Ferramentas `multi_edit`/`multiedit`/`replace_all` acrescentam os caminhos de cada item de `edits` (ou `replacements`; lista não vazia, até 32); `read`/`fs_read` aceitam `operations[]` do mesmo modo; `read_many_files` usa a lista `include` (as globs; `exclude` só restringe e não conta). O Muse `read_memory`/`add_memory`/`edit_memory` só tem caminho conhecido com `scope == "project"` (`<repositório>/.agents/memory/<path>`, ou o caminho absoluto dado); nos escopos pessoais (padrão) o arquivo fica fora do repositório e a extração falha (resultado `metadata-only`). O texto de patch do `apply_patch`/`patch` (cabeçalhos `*** Add File:`, `*** Update File:`, `*** Delete File:`, `*** Move to:`) **não** é lido pela decisão de captura, só pela busca de marcadores (abaixo): um `apply_patch` sem campo de caminho direto fica `metadata-only` sob política ativa.
 
 **Normalização do candidato** (a partir do diretório de trabalho do evento, que precisa ser absoluto): relativo vira `<cwd>/<candidato>`; `.` e `..` são resolvidos lexicalmente (sem tocar o disco e sem seguir links); em POSIX, `//` inicial vira `/`. Numa sessão **Windows** (cwd com letra de unidade ou UNC): o prefixo de provedor do PowerShell (`FileSystem::`, `Microsoft.PowerShell.Core\FileSystem::`, qualquer caixa) é removido; `\\?\`, `\\.\` e `\??\` antes de unidade ou `UNC\servidor\partilha` apontam a própria unidade/partilha (qualquer outro dispositivo, como `\\?\Volume{GUID}`, não é caminho utilizável); `\\localhost\C$` e `\\127.0.0.1\C$` são a unidade local; `/c/x` e `/cygdrive/c/x` (Git Bash, MSYS2, Cygwin) são lidos **das duas formas**, `C:/x` e a raiz da unidade do cwd (`C:/c/x`); outro caminho enraizado (`/x`, `\x`) fica na unidade do cwd; sufixo de fluxo alternativo (`nome:fluxo`, `nome::$DATA`) e pontos e espaços finais de cada segmento são descartados (segmentos com `* ? [ ] { } ( ) |` ficam como estão); `\` vale `/`; a letra da unidade fica maiúscula.
 
-**Busca/listagem** (`SearchList`): a decisão é `Drop` sem ler argumentos; os argumentos só servem para localizar marcadores (raízes: os campos de caminho, `dir_path`, `directory`, `DirectoryPath`, `SearchDirectory`, `SearchPath`, no Droid também `directory_path` e `folder`; filtros: `pattern` (só em ferramentas de glob: `glob`, `find`, `find_by_name`), `glob`, `include`, `file_pattern`, `file_glob`, `Includes`, e no Droid `patterns`/`glob_pattern`; um `pattern` de `grep` é expressão regular e não conta).
+**Busca/listagem** (`search-list`): a decisão é `drop` sem ler argumentos; os argumentos só servem para localizar marcadores (raízes: os campos de caminho, `dir_path`, `directory`, `DirectoryPath`, `SearchDirectory`, `SearchPath`, no Droid também `directory_path` e `folder`; filtros: `pattern` (só em ferramentas de glob: `glob`, `find`, `find_by_name`), `glob`, `include`, `file_pattern`, `file_glob`, `Includes`, e no Droid `patterns`/`glob_pattern`; um `pattern` de `grep` é expressão regular e não conta).
 
 **Comando de shell.** O texto vem de `command`, `cmd` ou `CommandLine` (texto único ou lista de argumentos; outro tipo, ou lista com não-texto, não tem comando). Divisão em palavras, sem expandir nada nem executar: aspas simples e duplas agrupam; espaço e os operadores `| & ; < > ( ) \`` separam palavras; barra invertida escapa só espaço, operador, `'`, `"` e `\` (assim `docs\adr\x.md` mantém as barras); dentro de aspas duplas ela escapa `" \ $ \``; `$'…'` decodifica os escapes simples (`\n \t \a \b \e \f \r \v \\ \' \" \?`); `$"…"` perde o `$`; barra-nova continua a linha; um `~` só vale como diretório pessoal se estiver fora de aspas e não for precedido de `\`. **Cada palavra gera argumentos candidatos**: a própria palavra (se não começa com `-`), o valor de `--flag=valor`, `NOME=valor` e `-Param:valor` (PowerShell), o valor colado a uma flag curta (`-fARQUIVO`), o caminho de um nome de objeto do git (`REV:caminho`, `:caminho`, `:2:caminho`, que o git resolve a partir da raiz do repositório, então também se tenta a partir do diretório do marcador; letra de unidade, URL e `host:caminho` não são), e o caminho de qualquer um desses que seja uma URL `file:` (com `%XX` ASCII decodificado, sem `?`/`#`). `~/…` vira `<home>/…` e `~+` o diretório atual. Uma palavra que contém mais de uma palavra (`bash -c 'cat x'`, `"$(cat x)"`, argumento de `eval`, de `sh|bash|zsh|dash|ksh|mksh|ash|yash|fish -c` ou `su|script -c`, também em clusters como `-lc` e depois de opções com valor como `-o pipefail`) é dividida de novo, até **4 níveis**; além disso o comando é "opaco". Valores padrão de parâmetro (`${X:-docs/x.md}`, `:=`, `:+`, e as formas sem `:`) acrescentam também a leitura com o operando no lugar, até 4 níveis. Elementos de uma lista de argumentos são mantidos inteiros (se tiverem até 256 caracteres) **e** divididos, para um caminho com espaço não ser separado. Numa sessão Windows (ou PowerShell) o comando também é lido sem os escapes de acento grave e circunflexo e com as barras invertidas literais (`\\srv\share\x` é UNC), e o `~` vale sempre. Interpretadores com código inline tornam o comando opaco: `python*/pypy*/py -c`, `perl -e|-E`, `ruby -e`, `node|nodejs|bun -e|-p`, `php -r`, `lua|luajit|Rscript|osascript -e`, `deno eval`, (considerando as opções com valor de cada um). O `workdir`, `dir_path` ou `directory` (no Antigravity, `Cwd`) do chamado muda a base de resolução dos argumentos relativos (relativo ao cwd, absoluto como está).
 
-**Arquivos de saída que o próprio harness gravou** (a chamada que os gerou pode ter sido descartada, então não se prova que evitaram os caminhos ignorados; contam como `MetadataOnly`): `…claude…/projects/…/tool-results/…` (Claude Code), `…claude…/…/tasks/<id>.output`, `…/opencode/tool-output/…` e `pi-bash-<id>.log` (Pi). Os segmentos comparam-se sem diferenciar caixa e um padrão com `*`/`?` conta se puder expandir para tal arquivo (e pelo menos um segmento que se encaixa precisa soletrar, em texto literal, parte do que o torna distintivo: três caracteres seguidos do nome); um orçamento estourado nessa checagem conta como "é".
+**Arquivos de saída que o próprio harness gravou** (a chamada que os gerou pode ter sido descartada, então não se prova que evitaram os caminhos ignorados; contam como `metadata-only`): `…claude…/projects/…/tool-results/…` (Claude Code), `…claude…/…/tasks/<id>.output`, `…/opencode/tool-output/…` e `pi-bash-<id>.log` (Pi). Os segmentos comparam-se sem diferenciar caixa e um padrão com `*`/`?` conta se puder expandir para tal arquivo (e pelo menos um segmento que se encaixa precisa soletrar, em texto literal, parte do que o torna distintivo: três caracteres seguidos do nome); um orçamento estourado nessa checagem conta como "é".
 
-**Globs de ferramenta de leitura em lote** (`read_many_files`, do Gemini CLI): cada entrada é lida como padrão, sem diferenciar caixa e com `**` recursivo; entrada com `[ ] { } ( ) !` falha fechado (`MetadataOnly`); uma entrada sem glob é tratada também como diretório (`docs` lê `docs/**`). Em comandos de shell, um argumento com `*` ou `?` também "alcança" o padrão se puder expandir para dentro do prefixo literal dele (`docs/*/x.md` alcança `docs/adr`; `*.md` no diretório pai nunca), e `**` é tratado como recursivo mesmo no bash.
+**Globs de ferramenta de leitura em lote** (`read_many_files`, do Gemini CLI): cada entrada é lida como padrão, sem diferenciar caixa e com `**` recursivo; entrada com `[ ] { } ( ) !` falha fechado (`metadata-only`); uma entrada sem glob é tratada também como diretório (`docs` lê `docs/**`). Em comandos de shell, um argumento com `*` ou `?` também "alcança" o padrão se puder expandir para dentro do prefixo literal dele (`docs/*/x.md` alcança `docs/adr`; `*.md` no diretório pai nunca), e `**` é tratado como recursivo mesmo no bash.
 
 **`..` depois de `**`** (e segmentos que um bash antigo expande para `..`, como `.*`): cada `..` desses gera duas leituras (o `**` casando nada e o `**` casando um diretório); no máximo 16 leituras por glob, acima disso falha fechado.
 
-**Marcadores de outros checkouts.** A política de **cada** marcador que governa um local nomeado pela chamada também vale, e a decisão final é a **mais estrita** (`Drop` > `MetadataOnly` > `Keep`). Locais: alvos de ferramenta de arquivo (para `apply_patch`, os arquivos citados no patch), raízes e filtros com separador de busca, e cada argumento de shell que nomeia caminho (com separador, depois de `~/`), mais o próprio `workdir`. Os marcadores são achados pela mesma subida léxica do evento (sem canonicalizar), a partir do diretório existente mais próximo de cada local, com resposta memorizada por diretório; globs são seguidos a partir da raiz literal (`**` lista a subárvore, exceto a do próprio checkout; nunca segue link simbólico). Limites: 4 096 locais distintos por chamada, **16** marcadores além do próprio, 256 diretórios e 32 768 entradas lidas na caminhada de globs, 16 384 consultas ao sistema de arquivos, **50 ms** de orçamento total. Fora do checkout próprio, estourar qualquer limite, glob que não se consegue seguir ou local ilegível é "não provável" e recebe a decisão de política inválida (`MetadataOnly` para arquivo/shell/busca); dentro do próprio checkout só encerra a procura. O "checkout próprio" é a raiz `.git` mais próxima do cwd, exceto a raiz do sistema de arquivos ou um diretório que seja o home ou o contenha. Além disso, quando uma ferramenta de arquivo opera (todos os alvos absolutos) num checkout/marcador **diferente** do cwd do evento e o checkout de origem manteria o evento, o evento é roteado para o projeto do alvo (a mesma âncora para todos os alvos; um alvo sem marcador nem repositório não cria escopo).
+**Marcadores de outros checkouts.** A política de **cada** marcador que governa um local nomeado pela chamada também vale, e a decisão final é a **mais estrita** (`drop` > `metadata-only` > `keep`). Locais: alvos de ferramenta de arquivo (para `apply_patch`, os arquivos citados no patch), raízes e filtros com separador de busca, e cada argumento de shell que nomeia caminho (com separador, depois de `~/`), mais o próprio `workdir`. Os marcadores são achados pela mesma subida léxica do evento (sem canonicalizar), a partir do diretório existente mais próximo de cada local, com resposta memorizada por diretório; globs são seguidos a partir da raiz literal (`**` lista a subárvore, exceto a do próprio checkout; nunca segue link simbólico). Limites: 4 096 locais distintos por chamada, **16** marcadores além do próprio, 256 diretórios e 32 768 entradas lidas na caminhada de globs, 16 384 consultas ao sistema de arquivos, **50 ms** de orçamento total. Fora do checkout próprio, estourar qualquer limite, glob que não se consegue seguir ou local ilegível é "não provável" e recebe a decisão de política inválida (`metadata-only` para arquivo/shell/busca); dentro do próprio checkout só encerra a procura. O "checkout próprio" é a raiz `.git` mais próxima do cwd, exceto a raiz do sistema de arquivos ou um diretório que seja o home ou o contenha. Além disso, quando uma ferramenta de arquivo opera (todos os alvos absolutos) num checkout/marcador **diferente** do cwd do evento e o checkout de origem manteria o evento, o evento é roteado para o projeto do alvo (a mesma âncora para todos os alvos; um alvo sem marcador nem repositório não cria escopo).
 
 **Reinspeção no servidor.** O cliente nunca envia os padrões. O servidor só age quando o corpo traz `_ai_memory_capture`; sem ele, o evento passa como veio. Para reinspecionar, compila uma política com o estado informado pelo cliente e, se ativa, com **um padrão sentinela que nunca casa** (um caminho do mesmo tipo do cwd: `C:/__ai_memory_capture_server_inspection_never_match__` em sessão Windows, `/__ai_memory_capture_server_inspection_never_match__` nas demais; o cwd ausente vale `/`). Regras, em ordem:
-1. protocolo que não interpreta (versão diferente de 1, campo a mais ou a menos, valor fora do enum): inspeção direta como **política inválida**; se der `MetadataOnly` o corpo é trocado pelo corpo de metadados, senão o evento passa como veio;
-2. disposição `Drop` informada pelo cliente: descartado (202, `dropped_policy`), sem admissão e sem olhar os demais campos;
-3. disposição `MetadataOnly` informada: o corpo é **reconstruído** só com a lista permitida (`session_id` até 512 bytes, `cwd` até 4 096, `tool_call_id` válido, `tool_family` igual ao do protocolo e `tool_name` igual ao nome canônico da família, protocolo legal); campos extras são ignorados; formato inválido é descartado;
-4. disposição `Keep`: inspeção direta com o estado de política informado. Se o protocolo contradiz a inspeção: quando qualquer lado diz "arquivo", cai para a política inválida (corpo de metadados); senão segue a disposição da inspeção (`Drop` descarta, `MetadataOnly` troca o corpo, `Keep` mantém). Protocolo coerente: mantém o evento.
+1. protocolo que não interpreta (versão diferente de 1, campo a mais ou a menos, valor fora do enum): inspeção direta como **política inválida**; se der `metadata-only` o corpo é trocado pelo corpo de metadados, senão o evento passa como veio;
+2. disposição `drop` informada pelo cliente: descartado (202, `dropped_policy`), sem admissão e sem olhar os demais campos;
+3. disposição `metadata-only` informada: o corpo é **reconstruído** só com a lista permitida (`session_id` até 512 bytes, `cwd` até 4 096, `tool_call_id` válido, `tool_family` igual ao do protocolo e `tool_name` igual ao nome canônico da família, protocolo legal); campos extras são ignorados; formato inválido é descartado;
+4. disposição `keep`: inspeção direta com o estado de política informado. Se o protocolo contradiz a inspeção: quando qualquer lado diz "arquivo", cai para a política inválida (corpo de metadados); senão segue a disposição da inspeção (`drop` descarta, `metadata-only` troca o corpo, `keep` mantém). Protocolo coerente: mantém o evento.
 
 ### 4.5 Descarte de subagente
 

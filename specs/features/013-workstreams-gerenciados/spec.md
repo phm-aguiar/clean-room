@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 013
-- **Status:** draft (docs e spec auditados contra o ai-memory de referência em 2026-10-19; Windows é a primeira plataforma)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 010 (adaptadores de transcrição, instalação nos agentes), 002 (`/handoff` e reivindicação), 007 (dono e acesso por projeto)
@@ -65,21 +65,21 @@ Quem troca de harness no meio de um trabalho quer que a retomada nativa do harne
 - **`finalize-session`:** conferido sem divergências (`docs/cli.md` §9.1); acrescenta-se que o `session_id` é UUID, que `--reopen` exige `--session-id` e que o id guardado só é apagado quando alguma sessão foi finalizada.
 - **`backfill` e importação de intervalo exato:** conferidos contra `docs/design-boot-backfill.md` (completo); a única diferença da recuperação é a chave de ingestão com o `id` da entrada do diário (`docs/downtime-recovery.md` § 3.1).
 - **Spool, quarentena e drenagem:** `docs/downtime-recovery.md` § 4 (formato em disco, travas, orçamentos, tentativas, tabela de desfechos, Windows 32/33/`LockFileEx`). **Equívocos corrigidos em `docs/cli.md` § 5.3:** `auth_mode` grava `static`/`oidc`/`none` (não `static_token`/`oidc_at_drain`/`anonymous`); só o `403` descarta o item de imediato (o doc dizia "`4xx` exceto 401/408/429"); `408` consome tentativa.
-- **`ai-memory recover`:** `docs/downtime-recovery.md` revalidado linha a linha; § 3.1 acrescenta ordem real, mensagens literais de cada falha, texto humano, fim de entrada com quarentena e a exceção "já entregue". **Defeito do original a não reproduzir:** o leitor do diário não conhece o harness `copilot`; o Go deve aceitá-lo (decisão a confirmar).
+- **`ai-memory recover`:** `docs/downtime-recovery.md` revalidado linha a linha; § 3.1 acrescenta ordem real, mensagens literais de cada falha, texto humano, fim de entrada com quarentena e a exceção "já entregue". **Defeito do original, reproduzir tal como está (resolvido: reproduzir o original):** o leitor do diário não conhece o harness `copilot`; a entrada falha com `journal names unsupported harness 'copilot'` e fica no diário (`docs/downtime-recovery.md`; `docs/harness-adapters.md` §6.11).
 - **Jail:** `docs/design-yolo-safety-ai-jail.md` corrigido: a lista de variáveis repassadas tem **14** nomes (faltava `AI_MEMORY_BASE_PATH`), valores resolvidos da configuração, recusa de token vindo do `config.toml` sem `AI_MEMORY_AUTH_TOKEN`, JSON exato do `--settings` do `--true-yolo`, `BWRAP_BIN`, mensagens literais, tabela de rótulos/notas do checklist (§ 5.2.1), "a confirmar" resolvidos ou classificados como externos (§ 9.1). No Windows nada disso executa (nunca há oferta nem reexecução).
 - **Autorização e handoff:** regras de dono/escrita e transação de reivindicação conferidas; correções: o argumento da ferramenta é `any_owner` (não `all_owners`; também em `docs/mcp-server.md`); a varredura pós-reivindicação da ferramenta poupa **toda** sessão de origem aberta (não "5 minutos"); regras da sessão receptora (existência, escopo, encerrada, exceção do Grok) documentadas.
 - **Lease/purga (003):** o 409 da purga não tem campo `active_workstreams` (só `error` com a lista); critério de lease vivo confirmado (`active` e `lease_expires_at > agora`); `docs/lifecycle-ops.md` e a spec 003 corrigidos.
 - **Concorrência:** `docs/managed-workstreams.md` § Concorrência: escritor serial; a rota `finish` **não** é atômica (lê estado, grava segmento, depois transação), então um `cancel` no meio dá `400 invalid state: managed run <id> is expired` e deixa segmento órfão; demais corridas tabeladas.
 
-### Correções da auditoria dos adaptadores e planos de lançamento (2026-10-24, relatório `reports/007-auditoria-013-harnesses.md`)
+### Correções da auditoria dos adaptadores e planos de lançamento (2026-10-24; o relatório dessa rodada não está mais em `reports/`)
 - **OpenCode:** `run opencode` sonda `--version` (2 s, major 1 ou 2; `opencode2` força V2); documentado em `docs/harness-adapters.md` § "Dialeto do OpenCode".
 - **Eco do pacote no Claude Code** só é filtrado em resultados de ferramenta (não em mensagens); datas dos adaptadores SQLite ausentes; Kimi/Kiro v2/Antigravity convertem ms; demais repassam o texto de `timestamp` sem validar.
 - **Antigravity** não exporta transcript no `run` (só backfill/listagem); janela de abertura é de 5 s para mais ou menos.
 - **Kiro:** flags `--no-interactive`, `--list-sessions` etc. valem para v2 e v3; só `--agent-engine v3` seleciona v3; resolução de motor por existência do id nas duas lojas.
-- **Cursores, limites e mensagens literais** de exportação, delta e intervalo transcritos (`harness-adapters.md` §3.4, §6.6, §6.7); exportação que estoura limite não avança o cursor (decisão pendente: paginar).
-- **Windows:** prefixo `\?\` da canonicalização quebra a comparação textual de `directory` (OpenCode) e do nome de pasta do Claude Code; a implementação Go deve normalizar (§6.10).
-- **Copilot** ausente na tabela do diário de recuperação do original: a Go deve aceitar `copilot` (defeito não reproduzido).
-- **Erro de descoberta após a saída** perde o código do filho no original; Go deve preservá-lo e avisar.
+- **Cursores, limites e mensagens literais** de exportação, delta e intervalo transcritos (`harness-adapters.md` §3.4, §6.6, §6.7); exportação que estoura limite não avança o cursor e **não há paginação** (resolvido: reproduzir o original, §6.11).
+- **Windows:** prefixo `\\?\` da canonicalização quebra a comparação textual de `directory` (OpenCode) e do nome de pasta do Claude Code; reproduzir o original tal como está, **sem normalizar** (§6.10).
+- **Copilot** ausente na tabela do diário de recuperação do original: reproduzir o defeito (§6.11).
+- **Erro de descoberta após a saída** cancela a execução e o comando falha com esse erro, perdendo o código do filho, como no original (§6.8, §6.11).
 - Criada a referência por harness (`harness-adapters.md` §6.1 a §6.11): layout de armazenamento, cabeçalhos, mapeamento registro a registro, SQL, composição de argv/ambiente (Crush `CRUSH_GLOBAL_CONFIG`, Grok `--rules`, `claude attach`, `KIRO_HOME`).
 
 ## Edge Cases
@@ -95,7 +95,7 @@ Quem troca de harness no meio de um trabalho quer que a retomada nativa do harne
 - [ ] Ordem do lançamento e regras de lease testadas com um servidor e um harness falsos
 - [ ] Confirmação de contexto e reivindicação de handoff na mesma transação (multi-sessão, `-race`)
 - [ ] Testes esperados de `docs/managed-harness-contributions.md` § 7 para cada harness suportado
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Lançador no `cli` sobre os adaptadores de transcrição da 010; workstreams, runs, ledger e cursores no `storage` (tabelas da V01); rotas `/workstream/*` no servidor; entrega de contexto pela rota `/handoff` da 002 estendida com o parâmetro de execução gerenciada.
@@ -108,13 +108,13 @@ Lançador no `cli` sobre os adaptadores de transcrição da 010; workstreams, ru
 - [x] Escopo delimitado (dentro/fora)
 - [x] Cenários cobrem happy path e alternativos
 - [x] Edge cases identificados com comportamento esperado
-- [ ] Constraints explícitas (contratos por harness vêm da fase 0)
+- [x] Constraints explícitas (contratos por harness em `docs/harness-adapters.md` §6)
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
 
 ## Escopo exigido pela auditoria (2026-10-19)
 
-Itens que o plano e as tasks (a regerar) devem cobrir; cada um aponta para o doc de origem.
+Itens que a implementação deve cobrir; cada um aponta para o doc de origem.
 
 - **A1:** ambiente do filho (`--profile`, `--env`, `--env-file`; nomes sem caixa no Windows; variáveis reservadas) — `docs/managed-workstreams.md`.
 - **A2:** resolução de executável no Windows (`PATH` + `PATHEXT`, sem irmão sem extensão) e lançamento sem shell.

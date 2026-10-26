@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 010
-- **Status:** draft (revisada contra os docs em 2026-10-13 no nível de escopo; **auditada contra o comportamento do original em 2026-10-19**: backfill, ponte `mcp-bridge`, `finalize-session`, `doctor`, token em arquivo, matriz de suporte (agentes novos Droid, CodeBuddy, IBM Bob, Prime Agent, DSH, GrizzyBot; Muse com hooks e ponte), formatos de `install-mcp` e de `install-hooks` por agente, normalização por agente, lista de descarte do servidor, motor da política de captura, adaptadores de transcrição (14, com Copilot CLI) e spool corrigidos nos docs. **Verificação parcial, a revisar:** analisadores de transcrição de Claude Code, Codex, Pi/OMP, Kimi, Command Code, Kiro e Grok (só as regras já descritas no doc foram conferidas), scripts de hook POSIX/PowerShell e o diário de recuperação do spool, que pertence à 013)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (ingestão, spool, cliente de hook, `install-*` do Claude Code); 007 e 009 para credenciais por pessoa e OIDC nos hooks
@@ -77,7 +77,7 @@ A promessa do produto é trocar de agente no meio da tarefa sem reexplicar o con
 - [ ] Cada agente com status "Suportado" na matriz instala hooks e MCP e passa por um teste de captura com fixtures de payload versionadas
 - [ ] Os testes de paridade entre hook nativo e scripts (`docs/hook-scripts-and-container-deploy.md` §6) passam
 - [ ] Os casos de teste de `docs/design-boot-backfill.md` § Testes passam, incluindo o canário de segredo
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Instalador orientado por tabela (um descritor por agente: arquivos, formato, eventos, aliases), sobre a escrita idempotente da 002. Normalização por agente como funções puras no `ingest`, com fixtures. Adaptadores de transcrição no `cli` (leem arquivos do usuário, fora da wiki). Backfill reaproveita o lote do spool da 002.
@@ -91,6 +91,6 @@ Instalador orientado por tabela (um descritor por agente: arquivos, formato, eve
 - [x] Escopo delimitado (dentro/fora)
 - [x] Cenários cobrem happy path e alternativos
 - [x] Edge cases identificados com comportamento esperado
-- [ ] Constraints explícitas (contratos por agente vêm da fase 0)
+- [x] Constraints explícitas (contratos por agente em `docs/harness-adapters.md`)
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada

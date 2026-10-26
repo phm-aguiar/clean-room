@@ -924,7 +924,7 @@ servidor registra um aviso e monta o navegador na raiz do prefixo de base.
 
 ### 5.4 Divisão das rotas
 
-`split_web_routers` produz duas partes, que o servidor protege de forma diferente:
+A divisão das rotas web produz duas partes, que o servidor protege de forma diferente:
 
 - **Pública:** a interface customizada (seção 5.5), ou, no navegador embutido,
   as páginas de login, troca de senha e estáticos.

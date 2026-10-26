@@ -44,7 +44,7 @@ Um diretório de escopo de projeto é um pacote. O diretório da wiki é separad
 O pacote é um tarball gzip cuja raiz contém:
 
 - **`index.md` gerado**, byte a byte: `---\nokf_version: "0.2"\n---\n\n# Bundle index — concept files by directory\n\n` seguido de uma linha ``- [<dir>/](<dir>/)`` + `\n` por **diretório de primeiro nível** do projeto, em ordem alfabética (ordem de bytes do nome), e nada mais. A lista inclui todo diretório de primeiro nível existente, tenha ou não arquivos `.md` (inclusive vazio ou só com arquivos que o pacote exclui), **exceto `_pending`**. O corpo não tem prosa fora da lista. (O `index.md` escrito pela migração é diferente; ver a Migração.)
-- **Demais arquivos `.md`** do projeto, com caminho relativo à raiz do projeto, separador `/` em qualquer sistema, com a reescrita descrita em [Reescrita de links](#reescrita-de-links-no-pacote). Isso inclui `_meta.md` (manifesto), que precisa ter `type` e vai no pacote. O `index.md` é a primeira entrada; a ordem das demais no original segue a ordem de leitura do diretório (não definida); uma reimplementação deve ordenar por caminho. Cada entrada é um arquivo comum, modo `0644`, data de modificação zero, só entradas de arquivo (sem entradas de diretório), tarball gzip com cabeçalhos GNU.
+- **Demais arquivos `.md`** do projeto, com caminho relativo à raiz do projeto, separador `/` em qualquer sistema, com a reescrita descrita em [Reescrita de links](#reescrita-de-links-no-pacote). Isso inclui `_meta.md` (manifesto), que precisa ter `type` e vai no pacote. O `index.md` é a primeira entrada; a ordem das demais no original segue a ordem de leitura do diretório (não definida). Comportamento do original, reproduzir tal como está: sem ordenação adicional. Cada entrada é um arquivo comum, modo `0644`, data de modificação zero, só entradas de arquivo (sem entradas de diretório), tarball gzip com cabeçalhos GNU.
 - Entrega pela rota: resposta 200 com `Content-Type: application/gzip`, `Content-Disposition: attachment; filename="okf-bundle.tar.gz"`, corpo em fluxo a partir de um arquivo temporário. Falha de validação: HTTP **422** com `{"error": "<mensagem>"}`; workspace ou projeto inexistente: erro de requisição (a rota não cria escopo).
 
 Excluídos do pacote:
@@ -64,6 +64,8 @@ Excluídos do pacote:
 - O corpo é preservado byte a byte, inclusive os fins de linha.
 
 ### Chave `type` (obrigatória)
+
+Se o frontmatter não for um mapeamento (lista, escalar ou nulo), a conformidade o substitui por um mapeamento vazio antes das regras abaixo (confirmado no original). `kind`, `slot_kind`, `summary`, `expires_at`, `session_id`, `agent` e `generated_by_model` só são considerados quando são texto; outros tipos são ignorados. Um `generated` que já é mapeamento sem `by` recebe `by` sem perder as outras chaves.
 
 Regras aplicadas nesta ordem; vale a primeira que se aplicar:
 

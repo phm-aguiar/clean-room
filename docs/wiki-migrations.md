@@ -14,7 +14,7 @@ Há três mecanismos de mudança de dados. Eles não se confundem:
 
 O preenchimento das janelas de ingestão das páginas é um backfill do banco. Não é uma migração da wiki.
 
-Hoje existe uma única migração de estrutura da wiki registrada: a de conformidade com o formato OKF v0.2, descrita em [okf.md](okf.md). O layout atual da wiki, com diretórios por espaço de trabalho e projeto, é o formato nativo desde a primeira versão e não exige migração.
+Hoje existe uma única migração de estrutura da wiki registrada: a de conformidade com o formato OKF v0.2, descrita em [okf.md](okf.md). Nome registrado (confirmado no original): `2026_09_01T18_00_okf_v02_conformance`; descrição: `conform wiki pages and index rows to OKF v0.2 (backup-gated, in place)`. Antes de qualquer alteração ela inspeciona a árvore da wiki com a regra de confinamento (qualquer link simbólico ou ponto de reanálise — reparse point, inclusive junção no Windows — em qualquer nível é erro de confinamento) e falha se a raiz não tiver diretório pai (`wiki root has no parent data dir`). O layout atual da wiki, com diretórios por espaço de trabalho e projeto, é o formato nativo desde a primeira versão e não exige migração.
 
 ## Quando escrever uma migração
 
@@ -105,6 +105,7 @@ ORDER BY name;
 
 - **Condição:** a tabela `wiki_migrations` contém um nome que o build atual não conhece. Isso acontece quando uma versão mais nova do ai-memory já migrou a wiki.
 - **Efeito:** o servidor não sobe, e a verificação acontece antes de qualquer migração pendente rodar. A mensagem informa que a wiki foi migrada por uma versão mais nova, cita o nome desconhecido e indica duas saídas: atualizar o binário, ou restaurar a cópia de segurança anterior à migração.
+- **Texto literal** (confirmado no original): ``this wiki was migrated by a newer ai-memory (unknown wiki migration `<nome>`). Upgrade the binary, or restore the pre-migration backup archive to go back.`` Mensagens de log do executor: `running wiki migration` (com nome e descrição), `wiki migration failed — server cannot start until this is resolved` (com nome e erro) e `applied wiki migration`. Se o relógio do sistema estiver antes da época Unix, `applied_at` é gravado como 0.
 - **Objetivo:** impedir que um build antigo abra a wiki e misture formatos.
 - **Limite:** a verificação só ocorre quando a lista de migrações do build não está vazia. Um build sem migrações registradas não recusa uma wiki de formato mais novo.
 - O procedimento de recuperação completo está em [okf.md](okf.md). A recusa do esquema do banco é um mecanismo separado, descrito em [database-schema.md](database-schema.md).

@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 011
-- **Status:** draft (revisada contra os docs em 2026-10-13; **auditada contra o comportamento do original e corrigida em 2026-10-19** — `agent-messaging.md` atualizado; as "decisões nossas" que divergiam do original foram removidas)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (MCP, `/handoff`, resolução de escopo, `memory_briefing`), 007 (acesso por projeto), 008 (cadeia de admissão)
@@ -65,9 +65,9 @@ Um agente num projeto precisa pedir algo a um agente de outro projeto **sem carr
 
 ## Critérios de Sucesso
 - [ ] Todas as regras de `docs/agent-messaging.md` § "Rules for sending and reading" com teste
-- [ ] Corrida de `pop` com um vencedor sob `-race`
+- [ ] Corrida de `pop` com um vencedor, sob o detector de corrida da plataforma
 - [ ] Aviso de caixa de entrada sem texto de mensagem, testado com corpo hostil
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Fila no `storage` com reivindicação atômica (`UPDATE ... WHERE state = 'pending'`, uma linha afetada), tools no `mcp`, rotas e CLI no `cli`, admissão pela cadeia da 008 na `wiki`.
@@ -83,3 +83,14 @@ Fila no `storage` com reivindicação atômica (`UPDATE ... WHERE state = 'pendi
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria "Chinese Wall" de 2026-10-25 contra o original (relatório: `reports/013-auditoria-008-011-restantes.md`). O `docs/agent-messaging.md` foi confirmado e completado; acréscimos que valem para esta spec:
+
+- **Ordem do texto de início de sessão:** perfil entre projetos, handoff aceito, aviso de handoff pendente, contexto de execução gerenciada, brief e, por último, o aviso de caixa de entrada, unidos por uma quebra de linha. Falha em qualquer consulta de nome usa a forma sem nomes; falha na contagem omite o aviso.
+- **Nomes no aviso:** aparecem uma vez sem aspas (`<ws>/<proj> inbox`) e uma vez entre aspas duplas com escape de literal de string (`"` e `\` ganham barra; controles viram sequência de escape).
+- **Higienização diferente por caminho:** o MCP usa o higienizador configurado (com padrões extras do operador); a rota administrativa (CLI) usa só as regras embutidas.
+- **Formas de erro:** tabela das rotas administrativas (campos obrigatórios, 400/403/409/500) e mapeamento MCP (*invalid-parameters* para escopo inferido, `box` e id malformado; *invalid-request* para recusa de admissão; *internal* para caixa cheia e falha de armazenamento), mais a ordem de validação das tools.
+- **Edge cases:** `message_id` em branco reivindica a mais antiga; empate de criação no mesmo microssegundo não tem ordem definida; recusa de admissão no envio HTTP é 403 mesmo por indisponibilidade do gancho.
+- O critério de corrida foi reescrito sem citar opção de ferramenta de linguagem específica.

@@ -69,6 +69,22 @@ database file to release free pages.
 - It needs free disk space roughly equal to the database's own size.
 - It is opt-in because of the lock and the disk requirement. The duration
   depends on database size.
+- After the rewrite it tries to checkpoint and truncate the write-ahead log;
+  a reader holding it back (or a failed checkpoint) only logs a warning, never
+  fails the committed operation.
+
+On-demand form, deleting nothing: `ai-memory compact --confirm` (thin client of
+`POST /admin/compact`, which itself requires `confirm: true`). Without
+`--confirm` the CLI refuses locally (exit 1) with:
+`compact rewrites the whole database under an exclusive lock: every write blocks until it finishes, and it needs free disk space of roughly the database's own size.`
+followed by a blank line, `Check \`ai-memory status\` for the reclaimable figure first, then:`, a blank
+line and `  ai-memory compact --confirm`. On success it prints
+`Compacted: <before> → <after> (<reclaimed> reclaimed).` with binary units
+(`<n> B` below 1024, otherwise one decimal and `KiB`/`MiB`/`GiB`/`TiB`), and,
+when nothing was reclaimed, also
+`Nothing to reclaim — the database had no meaningful free-page backlog. This is the normal result for a store that has not just had a large deletion.`
+Sizes are the database's own page count × page size, not the file size on
+disk (the write-ahead log is ignored).
 
 **Compaction is not forensic erasure.** The wiki git repository keeps page
 content in its objects and in its commit messages. Any backup taken before the
@@ -118,13 +134,13 @@ the delete:
 - A session purge records the session id (`purged_sessions`). A later re-index or hook redelivery does not restore
   that session's page file or observations, even if the file cleanup failed.
 - A project purge records the project scope (`purged_scopes`). A workspace delete records the
-  whole workspace (`project_id = NULL` and per-project rows). A later re-index skips any directory whose scope is
+  whole workspace (one row with an all-zero project id; no per-project rows). A later re-index skips any directory whose scope is
   tombstoned and leaves its files in place, untouched. Re-index never deletes
   files.
 
 ### Scope containment
 
-In the CLI, `purge-session` checks that the session belongs to the resolved `(workspace, project)` before purging. On the server (`POST /admin/purge-session`), the session is looked up by `session_id` (returning 404 if not found) and all deletes for its summary page (`sessions/<session_id>.md`) are scoped to that session's `workspace_id` and `project_id` so another project's page at the same relative path is never touched.
+In the CLI, `purge-session` checks that the session belongs to the resolved `(workspace, project)` before purging. On the server (`POST /admin/purge-session`), the request names `workspace` and `project` explicitly. The session must belong to that scope (checked inside the delete transaction), otherwise 404: the session id alone never reaches another scope. Every delete (pages, observations, handoffs, auto-improvement rows) is filtered by that `workspace_id` and `project_id`, so another project's page at the same relative path is never touched. The only cross-scope effects are the cascades of the session row (collateral observations, handoff links) and the deletion of the session's prompt profile candidates.
 
 ## Project isolation
 
@@ -186,10 +202,10 @@ deleted.
 What the server does, in order:
 
 1. **Confirmation / Dry run.** If `dry_run` is false and `confirm` is false, returns 400. `dry_run: true` wins over `confirm`.
-2. **Scope lookup.** The workspace is looked up by name and the project by `project` name or `project_id` UUID (mutually exclusive; passing both or neither returns 400/422). Neither is created. Either missing returns 404.
+2. **Scope lookup.** The workspace is looked up by name and the project by `project` name or `project_id` UUID (mutually exclusive; passing both returns **400** `project and project_id are mutually exclusive`, neither returns **400** `either project or project_id is required`, an unparsable id returns **400** `invalid project id: <detail>`). Neither is created. Either missing returns 404 (`project not found in workspace` for the project). The same resolution, with the same codes, serves `rename-project` (`from` plays the role of `project`) and `move-project`.
 3. **Lease check (applies to both dry-run and real run).** A managed run blocks the purge while it holds a
    **live** lease (`state = 'active'` and `lease_expires_at > now`). If a live lease exists and `force` is not set, the call returns
-   409 **even when `dry_run: true`**. The body is just `{"error": "project has <n> active managed run(s) in workstream(s) '<nome>' (<agente>), …; finish or cancel them first, or pass force to purge anyway (the running agent will stop being able to save its history)"}`: there is **no** `active_workstreams` field (audit 008 corrected the earlier text); the names are sorted, deduplicated, and each one is `'<workstream>' (<agent>)`. Liveness is `state = 'active'` **and** `lease_expires_at > now` (a crashed wrapper leaves `active` rows behind that nothing flips until the next prepare, so `state` alone would block purges forever). With `force`, the purge or preview proceeds and the lease rows are deleted by the cascade; the still-running agent then gets 404/409 on its heartbeat and its transcript never reaches the ledger.
+   409 **even when `dry_run: true`**. The body is just `{"error": "project has <n> active managed run(s) in workstream(s) '<nome>' (<agente>), …; finish or cancel them first, or pass force to purge anyway (the running agent will stop being able to save its history)"}`: there is **no** `active_workstreams` field; the names are sorted, deduplicated, and each one is `'<workstream>' (<agent>)`. Liveness is `state = 'active'` **and** `lease_expires_at > now` (a crashed wrapper leaves `active` rows behind that nothing flips until the next prepare, so `state` alone would block purges forever). With `force`, the purge or preview proceeds and the lease rows are deleted by the cascade; the still-running agent then gets 404/409 on its heartbeat and its transcript never reaches the ledger.
 4. **Dry run return.** If `dry_run: true`, the server computes the exact row counts via read-only queries and returns the report with `"dry_run": true`, `"files_deleted": []`, and `"files_failed": []`. It runs no admission webhook, takes no checkpoint, and deletes nothing.
 5. **Admission.** The `purge_project` admission webhooks run before any
    deletion. A reject-policy webhook that fails aborts with 500 and nothing is
@@ -200,9 +216,39 @@ What the server does, in order:
 7. **Database delete.** One transaction deletes dependent rows and the project row (`pages`, `sessions`, `observations`, `handoffs`, `page_embeddings`, `workstreams`, `managed_runs`, `consolidation_jobs`, `auto_improve_*`, `project_grants`, `profile_candidates`). The workspace row stays. The
    scope is tombstoned in `purged_scopes` and an audit row (`op = "purge_project"`) is written, attributed to the
    authenticated user when there is one. Compaction runs after the transaction if requested.
-8. **File cleanup.** The project's wiki directory and each of its raw
-   workstream segment directories are removed under the wiki's exclusive lock. Each path is reported in
-   `files_deleted` or `files_failed`.
+8. **File cleanup.** The project's wiki directory is removed under the wiki's
+   exclusive lock, after a check that the tree holds no symbolic link or reparse
+   point (a failed check puts the path in `files_failed`). An already-missing
+   wiki directory counts as removed and **is** listed in `files_deleted`. Then each
+   raw workstream segment directory (`raw/workstreams/<id>/`) is removed **outside**
+   the wiki lock; a missing one is silently skipped (listed nowhere); any other
+   error goes to `files_failed`.
+
+Audit notes on ordering (verified against the original):
+
+- The real run checks `confirm` **before** resolving the scope; the dry run
+  resolves the scope and goes straight to the preview (so with `dry_run: true`
+  a missing scope is still 404).
+- On the real run, the live-lease check (step 3) runs **inside the database
+  transaction of step 7**, that is, *after* admission (step 5) and the pre-purge
+  checkpoint (step 6). A 409 on the real run can therefore come after the
+  admission webhooks were called and a pre-purge commit was made; nothing is
+  deleted. On the dry run, the same check runs in the preview transaction.
+- The preview runs the same counting queries inside a transaction that is rolled
+  back; it never issues the delete.
+- The delete is a single deletion of the project row inside the workspace; every
+  dependent table leaves by cascade. Counts are taken just before, in the same
+  transaction: `pages_deleted` counts **all versions**; `embeddings_deleted` counts
+  embedding rows of those pages; `managed_runs_deleted` counts runs of the
+  project's workstreams. The tombstone is an insert-or-replace (a repeated purge
+  refreshes `purged_at`). The audit row has no page and no detail.
+- Compaction (`compact: true`) runs right after the commit, inside the database
+  writer, **not** under the wiki lock. If it fails, the call returns 500 although
+  the delete is already committed, and the file cleanup, webhooks and pointer
+  clearing of steps 8 and 9 do **not** run; a later reindex still skips the
+  directory because of the tombstone.
+- The label in the report and checkpoints is `<workspace as sent>/<resolved project name>`.
+- Without `confirm`: 400 `destructive operation requires confirm=true`.
 9. **After.** The active-project pointer is cleared if it pointed at this
    project. The scope cache is invalidated. Purge webhooks are dispatched, with
    `partial_failure` set if any file removal failed. A post-purge checkpoint (`purge-project <ws>/<proj>`) is
@@ -251,27 +297,75 @@ an error. Nothing is deleted.
 
 What the server (`POST /admin/purge-session`) does, in order:
 
-1. **Validation.** `session_id` must be a valid UUID (otherwise 400). If `dry_run` is false and `confirm` is false, returns 400. `dry_run: true` always wins over `confirm`.
-2. **Session lookup.** The server looks up the session row by `session_id` and resolves its owning `(workspace_id, project_id)` and human `(workspace, project)` names. If the session does not exist (or was already purged), returns 404.
-3. **Dry run.** When `dry_run: true`, executes read-only `COUNT(*)` queries inside the session's scope and returns the preview report (`dry_run: true`, `files_deleted: []`, `files_failed: []`). No admission, no checkpoint, no file removal, no audit row.
-4. **Admission.** The `purge_session` admission webhooks run before any
-   deletion. A reject-policy failure returns 500 with nothing deleted.
-5. **Checkpoint.** A pre-purge checkpoint (`pre-purge-session <session_id>`) is committed if the tree is dirty.
-   Failure returns 500 with nothing deleted.
-6. **Exclusive lock & Database delete.** Under the wiki's exclusive mutation lock, one transaction deletes:
-   - `profile_candidates` where `source_kind = 'prompt'` and `source_ref = 'session:<session_id>'`;
-   - all page versions at `path = 'sessions/<session_id>.md'` in the session's `(workspace_id, project_id)` (plus any `summary_page_id` of the session), with their links, entities, evidence and embeddings;
-   - the session's `auto_improve_rejections`, `auto_improve_runs`, `auto_improve_claims`, and `consolidation_jobs`;
-   - handoffs the session **authored** (`from_session_id`), while clearing `accepted_by_session = NULL` on handoffs it only accepted;
-   - all `observations` of the session (counting same-scope vs cross-scope `collateral_observations_deleted`);
-   - the `sessions` row itself.
+Request body: `{workspace, project, session_id, confirm, compact, dry_run}`
+(`workspace` and `project` are **required** names; the last three default to
+`false`). Verified against the original:
 
-   It also inserts the session into `purged_sessions` (tombstone) and writes an `audit_log` row (`op = "purge_session"`). Compaction runs inside the lock if requested.
-7. **File cleanup.** Only the page paths the database step returned (`sessions/<session_id>.md`), under the
-   scope's own root, are removed. Removal is reported in `files_deleted` and
-   `files_failed`. A failed removal does **not** roll back the database purge.
-   The call still returns 200, and async webhooks receive `partial_failure: true`.
-8. **After.** A post-purge checkpoint (`purge-session <session_id>`) is committed if the tree changed.
+1. **Dry run first.** With `dry_run: true` the server goes to the preview
+   (step 3) whatever `confirm` says.
+2. **Validation and lookup (real run).** Without `confirm`: 400
+   `destructive operation requires confirm=true` (checked **before** the id).
+   `session_id` is trimmed and must be a full UUID, otherwise 400
+   `session_id must be a full UUID`. The workspace and project are looked up by
+   name without creating them (missing: 404). The session id alone never grants
+   access to another scope: the session must belong to the named
+   workspace/project, checked inside the delete transaction (step 6). Otherwise
+   404 `session <id> not found in this workspace/project` (also for a session
+   that was already purged).
+3. **Dry run.** Same id validation and scope lookup, then the store runs the same
+   selection queries as the real purge inside a transaction that is rolled back,
+   and returns the report with `dry_run: true`, `files_deleted: []`,
+   `files_failed: []`, `compacted: false` and no checkpoints. No admission, no
+   wiki lock, no file removal, no tombstone, no audit row.
+4. **Admission.** The `purge_session` admission webhooks run before any
+   deletion (with the authenticated actor). A failure returns 500 with nothing deleted.
+   Admission runs **before** the session/scope check, so a 404 for a session of
+   another scope can come after the webhooks were called.
+5. **Checkpoint.** A pre-purge checkpoint `pre-purge-session <workspace>/<project>: <session_id>`
+   is committed if the tree is dirty. Failure returns 500 with nothing deleted.
+6. **Exclusive lock and database delete.** The project tree is checked for
+   symbolic links/reparse points before and after taking the wiki's exclusive
+   mutation lock. Then one transaction:
+   - checks that the session belongs to the scope (404 otherwise, see step 2);
+   - selects the pages to delete: the session's recorded summary page **plus**
+     every version at `sessions/<session_id>.md` whose frontmatter `session_id`
+     equals this session. A manual edit at that path without that key is **not**
+     deleted;
+   - selects the files to remove: each distinct path of those pages, **unless**
+     a current version at that path is not one of the deleted pages (a later
+     manual rewrite survives, and so does its file);
+   - counts the collateral rows: observations of this session stamped into
+     another project, and handoffs of other projects authored or accepted by it;
+   - deletes, innermost first: the rejections of each of the session's
+     auto-improvement runs; the session's auto-improvement runs
+     (`auto_improve_runs_deleted`); the handoffs it **authored** in this scope;
+     the selected pages (their embeddings, links, entity links and evidence go
+     by cascade); the session's observations in this scope; the profile
+     candidates with source `prompt` and reference `session:<id>` (in **any**
+     project); then the tombstone in `purged_sessions` (insert, or refresh
+     `purged_at` if it already exists); then the session row, whose cascade
+     removes its consolidation jobs, scheduler claims and the ingest keys tagged
+     with this session (keys without a session tag stay; schema-verified) and, through it, the
+     collateral observations of other projects; handoffs that only reference it
+     elsewhere lose the link (set to null);
+   - writes the audit row `purge_session` (no page, no detail) and commits.
+   Compaction, when requested, runs right after the commit inside the writer,
+   while the wiki lock is still held. A compaction failure returns 500 although
+   the purge is committed, and no file is removed.
+7. **File cleanup.** Still under the lock, each selected path (relative to the
+   scope's own root) is removed. A missing file is silently skipped (listed
+   nowhere). Any other error goes to `files_failed`. A failed removal does **not**
+   roll back the database purge: the call still returns 200, and the async
+   webhooks receive `partial_failure: true`.
+8. **After.** The lock is released, the purge webhooks are dispatched, and a
+   post-purge checkpoint `purge-session <workspace>/<project>: <session_id>` is
+   committed if the tree changed (a failure there only logs a warning,
+   `checkpoint: null`). Unlike the project purge, the active-project pointer
+   and the scope cache are not touched.
+
+`pages_deleted` counts page **rows** (versions), and `removed_paths` lists the
+paths selected for file removal. `workspace` and `project` in the report echo
+the request.
 
 **Kept on purpose:**
 
@@ -296,11 +390,26 @@ ai-memory rename-project --workspace default --project-id <uuid> --to new-name
 
 Steps:
 
-1. **Lookup.** Missing workspace or source project (`from` or `project_id`, mutually exclusive) returns 404.
-2. **Validate names.** Both source and target names are checked. An empty or
-   whitespace-only target name, a name > 256 bytes or containing `/` or control characters, or a reserved profile project name (`_profile` or `_profile.*`, as either source or target) returns 422. Leading and
-   trailing whitespace on `to` are trimmed silently.
-3. **Update.** If `from == to`, the rename succeeds immediately as a no-op (200 OK). If `to` is already used by another project in the same workspace, the call returns **409 Conflict** (`project already exists`). Otherwise the name is updated in `projects`.
+1. **Lookup.** Missing workspace or source project (`from` or `project_id`, mutually exclusive: both or neither is 400, see `purge-project`) returns 404.
+2. **Validate names** (inside the same database transaction as the update, in
+   this order; each failure is **422** with `{"error": "invalid project name: <reason>"}`):
+   target empty or whitespace-only (`project name must not be empty or all whitespace`);
+   target contains `/` (`project name must not contain '/' (it appears in URL paths)`);
+   target is a reserved profile name, `_profile` or `_profile.*`
+   (`<name> is reserved for the cross-project profile`); source is a profile project
+   (`a cross-project profile project cannot be renamed`). Leading and trailing
+   whitespace on `to` are trimmed silently before storing. Verified against the
+   original: the rename path applies **no** length limit and **no** control-character
+   check of its own.
+3. **Update.** The name column is updated and an audit row (`rename_project`,
+   detail `{from, to}`) is written in the same transaction. If `to` is already used
+   by another project in the same workspace (uniqueness constraint), the call returns
+   **422** (not 409) with `{"error": "project name '<to>' is already taken in this workspace"}`.
+   Renaming to the current name is not special-cased: it succeeds (200), still writes
+   the audit row and still refreshes the manifests. If the row vanished between lookup
+   and update (concurrent purge), the call returns 404
+   (`project id <id> no longer exists in workspace <id> (race with concurrent purge or delete)`).
+   Any other database error is 500.
 4. **Count.** The number of latest page versions is counted for the report.
 5. **Manifests, cache and checkpoint.** The scope cache is invalidated, the workspace and project `_meta.md` manifests
    are rewritten, and a checkpoint (`rename-project <workspace_id>/<project_id>`) is committed if the tree changed.
@@ -312,6 +421,19 @@ response carries `manifest_warning` and no checkpoint. The database rename
 stands.
 
 Response: `workspace`, `from`, `to`, `pages`, `checkpoint`, `manifest_warning`.
+`from` is the name the server resolved (useful when the call used `project_id`);
+`to` echoes the request value **as sent** (untrimmed). `pages` counts the latest
+versions of the project, expired ones included.
+
+CLI (`rename-project`, thin client): `--from` and `--project-id` are mutually
+exclusive; without either, the source is the project resolved for the current
+directory (marker or project strategy). After the call it prints any
+`manifest_warning` to stderr as `ai-memory: warning: <text>`, re-keys the
+client-local checkout link from the old name to the new one (a failure there only
+prints `ai-memory: project renamed, but the client-local checkout link could not be updated (<error>)`
+and does not fail the command), and finally prints
+`Renamed <ws>/<old> → <ws>/<new> (<n> pages now under the new name).`
+A non-2xx answer fails the command (exit 1).
 
 ### `/admin/rename-workspace`
 
@@ -319,8 +441,17 @@ HTTP admin route. It changes `workspaces.name` and leaves every on-disk path
 unchanged, because paths are keyed by workspace id.
 
 1. Missing source workspace returns 404.
-2. An empty/invalid target name returns 422. A target name already taken by another workspace returns **409 Conflict** (renaming a workspace to its own current name `from == to` is a 200 OK no-op).
-3. Otherwise the name is updated. Then every scope manifest under that workspace is refreshed.
+2. An empty/whitespace-only target (`invalid workspace name: workspace name must not be empty or all whitespace`)
+   or one containing `/` (`invalid workspace name: workspace name must not contain '/'`) returns 422.
+   A target name already taken by another workspace also returns **422** (not 409),
+   `workspace name '<to>' is already taken`. The target is trimmed before storing.
+   Renaming to the current name is not special-cased (200). A row that vanished
+   concurrently is 404; other database errors are 500.
+3. Otherwise the name is updated. Then the scope manifests are refreshed (the
+   refresh pass, verified in the code, holds the wiki's exclusive mutation lock
+   and rewrites the manifest of **every** workspace and **every** project of the
+   store, not only this workspace. `manifests_refreshed` counts only the manifests
+   whose content actually changed. Without a store attached to the wiki, it is 0).
 4. If the manifest refresh fails after the rename committed, the response is
    still 200. It has `manifests_refreshed: 0` and a `manifest_warning`. The
    database rename stands.
@@ -329,35 +460,80 @@ unchanged, because paths are keyed by workspace id.
 
 ### `/admin/delete-workspace`
 
-HTTP admin route. There is no CLI subcommand for it. Request fields:
-`workspace`, `confirm` (default `false`; **required** when `dry_run: false`), `force` (default `false`), `compact` (default `false`) and
-`dry_run` (default `false`).
+HTTP admin route. There is no CLI subcommand for it. Request fields (verified
+against the original): `workspace`, `force` (default `false`), `compact`
+(default `false`) and `dry_run` (default `false`). **There is no `confirm`
+field**: a request without `dry_run` deletes. An extra `confirm` field is ignored.
+The protection is the non-empty guard (step 3) plus the route being root-only.
 
-1. **Confirmation.** When `dry_run: false` and `confirm: false`, returns 400.
+1. **Dry run first.** With `dry_run: true` the preview runs, whatever `force` says
+   (step 4).
 2. **Lookup.** Missing workspace returns 404. The lookup never creates one.
-3. **Non-empty check (applies to both dry-run and real run).** Without `force: true`, a workspace that still has projects
-   returns **409 Conflict** (including `projects_count`), even when `dry_run: true`.
-4. **Dry run.** When `dry_run: true` (and either workspace is empty or `force: true`), returns the preview counts (`dry_run: true`, `files_deleted: []`, `files_failed: []`) and changes nothing.
-5. **Tree check.** If the workspace's wiki tree is not valid, the call returns
-   500 and nothing changes.
-6. **Admission.** The `purge_workspace` admission webhooks run before any
-   deletion. A reject-policy failure returns 500 and nothing changes.
-7. **Checkpoint.** A pre-delete checkpoint (`pre-delete-workspace <ws>`) is committed if the tree is dirty.
-   Failure returns 500 and nothing changes.
-8. **Database delete.** One transaction deletes all child projects and the workspace row (`workspaces`, `projects`, `pages`, `sessions`, `observations`, `handoffs`, `page_embeddings`, `workstreams`, `managed_runs`, etc.). The whole workspace is tombstoned in `purged_scopes` (`project_id = NULL` plus per-project rows). Note: `delete-workspace` does not check `managed_runs` leases and does not write to `audit_log`.
-9. **File cleanup.** The workspace's wiki directory and each affected raw
-   workstream directory are removed under the wiki's exclusive lock. Failures are listed in `files_failed`.
-10. **After.** Mirror notifications are dispatched after the durable work, with
-    `partial_failure` set when a file removal failed. Active-project pointers
-    for the workspace are cleared, the scope cache is invalidated, and a
-    post-delete checkpoint (`delete-workspace <ws>`) is committed if the tree changed.
+3. **Non-empty check (dry run and real run).** Without `force: true`, a
+   workspace that still has projects returns **409**
+   `workspace still has <n> project(s); pass force to delete anyway`. There is no
+   project list or count field. The dry-run message adds
+   ` (pass "force": true alongside "dry_run": true to preview a non-empty workspace)`.
+   On the real run the count comes from the operator's project listing, and the
+   store re-checks inside the transaction (also 409).
+4. **Dry run.** The same counting queries run inside a transaction that is rolled
+   back. The response has `dry_run: true`, `files_deleted: []`, `files_failed: []`
+   and `compacted: false`, with no checkpoints. No admission and no tree check.
+5. **Tree check.** If the workspace's wiki tree holds a symbolic link or reparse
+   point, the call returns 500 and nothing changes.
+6. **Admission.** The `purge_workspace` admission webhooks run (with an empty
+   project name). A failure returns 500 and nothing changes.
+7. **Checkpoint.** A pre-delete checkpoint `pre-delete-workspace <ws>` is
+   committed if the tree is dirty. Failure returns 500 and nothing changes.
+8. **Database delete.** One transaction counts the rows (the counts include
+   collateral observations of other workspaces deleted through the sessions'
+   cascade, and handoffs of other workspaces that lose a session link), then
+   deletes the workspace row. Everything under it leaves by cascade. The whole
+   workspace is tombstoned in `purged_scopes` by **one** row whose project id is
+   all zeros (refreshed if it already exists). There are **no** per-project
+   tombstone rows. There is **no** managed-run lease check (a live agent loses its
+   lease) and **no** audit row. With `compact`, compaction runs after the commit;
+   if it fails, the call returns 500 with the delete already committed and no file
+   cleanup.
+9. **File cleanup.** The workspace's wiki directory is removed under the wiki's
+   exclusive lock. A missing directory counts as removed and is listed. Then each
+   raw workstream directory is removed outside the lock (a missing one is skipped,
+   other errors go to `files_failed`).
+10. **After.** Purge webhooks are dispatched, with `partial_failure` when a removal
+    failed. Active-project pointers for the workspace are cleared, the scope cache is
+    invalidated, and a post-delete checkpoint `delete-workspace <ws>` is committed if
+    the tree changed (failure: warning only).
 
-Response fields: `workspace`, `projects_deleted`, `pages_deleted`,
+Response fields: `workspace`, `projects_deleted`, `pages_deleted` (all versions),
 `sessions_deleted`, `observations_deleted`, `handoffs_deleted`,
 `embeddings_deleted`, `collateral_observations_deleted`,
 `collateral_handoffs_denulled`, `workstreams_deleted`,
 `managed_runs_deleted`, `workstream_ids`, `files_deleted`, `files_failed`,
-`compacted`, `pre_checkpoint`, `checkpoint`, `dry_run`.
+`compacted`, `pre_checkpoint` and `checkpoint` (omitted when absent), `dry_run`
+(present only when true).
+
+### `/admin/merge-workspace`
+
+HTTP admin route, verified against the original. Body:
+`{from, to, confirm, force (false), on_conflict (block)}`.
+
+1. Without `confirm`: 400 `destructive operation requires confirm=true`.
+2. `from == to` (names compared as sent): 422 `from and to are identical; nothing to merge`.
+3. Source workspace missing: 404 (never created). The destination is created by
+   the per-project moves when needed.
+4. The source's projects are listed (most recently updated first) and each one
+   goes through the same path as `move-project` (`confirm: true`, the request's
+   `force` and `on_conflict`, selected by name). Private profile projects are
+   **not** filtered out: one of them fails its move with 422 and stops the merge.
+5. At the first failing project, the merge stops with that project's status and
+   `{error: "merge stopped at project '<p>' in workspace '<from>'", failed_project, reason, projects_merged, source_workspace_deleted: false}`.
+   Moves already done stand (each is idempotent on re-run).
+6. When all moves succeed, the emptied source is deleted with the
+   `delete-workspace` path, `force: false` and no compaction. If that fails (for
+   example, a project was recreated meanwhile), the call still returns 200 with
+   `source_workspace_deleted: false`.
+
+Response: `{from, to, projects_merged: [<move-project report>...], source_workspace_deleted}`.
 
 ### `move-project`
 
@@ -398,21 +574,32 @@ When the destination workspace has no project with the same name, the move is
 lossless and cheap. The project keeps its id.
 
 1. The destination workspace row is created if needed.
-2. The destination project directory `<wiki>/<to_ws_id>/<proj_id>` must not exist on disk. If it does, the call
-   returns 409 and nothing moves.
-3. The `move_project` admission webhooks run with the source and destination
-   names. A reject-policy failure returns 500 and nothing moves.
-4. In **one database transaction**, the workspace id is re-stamped on: the project row,
-   pages, links (`to_workspace` where matching), sessions, observations, handoffs, messages, audit rows, project grants,
-   auto-improve runs, proposals, rejections, scheduler state and claims,
-   consolidation jobs and managed workstreams. The project id is unchanged.
-5. The project directory is then moved on disk into the destination workspace's tree,
-   under the wiki's exclusive lock. If the disk move fails, the database workspace id is rolled back.
+2. Both project trees (source, and the would-be destination directory) are
+   checked for symbolic links/reparse points (failure: 500). The destination project directory
+   `<wiki>/<to_ws_id>/<proj_id>` must not exist on disk. If it does, the call returns 409
+   `destination dir already exists: <path>; refusing true-move` and nothing moves.
+3. Under the wiki's exclusive mutation lock (trees re-checked, destination re-checked:
+   409 if it appeared), the `move_project` admission webhooks run with the source and
+   destination names. A rejection returns 500 `move aborted (nothing changed): <detail>`.
+4. **Disk first:** the project directory is renamed into the destination workspace's
+   tree (skipped when the project has no directory yet).
+5. **Then one database transaction** re-stamps the workspace id, matching by project id,
+   on: pages (all versions), sessions, observations, handoffs, project grants; and,
+   where the row still carries the source workspace: audit rows, auto-improvement runs,
+   proposals, rejections, scheduler state and claims, consolidation jobs, managed
+   workstreams, entities, page feedback, purged-session tombstones, profile candidates,
+   profile entry ledger and harvest marks; messages addressed to or sent by the project
+   (each end separately); finally the project row (if it is no longer in the source
+   workspace: 404). Link rows are **not** re-stamped (their targets are by name and
+   page id). The project id is unchanged. If the transaction fails, the directory is
+   renamed back; if that also fails: 500
+   `INCONSISTENT STATE: files moved but DB re-stamp failed (...) and dir rename-back also failed (...); manually move <dst> -> <src> or finish the re-stamp`.
+   On success the move webhooks are dispatched.
 6. The active-project pointer is retargeted to the new workspace. The scope
    cache is invalidated. Manifests are refreshed, and a post-move checkpoint (`move-project <from_ws>/<proj> -> <to_ws>/<proj>`) is
    committed if the tree changed.
 
-Report: `moved_via: "true-move"`, `merged_into_existing: false`, `pages_copied` (the number of pages moved),
+Report: `moved_via: "true-move"`, `merged_into_existing: false`, `pages_copied` (page rows re-stamped, **all versions**), `from`/`to` (`<ws>/<proj>` labels),
 `workstreams_moved`, `source_purged: false`.
 
 #### Copy-then-purge merge (destination has a same-named project)
@@ -443,8 +630,12 @@ into the existing destination project, then purges the source.
 5. Each page is copied through the normal write path.
 6. Embeddings computed with the currently configured embedding model are
    carried over as stored vectors.
-7. **Copy failure** (any page): the call returns 500 before the source is
-   purged. The source is intact.
+7. **Copy failure** (any page): the call returns 500
+   `copy of <path> failed: <detail>` before the source is purged. The source is intact,
+   but pages copied **before** the failure stay in the destination (no rollback; a re-run
+   supersedes them idempotently). Pages are copied one by one through the normal write
+   path, without re-embedding and skipping only the contributors enrichment webhook.
+   The source's `pinned` flag, tier and stored title are kept.
 8. **Unreadable or invalid source page**: the page is skipped and listed in
    `pages_skipped`. The source purge does **not** run, because it would destroy
    data that was not copied. The call commits `move-project-partial <from_ws>/<proj> -> <to_ws>/<proj>` and returns 200 with `source_purged: false`.
@@ -472,6 +663,27 @@ none of this.
 
 The `--force` flag overrides only the active-project guard. It never overrides
 a live managed run.
+
+Audit notes (verified against the original):
+
+- Server check order: `confirm` (400 `destructive operation requires confirm=true`);
+  identical workspace **names**, compared as sent (422
+  `from_workspace and to_workspace are identical; use rename-project instead`);
+  requested project name starting with `_profile.` (422
+  `a private cross-project profile stays in the default workspace and cannot be moved`,
+  even if it does not exist); source lookup (400/404, as in `purge-project`); the same
+  profile check on the resolved name (so `project_id` is refused too); a workspace
+  profile `_profile` **may** move; active-project guard (409
+  `<ws>/<proj> is the active session's project; a live move risks stale-cache writes. Re-run with force=true to proceed.`);
+  merge detection; pre-checkpoint.
+- Merge: the destination is resolved with get-or-create. The `block` check only covers
+  pages whose source file could be read. Under `duplicate`, the suffix search
+  (`-from-<slug>`, then `-from-<slug>-1`, `-2`, ...) has **no upper bound**. It skips paths
+  already used in this run and paths with a page in the destination. A source page whose
+  natural path was already taken by an earlier de-duplicated page in the same run is
+  also de-duplicated and listed in `conflicts`.
+- Merge source purge: no `force`, no compaction, audit author empty. A live managed
+  run returns 409 `<n> page(s) were copied to <ws>/<proj>, but the source <label> could not be purged: ...`.
 
 > **Operational caveat: moving the project your current session writes to.**
 > Lifecycle hooks stamp observations into the session's project on every
@@ -526,64 +738,133 @@ observations then belong with the project they are about. Unlike `reorg`, which
 re-derives every session's project from its working directory, this command
 names the destination and leaves the rest of the store alone.
 
-Two shapes share the same endpoint (`POST /admin/move-session`):
+Verified against the original (audit 011). Two shapes share one endpoint
+(`POST /admin/move-session`). Request body:
+`{session_id?, from_workspace?, from_project?, workspace?, project, pages, confirm, force, create}`.
 
-- **Single**: `session_id`, plus `to_project` (or `project`) and optional
-  `to_workspace` (or `workspace`, default `default`).
-- **Batch**: `session_ids` (array of UUIDs; the CLI resolves `--from-project` by listing sessions first and sending `session_ids`),
-  plus the destination (`to_workspace`, `to_project`).
+- **Single:** `session_id` (UUID). The source is the scope where the session row
+  sits now. A missing session: 404 `session <id> not found`.
+- **Batch:** `from_project` plus `from_workspace` (default `default`). The source
+  scope must exist (404 otherwise; never created). The batch takes **every session
+  touching the source**: a session row there, or at least one observation stamped
+  into it. Oldest first (row `started_at` or first observation in the source).
+  The CLI resolves `--from-project` like any other scope (marker, else literal)
+  and sends `from_project`, not a list of ids.
+- Exactly one of `session_id` and `from_project` must be given, otherwise 400
+  `provide exactly one of session_id (single move) or from_project (batch)`.
+- Destination: `project` (required) in `workspace` (default: the source
+  workspace). Missing destination: 404, unless `create: true`. With
+  `create` and `confirm` the destination is created first. With `create` and no
+  `confirm`, nothing is created and the report carries
+  `would_create_project: true` (counts computed read-only).
+- `pages`: `move` (default) or `regenerate`. There is no `keep` mode.
 
-Exactly one of `session_id` (non-empty) or `session_ids` (non-empty array) must be given. Otherwise the call
-returns 400.
+**Dry run by default.** Without `confirm`, the store runs the **whole move
+inside a transaction that is rolled back** (including the audit row), and the
+report has `dry_run: true`. No admission, no file is touched, no checkpoint.
 
-**Dry run by default.** Without `--confirm` (`confirm: false`), the server runs a read-only preview (`Preview` mode)
-and returns exact counts (`dry_run: true`). Nothing is written and no audit row is left.
-With `--create` (`create: true`) and a destination that does not exist, the dry run reports
-`would_create_project: true` and the counts without creating the project.
-Only the `--confirm` (`confirm: true`) run creates it.
+**Guards, per session, in this order (all bypassed by `force: true`):**
 
-**Guards.** If the session is still open (`ended_at IS NULL`) and is not a re-home, or has a pending/running consolidation job, the server returns 409 (`open_session` or `active_consolidation`) in both `Preview` and `Execute` modes (note: `force` does not bypass this guard in the server store).
+1. Session still open (no end recorded) and not a re-home: 409
+   `session <id> is still open (no session end recorded); finish it or force the move (--force / force: true)`.
+2. Consolidation job `pending` or `running`: 409
+   `session <id> has a pending or running consolidation job; wait for it or force the move (--force / force: true)`.
 
-**Re-home.** If the session row already sits in the destination (`from == to`), the session
-does not move (`session_moved: false`), and open sessions are allowed so scattered observations in other scopes can be gathered into the destination.
+Batch-only guards (before any session): source equal to the destination: 422
+`source and destination scopes are identical`; source project is the hook
+router's active project and no `force`: 409
+`<ws>/<proj> is the active session's project; force the move (--force / force: true) to move its sessions anyway`.
+
+Then both project trees are checked for symbolic links and reparse points.
+
+**Re-home.** When the session row already sits in the destination, the row
+does not move (`session_moved: false`). Open sessions are allowed, and only stray
+rows in other scopes are gathered into the destination.
 
 **What moves, per session, in one transaction:**
 
-- the session row (`workspace_id`, `project_id`);
-- every observation of the session, including ones that landed in another scope;
-- `profile_candidates` (`source_kind = 'prompt' AND source_ref = 'session:<id>'`) and `ingest_keys` (`key LIKE '%:' || <session_id> || ':%'`), using `UPDATE OR IGNORE` followed by `DELETE` of colliding leftovers;
-- the handoffs it authored (`from_session_id`);
-- its consolidation jobs, auto-improve runs and scheduler claims;
-- its session page, according to `pages` (`move` [default], `keep`, or `regenerate`).
+1. The session row (`workspace_id`, `project_id`), unless it is a re-home.
+2. `source_scopes`: before the re-stamp, every scope (other than the
+   destination) holding observations of the session, with names and counts,
+   largest first.
+3. Re-stamped into the destination, wherever they are, when not already there:
+   observations, handoffs it **authored**, consolidation jobs, auto-improvement
+   runs and scheduler claims (each counted).
+4. Prompt profile candidates (`session:<id>`) and the session's ingest keys:
+   re-stamped where possible, and colliding leftovers outside the destination
+   deleted.
+5. Session page `sessions/<id>.md`. The rows considered are those of the source
+   scope (in a re-home: of every scope other than the destination).
+   - `move`: if the destination already has a current version at that path, or
+     a re-home finds current versions in more than one outside scope: 409
+     `<path taken message>; re-run with pages=regenerate or resolve the destination page first`.
+     Otherwise every considered version is re-stamped (`page_versions_moved`).
+     Links and evidence follow the page ids.
+   - `regenerate`: the open entity links of the current version are closed and
+     the current version is retired (`is_latest = 0`, `valid_to` = one instant,
+     no tombstone mark; `pages_regenerated`). The session's summary pointer to
+     those rows is cleared, so the next consolidation writes a fresh page in
+     the destination.
+6. Audit row `move_session`, attributed to the destination scope.
 
-**Page handling:**
+The `purged_sessions` tombstone is **not** touched by a move.
 
-- `move` (default): if the destination already has a latest page or a file on disk at `sessions/<id>.md`, the move **does not fail with 409**; instead, it records `page_conflict = true` (`pages_moved = 0`, `page: "conflict (kept in source; pass --pages regenerate to replace)"`) and moves the session and dependent rows while leaving the page in the source. Otherwise, every version of `sessions/<id>.md` (and `links.from_page_id` / `to_page_id`) is re-stamped into the destination, and the file is moved on disk into the destination project's directory (removing any tombstone in `purged_sessions`).
-- `keep`: leaves the session page in the source project (`page: "kept in source"`).
-- `regenerate`: the source versions are retired (`is_latest = 0`, `valid_to = now`), any
-  `sessions.summary_page_id` pointer to them is cleared, entity links are closed, and the file on disk is removed so the next consolidation writes a fresh page in the destination.
+**Files (confirmed run only), under the wiki's exclusive lock:**
 
-**What does not move:**
+- Admission (`move_session`, with source and destination names) runs **inside**
+  the lock, before any file or row moves. A rejection aborts with nothing changed.
+- If source and destination differ and the source file exists:
+  - `move`: if a file already exists at the destination path: 409 (checked also
+    before the dry run, so the dry run predicts it). Otherwise the file is
+    renamed into the destination's `sessions/`.
+  - `regenerate`: the file is renamed to a temporary name in the same directory,
+    ignored by the watcher (`.ai-memory-tmp.move-session.<id>.md`).
+- Then the database transaction runs. If it fails, the file is renamed back. If
+  that rename also fails: 500
+  `INCONSISTENT STATE: session page file moved but DB re-stamp failed (...) and moving it back also failed (...); manually move <a> -> <b>`.
+- On success, `regenerate` deletes the parked file (a failure only logs a
+  warning), and the move webhooks are dispatched.
 
-- `sessions.cwd`. It stays as recorded. The response carries `cwd_warning` when
-  its basename differs from the destination project name.
-- Other pages written during the session (decisions, gotchas).
-- Handoffs the session *accepted*.
-- Auto-improve proposals.
-- Entities and page feedback.
+**After (confirmed).** Single form: pre-checkpoint
+`pre-move-session <id> <from_ws>/<from_proj> -> <to_ws>/<to_proj>` before (failure:
+500, nothing moved). Then, after the move, the manifests of every scope are rewritten
+(failure: warning only) and the post checkpoint `move-session <id> ...` is taken.
+Batch form: one pair for the whole batch (`pre-move-session <from> -> <to>` /
+`move-session <from> -> <to>`), taken only when there is at least one session
+(the post checkpoint only when at least one session moved). The scope cache and
+the active-project pointer are not touched.
 
-A `--confirm` run takes a checkpoint before (`pre-move-session ...`) and after (`move-session ...`), invalidates the scope cache, and refreshes `_meta.md` manifests.
+**What does not move:** `sessions.cwd`; other pages written during the session;
+handoffs the session only *accepted*; entities and page feedback. When the cwd's
+last component differs from the destination project name, the report carries
+`cwd_warning`:
+`session cwd '<cwd>' resolves to project '<base>' by basename, not '<to>'; the cwd was left as recorded. New sessions started there still land in '<base>' unless a .ai-memory.toml marker pins project = "<to>"; with [routing] mid_session = "sticky" the remaining events of this session follow it.`
 
-**Batch.** Each session in `session_ids` moves in its own transaction. The batch stops at the first error and returns the error plus `completed: [...]` with the sessions already moved.
+**Batch failure.** Each session moves in its own transaction. The batch stops at
+the first error. The response keeps that error's status and `error` and adds
+`session_id`, `dry_run`, `total`, `moved`, `sessions` (reports of those already
+moved, which stay moved), and the post `checkpoint` and `manifest_warning` if any.
 
-Response (single): `session_id`, `dry_run`, `session_moved`, `would_create_project`
-(dry run with `create` only), `source_scopes`, `from` and `to` (each with
-`workspace` and `project`), `summary` (`observations`, `handoffs`,
-`consolidation_jobs`, `auto_improve_runs`, `auto_improve_claims`,
-`page_versions_moved`, `pages_regenerated`), `page`,
-`cwd`, `cwd_warning`, `pre_checkpoint`, `checkpoint`, `manifest_warning`.
+Response (single): `session_id`, `dry_run`, `session_moved`,
+`would_create_project` (only when true), `source_scopes` (omitted when empty),
+`from` and `to` (`{workspace, project}`; `to` echoes the names as requested),
+`summary` (`observations`, `handoffs`, `consolidation_jobs`, `auto_improve_runs`,
+`auto_improve_claims`, `page_versions_moved`, `pages_regenerated`), `page`
+(`moved`, `regenerated`, `already in destination` or `none`), `cwd`,
+`cwd_warning`, `pre_checkpoint`, `checkpoint`, `manifest_warning` (optional fields
+omitted when absent).
 
-The batch wraps the per-session reports in `{dry_run, count, results: [...], pre_checkpoint?, checkpoint?, manifest_warning?}`.
+Response (batch): `{dry_run, would_create_project?, from, to, total, moved, sessions: [...], pre_checkpoint?, checkpoint?, manifest_warning?}`.
+
+CLI output: the per-session counts block (`observations:`, `handoffs:`,
+`consolidation jobs:`, `auto-improve runs:`, `auto-improve claims:`,
+`page: <label> (<n> version(s) moved, <m> retired)`), the session row line
+(`moved`, `would move` or `already in destination (re-home: only stray rows gathered)`),
+the scopes being drained, a batch table, `Pre-move checkpoint: <oid>` /
+`Checkpoint: <oid>`, and, for a dry run,
+`(dry run; nothing was written)` / `Re-run with --confirm to apply:` followed by
+the exact command. A `manifest_warning` goes to stderr as
+`ai-memory: warning: <text>`. A non-2xx answer fails the command (exit 1).
 
 ### `checkpoints`
 
@@ -616,22 +897,45 @@ Flags: `--path`, `--from` (a checkpoint id, sent as `"rev"` in the HTTP JSON bod
 
 Steps:
 
-1. **Path check.** An invalid page path returns 422 (checked before scope lookup).
+Request body: `{workspace, project, path, rev}`. Verified against the original:
+
+1. **Path check.** An invalid page path returns 422 `invalid path: <detail>`. It is
+   checked before the scope lookup.
 2. **Scope lookup.** Missing workspace or project returns 404. Nothing is created.
 3. **Pre-restore checkpoint.** If the tree has uncommitted changes, a checkpoint
-   named `pre-restore-page <ws>/<proj>:<path>` is committed first.
-4. **Read and validate.** The page's markdown is read from git at `<rev>:<ws_id>/<proj_id>/<path>`, decoded as UTF-8 and parsed. The live file is not touched yet.
-5. **Write.** The live file is replaced atomically via the standard wiki write pipeline, and the page is re-indexed.
-6. **Post-restore checkpoint.** A `restore-page <ws>/<proj>:<path> from <rev>` checkpoint is committed if the
-   live tree changed.
+   `pre-restore-page <ws>/<proj>: <path>` is committed first (failure: 500, nothing
+   changed).
+4. **Read and validate.** The page path is checked against the project root
+   (no escaping). The file is read from git at `<rev>:<ws_id>/<proj_id>/<path>`,
+   decoded as UTF-8 (otherwise `<path> at <rev> is not valid UTF-8 markdown: ...`)
+   and parsed. Title, links, tier, pin, TTL and entities are derived from that
+   historical file. The live file is not touched yet.
+5. **Write.** This is **not** the standard page-write pipeline: no admission
+   webhooks, no secret sanitizer, no author. Under the wiki's **shared** (not
+   exclusive) mutation lock, the scope rows and manifests are ensured, the
+   historical bytes are written **verbatim** to the live file (atomic replace), and
+   the page is upserted in the index with the normal supersession rule (identical
+   content creates no version). The restored version is then embedded, like a
+   normal write, outside the lock.
+6. **Post-restore checkpoint.** `restore-page <ws>/<proj>: <path> from <rev>` is
+   committed if the tree changed (failure: warning only, `checkpoint: null`).
+
+Response: `{page_id, path, restored_from, pre_checkpoint, checkpoint}`.
+
+CLI: the scope comes from `--workspace`/`--project` or the marker. It prints
+`restored <path> under <ws>/<proj> from <rev> (page_id=<first 8 chars>)`, then
+`pre-restore checkpoint: <oid>` and `restore checkpoint: <oid>` when present.
+`--json` prints the response instead. An error is prefixed with
+`restoring page via server` (exit 1).
 
 Failure modes:
 
 - **Invalid page path**: 422, nothing changed.
 - **Workspace or project not found**: 404, nothing changed.
-- **Checkpoint or file not found** in git, or historical markdown malformed: 500. Any pre-restore checkpoint
-  stays as an audit breadcrumb.
-
+- **Checkpoint or file not found** in git, non-UTF-8 content, malformed
+  historical markdown, or a write/index/embedding error: 500. Any pre-restore
+  checkpoint stays as an audit breadcrumb. An embedding failure comes **after**
+  the file and index were already written.
 Not recovered: sessions, observations, handoffs, users, audit rows, access
 counters and embeddings. These live only in the database. Roll them back with a
 full `backup` and `restore`.
@@ -646,15 +950,30 @@ Flag: `--to` (short form `-o`).
 
 What the server does:
 
-1. Validates the wiki tree. An invalid tree returns 500.
-2. Takes a consistent snapshot of the live database without stopping the writer (`VACUUM INTO`).
-3. Writes a gzip tarball containing `wiki/`, the snapshot as `db/memory.sqlite`,
-   and `config.toml` if it exists.
-4. Returns the tarball as the response body, with content type
-   `application/gzip` and `Content-Disposition: attachment; filename="backup.tar.gz"`.
+1. Validates the wiki tree, refusing symbolic links and reparse points. An
+   invalid tree returns 500 (`validating wiki tree: ...`).
+2. Takes a consistent snapshot of the live database into a temporary file,
+   using the database engine's **online backup** facility on a read connection
+   (not `VACUUM INTO`). The writer is not stopped. Failure: `sqlite snapshot: ...`.
+3. Validates the wiki tree **again** right before archiving
+   (`validating wiki tree before archive: ...`). Then it writes, into a temporary
+   file, a gzip tarball with deterministic headers that does not follow symbolic
+   links. Contents, in order: the whole `wiki/` directory, including its git
+   repository (skipped if `wiki/` does not exist); the snapshot as
+   `db/memory.sqlite` (it may be stored as a sparse entry, which `restore`
+   accepts); and `config.toml` if it is a file. Errors: `archiving wiki/: ...`,
+   `archiving db snapshot: ...`, `archiving config.toml: ...`.
+4. Streams the file as the response body (never buffered in memory) with
+   content type `application/gzip` and
+   `Content-Disposition: attachment; filename="backup.tar.gz"`. There is no
+   request body.
 
-The CLI writes the body to `--to`. A failure returns 500 with a JSON error body.
-This is the standard snapshot before a risky operation.
+A failure returns 500 with a JSON `{error}` body. The CLI creates the parent
+directory of `--to` if needed, streams the body to that path and prints
+`✓ wrote backup to <path> (<size>)`, with binary units and two decimals above
+1 KiB. An error is prefixed with `requesting backup from server` (exit 1).
+This is the standard snapshot before a risky operation. The backup holds no
+`raw/`, `logs/` or `models/`.
 
 Restoring is the reverse. Stop the server, then restore:
 
@@ -687,21 +1006,55 @@ Order of operations:
 1. **Process check.** If any other `ai-memory` process is alive, the command
    refuses with the message "refusing to restore: N other ai-memory process(es)
    running (pids: ...). Stop them first, then re-run." Nothing changes.
-2. **Source check.** The tarball must exist as a file.
-3. **Occupied check.** The data directory counts as occupied if `wiki/` has any
-   entries or `db/memory.sqlite` exists. If it is occupied and `--force` is not
-   set, the command refuses: "refusing to restore: data dir at ... is non-empty
-   (pass --force to overwrite)".
-4. **Stage.** The tarball is extracted into a scratch directory `.restore-staging-<unix_secs>-<pid>` inside the data
-   directory. Each archive entry is checked:
-   - Entry types allowed: regular files (`'0'`, `'\0'`), directories (`'5'`), and **GNU Sparse (`'S'`)** entries (which GNU `tar` emits for SQLite files with zero-runs). Symlinks, hardlinks, FIFOs, devices, and PAX/GNU long-name/global headers are rejected.
-   - Path allowlist: only `config.toml`, `db`, `db/memory.sqlite`, `wiki`, and `wiki/...` are allowed (after stripping a leading `./`). Absolute paths, `..`, Windows drive prefixes, and any other paths are rejected.
-   - The archive must contain `db/memory.sqlite`. A failure here cleans up the staging directory and leaves the live data untouched.
-5. **Validate the database.** The staged database is opened (applying any pending migrations) and **explicitly closed before the swap** (crucial on Windows, where open SQLite/WAL handles prevent renaming the parent directory). A corrupt snapshot fails here, while the live data is still untouched.
-6. **Swap.** Existing `wiki/` and `db/` directories, and `config.toml` if the
-   archive has one, are retired into `.restore-previous-<unix_secs>-<pid>`. The staged `wiki/`, `db/`, and optional `config.toml` are renamed into place. If any step fails, the moves already made are reversed from `.restore-previous-*`.
-7. **Discard & Scratch cleanup.** Both `.restore-previous-*` and `.restore-staging-*` are removed. If removing either directory fails after a successful swap, a warning is logged to stderr and the restore still succeeds.
+2. **Source check.** The tarball must exist as a regular file, otherwise
+   `source tarball <path> not found`.
+3. **Occupied check.** The data directory counts as occupied if `wiki/` is a
+   directory with at least one entry, or `db/memory.sqlite` is a file. If it is
+   occupied and `--force` is not set, the command refuses:
+   `refusing to restore: data dir at <path> is non-empty (pass --force to overwrite)`.
+   The data directory is created if it does not exist.
+4. **Stage.** A scratch directory `.restore-staging-<YYYYMMDD-HHMMSS>-<pid>`
+   (UTC timestamp) is created inside the data directory, and the gzip tarball is
+   extracted into it. Every entry is validated before it is written (permissions
+   are not preserved):
+   - every path component must be a plain name. An absolute path, `..`, a leading
+     `./`, or a drive/root prefix is rejected with `backup contains unsafe path: <p>`;
+   - symbolic and hard links: `backup contains unsupported link entry: <p>`;
+   - anything that is not a regular file (including GNU sparse entries, which hold
+     hole-encoded regular files) or a directory: `backup contains unsupported entry type: <p>`;
+   - allowed directories: `wiki`, `wiki/...`, `db`. Allowed files: `config.toml`,
+     `db/memory.sqlite`, `wiki/...`. Anything else:
+     `backup contains unexpected path: <p>`.
+   A stream that is not gzip, or is truncated, fails as
+   `extracting <tarball> into <staging>: ...`. Verified against the original: the
+   archive is **not** required to contain `db/memory.sqlite`. Without it, step 5
+   creates a new, empty, migrated database and the restore proceeds.
+5. **Validate the database.** The staged store is opened (applying pending
+   migrations) and then fully closed. The writer thread is joined and every
+   connection is released before any rename, which Windows needs (an open
+   database or log handle blocks the directory rename). A failure stops here with
+   `opening restored store: ...`, and the live data is untouched.
+6. **Swap.** A directory `.restore-previous-<same stamp>` is created. The live
+   `wiki/` and `db/` (those that exist) are renamed into it. The live
+   `config.toml` is moved aside **only** if the archive carries one. Then the
+   staged `wiki/`, `db/` and `config.toml` (those that exist) are renamed into
+   place. All moves are same-filesystem renames. If any step fails, the placed
+   entries are removed and the parked ones renamed back, and the command fails with
+   `restore swap failed; the previous data was moved back into place: ...`. If the
+   rollback also fails:
+   `INCONSISTENT STATE: restore swap failed (...) and moving the previous data back also failed (...); the pre-restore wiki/ and db/ are under <previous> — move them back into <data dir> by hand`.
+7. **Cleanup.** After a successful swap, `.restore-previous-*` is removed (failure:
+   stderr
+   `warning: restore succeeded but the pre-restore data under <p> could not be removed (...); delete it by hand`,
+   exit 0). The staging directory is removed in **every** outcome (failure: stderr
+   `warning: could not remove staging dir <p> (...); delete it by hand`). On success the
+   command prints `restored <tarball> -> <data dir>`.
 
+Windows notes: every rename fails if a process holds a file open in `wiki/`
+or `db/` (an editor, an antivirus scan, OneDrive sync, or a running server whose
+process guard was not detected, see `reset`). The rollback then restores the
+previous state. Because the scratch directories live inside the data directory,
+no move crosses volumes.
 `raw/`, `logs/` and `models/` are never touched by a restore.
 
 ### `reset`
@@ -723,6 +1076,26 @@ and this check runs **even for the dry run**.
 The removal is not atomic. If a directory cannot be removed, the command stops
 with an error naming that path. Directories before it may already be wiped.
 
+Audit details (verified against the original):
+
+- Order is fixed: `wiki/`, then `db/`, then `raw/`. Each existing directory is
+  removed recursively and recreated empty; the failure messages are
+  `removing <path>` or `recreating <path>` (with the underlying OS error). The
+  dry run lists only the directories that exist, one `would remove <path>` line
+  each. A missing data directory is a no-op (nothing is created).
+- The same wipe (same three directories, same order) backs
+  `uninstall --purge-data`.
+- The process guard refusal message is
+  `refusing to <verb>: <n> other ai-memory process(es) running (pids: [<pid>, ...]). Stop them first, then re-run.`
+  (`<verb>` is `reset`, `reindex`, `restore`...). Exit is the generic failure (1).
+- The guard looks for processes whose name is **exactly** `ai-memory`, excluding
+  itself (and, on Linux, excluding thread entries). On Windows the image name is
+  `ai-memory.exe`, so the exact match on `ai-memory` misses live siblings and
+  the guard does not refuse. Original behavior, reproduce as is: the comparison
+  is the exact name `ai-memory` (no `.exe` variant, no case folding). With a live server holding `db/` open, Windows also
+  refuses the recursive removal ("file in use"), which surfaces as the
+  `removing <path>` error after earlier directories may already be gone.
+
 ### `reindex`
 
 ```bash
@@ -738,13 +1111,13 @@ Order of operations:
 2. **Clean-target check.** If the database already has rows in any of these **5 tables** —
    `workspaces`, `projects`, `pages`, `sessions`, `observations` — the command refuses and names the non-zero counts (`refusing to reindex: target database at ... is not empty (...)`). This stops stale database-only state from surviving
    silently.
-3. **Walk the tree.** First validates the wiki tree for symlinks/reparse points (`validate_wiki_tree`). Then each `<workspace_id>/<project_id>/` directory is visited. Directories whose scope
+3. **Walk the tree.** First validates the wiki tree, refusing symbolic links and reparse points. Then each `<workspace_id>/<project_id>/` directory is visited. Directories whose scope
    is tombstoned in `purged_scopes` are skipped (`skipped_purged`) and left in place.
 4. **Workspaces and projects.** Each one is recreated from its `_meta.md`
    manifest, keeping the UUIDs encoded in the directory names. A missing
    manifest is an error that gives its exact path.
 5. **Pages.** The latest page rows, page links and the full-text index are
-   rebuilt from the markdown (`reindex_page`). Pages under `sessions/<id>.md` whose session id is in `purged_sessions` are skipped (`skipped_purged_sessions`). Embeddings are not computed. Run `embed` afterwards
+   rebuilt from the markdown, one page at a time. Pages under `sessions/<id>.md` whose session id is in `purged_sessions` are skipped (`skipped_purged_sessions`). Embeddings are not computed. Run `embed` afterwards
    if you need them.
 6. **Collisions.** A page whose path differs from an already indexed page only by
    letter case or Unicode normalization is logged and skipped (`skipped_collisions`), because such paths cannot
@@ -824,9 +1197,12 @@ ai-memory rename-project --from old --to new
 
 Sessions started later in the new directory are resolved by the directory's
 basename, so the rename is what lets them land in the same project. The project
-id stays the same, so existing observations stay with the project. Confirm the
-basename rule for your setup (**a confirmar**), or pin the project with a
-`.ai-memory.toml` marker.
+id stays the same, so existing observations stay with the project. This holds
+for the default `basename` project strategy (project = last component of the
+working directory); with the `repo-root` strategy the name is the basename of
+the repository root instead (see [install.md](install.md) and
+[lifecycle-event-ingestion.md](lifecycle-event-ingestion.md)). A
+`.ai-memory.toml` marker overrides both and pins the project explicitly.
 
 ### Reattach a session captured under the wrong project
 

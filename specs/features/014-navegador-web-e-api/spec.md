@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 014
-- **Status:** draft (revisada contra os docs em 2026-10-13 e auditada contra o ai-memory de referência em 2026-10-20, ver "Correções da auditoria"; o contrato campo a campo da API é extraído na fase 0 do `tasks.md`; nova revisão prevista quando a 007 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 007 (sessão web, CSRF, acesso por projeto), 002 (leitura, busca, handoffs, sessões)
@@ -70,7 +70,7 @@ Pontos em que a versão anterior desta spec, ou os docs dos quais ela dependia, 
 
 ## Constraints
 - **Segurança:** teste com payloads de XSS; CORS restrito; nada de mutação de conteúdo.
-- **Tecnologia:** `html/template` e `embed` da stdlib; renderizador de markdown de terceiros (dependência nova, ADR no plano).
+- **Tecnologia:** `html/template` e `embed` da stdlib; renderizador de markdown de terceiros (dependência nova, registrada em `tech.md`), com saída igual à do original nos casos do doc.
 
 ## Critérios de Sucesso
 - [ ] Tabela de parâmetros e limites de `docs/wiki-browser.md` §3.3 coberta por teste
@@ -78,7 +78,7 @@ Pontos em que a versão anterior desta spec, ou os docs dos quais ela dependia, 
 - [ ] Suíte de XSS sobre a renderização de markdown, incluindo a tabela de imagens confinadas
 - [ ] Diff de linhas: saídas idênticas às da tabela de limites e do desempate de `docs/wiki-browser.md` §2.8.1 (inclusive `@@` e truncamento)
 - [ ] Tabela de verificações do `/health` (id, gravidade, condição, texto, comando) coberta por teste
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Um componente no `cli` (é a camada que monta rotas e conhece todos os componentes), só de leitura, sobre o `Reader` do `storage` e a leitura da `wiki`. Templates e recursos estáticos embutidos. Markdown renderizado por uma biblioteca com HTML bruto desligado e uma etapa própria de sanitização de URL e de reescrita de wikilinks.

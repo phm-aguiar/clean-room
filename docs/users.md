@@ -113,7 +113,7 @@ credential. They do not grant privileges by themselves: the level comes from the
 |---|---|---|---|---|
 | Root bearer | Any non-empty string. The generator yields 64 hexadecimal characters by default | Plain value in configuration. Never in the database | Root | Operator (`generate-auth-token`) |
 | Trusted proxy bearer | Any non-empty string that differs from the root bearer | Configuration | Proxy rung: User, or Root for the exact root OIDC pair | Operator |
-| Native API key | `aim_` followed by 43 URL-safe characters (32 random bytes) | Digest of the secret, a colon, and the server pepper; plus the last four characters as a non-secret preview | User, attributed to the owning account | `api-key add` or the admin API |
+| Native API key | `aim_` followed by 43 URL-safe characters (32 random bytes) | SHA-256 over the UTF-8 bytes of secret ‖ `:` ‖ pepper, where the pepper is used as its configured text (the 64 hex characters themselves, not decoded); plus the last four characters as a non-secret preview | User, attributed to the owning account | `api-key add` or the admin API |
 | Migrated 1.x compatibility token | 43 URL-safe characters, no prefix | Same digest form, on a key record labelled `legacy-user-token`; an expired one was copied as already revoked | User | Nothing creates new ones (the 1.x commands were removed) |
 | Human password | 12 to 1024 bytes | Argon2id PHC string on the account (algorithm Argon2id, version 0x13, memory 19 456 KiB, 2 passes, 1 lane, 16-byte random salt, standard PHC encoding) | Nothing directly. It is exchanged for a web session | `user add-human`, `user reset-password`, password change |
 | Temporary password | 32 URL-safe characters, shown once | Only as the password hash | Login only; must be changed at next login | Admin API or CLI |
@@ -262,6 +262,28 @@ Recovery exists for a lost root password. It needs `AI_MEMORY_AUTH__RECOVERY_TOK
 
 `POST /auth/logout` (session required) revokes the session named by the cookie, always answers 204 and clears the three cookies (`Max-Age=0`).
 
+Cookie names (confirmed in the original): session `ai_memory_session` (HttpOnly), CSRF `ai_memory_csrf` (readable),
+legacy `ai_memory_auth`. Each `Set-Cookie` has the shape `<name>=<value>[; HttpOnly]; SameSite=Strict; Path=/;
+Max-Age=<seconds>[; Secure]`. The CSRF request header is `x-csrf-token`. For a cookie session the header and the
+CSRF cookie must both be present, have the same length and be equal in constant time, and the SHA-256 of the
+header must equal the stored CSRF hash; any failure is 403 `csrf required`. A request to a session-only route
+that also carries a bearer is refused with 401 `auth required`. A session whose account is disabled is refused
+with 401 `auth required` even if the row is not yet revoked.
+
+### Session introspection (internal)
+
+`POST /internal/auth/session-introspect` (body `{session, method, csrf?}`) is for a sidecar proxy, not clients:
+
+1. Any `X-Memory-Actor-*` header: 400 `X-Memory-Actor-* headers are not allowed on /internal`.
+2. No proxy bearer configured, or the bearer differs (constant-time, length first): 401 `auth required`.
+3. Human login not active, unknown or expired/revoked session: 200 `{authenticated: false, can_manage_api_keys: false}`.
+4. CSRF is checked only when `method` (case-insensitive) is `POST`, `PUT`, `PATCH` or `DELETE` (other unsafe verbs
+   are not checked here, unlike the cookie middleware); `csrf` missing or its SHA-256 not equal to the stored hash
+   gives `authenticated: false`. There is no double-submit cookie comparison on this route.
+5. Otherwise `{authenticated: true, username, can_manage_api_keys}`, where `can_manage_api_keys` is true only for
+   role root with no pending password change and not disabled. Note: this route does not itself refuse a disabled
+   account (it relies on disable revoking the sessions). Original behavior, reproduce as is.
+
 ### `/auth/me`
 
 `GET /auth/me`: with no authority configured it answers `{username: null, name: null, role: null, must_change_password: false, via: "anonymous", capabilities}` (`normal_read`, `normal_write` and `admin` true, `user_management` false, because user management is root-only even with no authority configured); otherwise it needs a session and answers the same snapshot as login. When the password change is pending every capability is false. Every `/auth/me` response also expires the legacy cookie.
@@ -380,8 +402,11 @@ Handoffs and sessions:
 - Handoff begin, accept and cancel raise admission operations. A webhook with `failure_policy = "reject"` can refuse
   them. Other webhooks are notified after the operation is durable.
 - Session lookups from hooks are scoped to the caller's identity, so one operator's hook does not see another
-  operator's open session through the shared lookup. The exact response to a foreign session identifier:
-  a confirmar.
+  operator's open session through the shared lookup. A hook event whose session id already belongs to another
+  owner or agent (without an authorized all-owners recovery) is a "session collision": the event is dropped (not
+  stored), counted as a dropped collision in the hook metrics and logged with the reason `session id belongs to
+  another owner or agent, or all-owners recovery was refused`; no detail of the foreign row is revealed (confirmed
+  in the original).
 
 ## Attribution
 
@@ -616,7 +641,8 @@ file keeps the secret out of every harness configuration and out of every comman
   when you want passwords.
 - **Enable accounts on an existing single-user install.**
   1. Back up the configuration file.
-  2. Generate a pepper with `ai-memory generate-auth-token 32`. It prints 64 hexadecimal characters, the same shape
+  2. Generate a pepper with `ai-memory generate-auth-token` (equivalent to `--bytes 32`; the size is the
+     `--bytes` option, not a positional argument). It prints 64 hexadecimal characters, the same shape
      `init` generates.
   3. Add `token_pepper` and, optionally, `root_username`, `root_email` and `root_name` to the `[auth]` block. Keep
      your existing bearer.
@@ -634,7 +660,13 @@ file keeps the secret out of every harness configuration and out of every comman
   - a `[auth].trusted_proxy_cidrs` entry is not a valid address or CIDR;
   - the recovery token is shorter than 32 characters or starts with `ams_`, `aim_` or `amk_`;
   - the server is bound to a non-loopback address with no authentication configured, unless `--allow-insecure-no-auth` is given (inside a container only a warning is printed).
-  Human mode is "intended" when bootstrap already completed, or any account has a password, or an initial root password or a recovery token is configured. The messages are free text; the pepper and bearer checks are independent (the message names whichever is missing). The first-account bootstrap password is also rejected if it equals the root bearer, the proxy bearer, the recovery token or the root username.
+  Human mode is "intended" when bootstrap already completed, or any account has a password, or an initial root password or a recovery token is configured. Literal texts confirmed in the original for the secret checks (values are trimmed, blank counts as absent):
+`[auth].recovery_token must be at least 32 characters` (length in bytes), `[auth].recovery_token must not use a
+reserved credential prefix`, and `<A> must differ from <B>; reuse would collapse credential classes`, where A and B
+are two of `[auth].bearer_token`, `[auth].actor_proxy_bearer_token`, `[auth].recovery_token`,
+`[auth].initial_root_password`, in that order. The root bearer has no minimum length. There is no account deletion
+route: accounts can only be disabled/enabled (`/admin/users/{username}/disable|enable`). Other messages are free
+text; the pepper and bearer checks are independent (the message names whichever is missing). The first-account bootstrap password is also rejected if it equals the root bearer, the proxy bearer, the recovery token or the root username.
 - **Schema upgrades** add password, session and key storage, and copy existing compatibility tokens onto key
   records. Nothing needs to be re-issued. The deprecated commands keep working until 2.0.
 

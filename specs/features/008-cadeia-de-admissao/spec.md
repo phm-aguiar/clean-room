@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 008
-- **Status:** draft (revisada contra os docs em 2026-10-13; **auditada contra o comportamento do original e corrigida em 2026-10-19** — `admission-webhooks.md` atualizado; `plan.md` e `tasks.md` precisam ser regenerados)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 007 (ator identificado e capacidade de pular a cadeia), 002 a 004 (operações admitidas)
@@ -61,14 +61,14 @@ O operador quer estender o comportamento sem mudar o motor: acrescentar campos a
 
 ## Constraints
 - **Performance:** a latência de uma escrita é a soma dos `timeout_ms` dos ganchos bloqueantes inscritos no op; não bloqueantes não somam.
-- **Tecnologia:** `net/http` da stdlib.
+- **Tecnologia:** cliente HTTP padrão da plataforma, sem dependência nova.
 - **Segurança:** a resposta do gancho passa pela higienização antes de gravar (INV-06); a lista de pulo nunca vai no fio.
 
 ## Critérios de Sucesso
 - [ ] Os casos de cobertura de `docs/admission-webhooks.md` §10 passam como teste
 - [ ] Tabela de combinações `blocking` × `failure_policy` do §8.1 coberta para escrita, notificação e handoff
 - [ ] Prazo de 750 ms da aceitação no início de sessão testado com decisores lentos
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Um componente de cadeia no `wiki` (para a escrita de página, que é dele) chamado pelos pontos de operação, mais funções de "decidir, agir, notificar" para handoffs usadas pelo `ingest` e pelo `mcp` através do `storage`/`wiki`, sem `mcp` importar `ingest`. O cliente HTTP dos ganchos é único, com o limite de 256 envios em voo.
@@ -86,3 +86,14 @@ Um componente de cadeia no `wiki` (para a escrita de página, que é dele) chama
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria "Chinese Wall" de 2026-10-25 contra o original (relatório: `reports/013-auditoria-008-011-restantes.md`). O `docs/admission-webhooks.md` foi confirmado linha a linha e completado; o escopo acima continua válido, com estes acréscimos:
+
+- **Sem assinatura, sem autenticação, sem retentativa.** Nenhum cabeçalho HMAC ou de autenticação é enviado; os únicos cabeçalhos do motor são `Content-Type: application/json` e `X-Memory-Op`. Cada gancho inscrito recebe exatamente uma tentativa por operação; envio fire-and-forget descartado não é reenfileirado.
+- **Classificação "indisponível" só no caminho de escrita de página.** Nas operações de notificação e de decisão (exclusão, purga, movimento, pré-voo, handoff, mensagem) a recusa tem os mesmos textos mas não é classificada.
+- **Recusa no caminho de decisão:** no MCP é erro da classe *invalid-request* com o texto do gancho; na rota administrativa de envio de mensagem é 403 mesmo quando a causa é tempo esgotado ou 5xx. Sem cadeia configurada, não há decisão nem observadores.
+- **Cabeçalho de pulo** também honrado em chamadas sem contexto de autenticação (sessão MCP local por stdio), tratadas como anônimas.
+- **Configuração:** entrada sem `events` faz a carga falhar (lista vazia explícita carrega e nunca dispara); texto exato do erro da variável de ambiente registrado no doc §4.
+- O item "Tecnologia" foi reescrito sem citar biblioteca de linguagem específica.

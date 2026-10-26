@@ -18,8 +18,10 @@
   confiança** e lê a mesma memória de projeto. Páginas são compartilhadas; handoffs têm dono.
 - Um projeto pode ser `open` (padrão) ou `restricted`. Projeto restrito só é acessado por quem tem
   concessão de `read` ou `write` (ver [design-per-project-authz.md](design-per-project-authz.md)).
-  A opção de criar projetos novos já restritos não consta do modelo de configuração padrão: projetos
-  novos são abertos. A confirmar o valor por omissão do campo.
+  A opção de criar projetos novos já restritos (`[auth].new_projects_restricted`) é **desligada por
+  omissão** (confirmado no original): projetos novos são abertos. Ligada, um projeto novo admite só o
+  criador (que recebe `write`) e o raiz; projetos existentes nunca mudam, e `scratch` e o escopo global
+  de preferências ficam sempre abertos.
 - Não há criptografia em repouso nem isolamento forte entre inquilinos. Quem precisa separar dados
   roda **servidores e diretórios de dados distintos**.
 
@@ -33,7 +35,8 @@
   banco de dados, spool de eventos de hook, backups baixados, arquivo de credenciais de provedores)
   recebem `0600`. O modo é definido na criação; o umask do processo só pode restringir mais.
 - Instalações existentes não são alteradas automaticamente.
-- Em Windows, o programa não define ACL explícita: vale a ACL herdada do diretório. A confirmar.
+- Em Windows, o programa não define ACL explícita: vale a ACL herdada do diretório (confirmado no
+  original: os ajustes de modo existem só em Unix; não há código de ACL para Windows).
 
 ### 2.2 Exposição de rede
 
@@ -75,8 +78,9 @@ Identidades aceitas, da mais forte para a mais fraca:
 4. **Sessão humana** (login por senha). Gera cookie de sessão `HttpOnly` com `SameSite=Strict` e token
    CSRF enviado em cabeçalho. Duração: 7 dias.
 5. **Identidade OIDC**. O cliente obtém token por fluxo de autorização de dispositivo e o envia. No
-   servidor, a identidade chega como afirmação de proxy confiável (item 2). A validação criptográfica do
-   JWT no servidor não foi localizada. A confirmar.
+   servidor, a identidade chega como afirmação de proxy confiável (item 2). Confirmado no original: o
+   servidor **não** valida o token OIDC (nem assinatura, emissor, audiência, expiração ou claims); token
+   OIDC cru recebe 401 em servidor protegido. A validação cabe ao gateway (ver [sso.md](sso.md)).
 
 Regras de autorização:
 
@@ -258,9 +262,10 @@ garantias.
 - **Pepper e token raiz no mesmo arquivo de configuração**, sem cofre. Quem lê esse arquivo obtém o token
   raiz e o pepper.
 - **Token raiz configurado manualmente não tem tamanho mínimo validado.** Só o token de recuperação tem
-  mínimo (32 caracteres). A confirmar.
+  mínimo (32 bytes após aparar, sem prefixo reservado `ams_`/`aim_`/`amk_`). Confirmado no original.
 - **Sem remoção de conta de usuário.** Foram encontradas as ações de desativar e de expirar, mas não uma
-  rota de exclusão. A confirmar. Isso enfraquece o atendimento a pedido de apagamento de dado pessoal.
+  rota de exclusão (confirmado no original: as rotas de usuário são listar, criar, alterar, redefinir
+  senha, desativar, ativar e concessões). Isso enfraquece o atendimento a pedido de apagamento de dado pessoal.
 - **Webhooks de admissão recebem a página inteira** (caminho, frontmatter e corpo). A URL não tem validação
   de esquema, então HTTP sem TLS é aceito. A falha é ignorada por padrão. Ver 5.2.
 - **Embeddings de provedor não passam por redação** no envio (ver 2.12).
@@ -268,10 +273,10 @@ garantias.
 - **Páginas editadas à mão** não são redigidas ao serem lidas, indexadas ou enviadas.
 - **Alta entropia sem formato** não é redigida (ver 2.8).
 - **Padrões extras do servidor não protegem o cliente de captura** (ver 2.9).
-- **Validação do JWT OIDC no servidor** não foi localizada. A confirmar.
+- **Validação do JWT OIDC no servidor** não existe (confirmado no original); depende de gateway.
 - **Ferramentas auxiliares fora do núcleo** (relay, importador, sincronização da wiki, cliente de captura
   externo) não foram revisadas nesta versão. A confirmar.
-- **Permissões no Windows** dependem da ACL herdada. Não há ajuste explícito. A confirmar.
+- **Permissões no Windows** dependem da ACL herdada. Não há ajuste explícito (confirmado no original).
 - **Injeção de prompt** não tem prova. A convenção de dado não confiável é mitigação, não garantia.
 - **Contêiner com publicação ampla** depende do operador. A verificação só avisa.
 

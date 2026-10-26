@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 005
-- **Status:** draft (revisada contra os docs em 2026-10-13; **auditada contra o comportamento do original e corrigida em 2026-10-19** — `temporal.md`, `typed-edges.md`, `storage-and-retrieval.md` §11.5 e `mcp-server.md` atualizados; `plan.md` e `tasks.md` precisam ser regenerados)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (`memory_query`, `memory_write_page`, `memory_status`), 004 (aposentadoria por decaimento que fecha janelas)
@@ -38,11 +38,11 @@ Responder "o que a memória considerava atual naquele instante?" para auditorias
   - `explain` com `evidence_count`, `confidence`, `belief_factor` (quando o peso está ativo e a versão não é superseded), `intent = "session_recall"` e `intent_boost`; a confiança é calculada no `explain` mesmo com o peso desligado;
   - **`settled_first`** no `memory_briefing` (padrão falso): lista `settled` (omitida se falso ou vazia) com até 8 páginas atuais de tipo `rule` ou `decision` (fixadas ou não), não expiradas, `{path, title, kind, evidence_count}`, por contagem de evidência ↓ e depois `updated_at` ↓;
   - `evidence_rows` (total de registros de evidência do projeto) no status.
+- **Preenchimento de dados antigos na abertura do armazenamento**, como no original (`docs/temporal.md` § Preenchimento de dados antigos): passagem idempotente de vínculos de versões atuais sem vínculo e preenchimento de janelas em lotes de 5000 com ponto de controle; num banco já preenchido não escreve nada.
 
 ### Fora do escopo (explicitamente)
 - Fase B, tempo do mundo (`true_from`, `true_until`): adiada pelo próprio doc.
 - Mudança de ranking no caminho padrão por frescor ou por `contradicts`, peso por tipo de aresta e travessia de cadeias `fixes`/`causes` (propostas nos docs, não implementadas).
-- Preenchimento de janelas e de vínculos de dados antigos na abertura do armazenamento: o esquema V01 já nasce com as colunas e toda escrita as preenche; não há loja antiga a migrar (decisão nossa).
 - Lint de `contradicts` e de `broken_link` (feature 004).
 
 ## Comportamento Esperado
@@ -82,7 +82,7 @@ Responder "o que a memória considerava atual naquele instante?" para auditorias
 - [ ] O exemplo de `docs/temporal.md` (postgres e sqlite) passa pelos dois fluxos
 - [ ] `relations` na escrita pública respeita todos os limites e rejeita a escrita inteira em violação
 - [ ] `explain` traz `edge` e `streams_active` como no doc; status traz a contagem por relação
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Um caminho de consulta `as_of` separado dentro da busca do `storage`, com os dois fluxos filtrados pelas janelas e a mesma fusão RRF e o mesmo ajuste de autoridade do caminho padrão. Validação de `relations` na fronteira da escrita pública, reaproveitando a gramática de alvo da 001. A correção da relação desconhecida fica na derivação de links da wiki.
@@ -100,3 +100,11 @@ Um caminho de consulta `as_of` separado dentro da busca do `storage`, com os doi
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria 011 (2026-10-25), validação linha a linha contra o original. Relatório: `reports/011-auditoria-003-004-005.md`.
+
+- Confiança derivada (amplitude por sessões distintas, resíduo 0,2 com teto 1,0, saturação 3, recência 0,5 + 0,5·e^(−idade/30 d), penalidade 1/(1+n), teto 0,95), janelas de validade, regra de supersessão/ressurreição e consulta `as_of`: **conferidos e fiéis**.
+- **`settled_first`:** documentada a derivação do tipo (`kind` do frontmatter, que prevalece, senão prefixo de caminho → `rule`/`slot`/`session`/`decision`/`gotcha`/`concept`/`procedure`/`note`/`preference`, senão `fact`). Só `rule` e `decision` entram na lista. Página sem evidência entra com contagem 0. A ordem em caso de empate não é especificada.
+- **Entidades nos metadados públicos de escrita:** validação estrita (mais de 10 itens, item com mais de 64 caracteres, com controle ou vazio após normalizar), que rejeita a escrita inteira com `invalid or oversized page metadata: entities`. O descarte silencioso vale só para o frontmatter de arquivos e para o consolidador. Registrado em `docs/temporal.md`.

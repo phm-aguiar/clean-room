@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 015
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 014 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 014 (normalizador de prefixo, interface web), 007 (autenticação, limite de login), 002 (servidor, hooks, backup pelo servidor)
@@ -80,17 +80,17 @@ Pontos em que a spec ou os docs divergiam do ai-memory de referência (docs corr
 - [ ] `upgrade` testado contra um servidor de releases falso (checksum certo, errado, ausente, versão fixada)
 - [ ] Normalizador de prefixo e `X-Forwarded-For` cobertos por teste de tabela
 - [ ] Teste de "nenhuma conexão de saída por padrão"
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Artefatos de distribuição em `deploy/` e `contrib/` (fora do binário); `upgrade` e keepalive no `cli`; prefixo do servidor reaproveitando o normalizador da 014; IP do cliente como função pura chamada pelo limitador de login da 007.
 
 ## Decisões tomadas
 - **Imagem com Go:** o doc descreve a receita da implementação de referência (toolchain própria); aqui o estágio de build usa a imagem oficial do Go na versão do `go.mod`, e o binário é estático (`CGO_ENABLED=0`). Runtime mantém o Debian bookworm-slim do doc.
-- **Fallback de Git no Windows (`docs/windows-native-extras.md` §6.2) não se aplica:** este produto já usa o programa `git` (não há biblioteca de Git embutida). Fica só o tratamento do erro de dono.
-- **Troca atômica com repetição no Windows (§6.1):** já existe na 001 (`internal/wiki/atomicfile.go`); a T001 só reconfere os números (5 tentativas, 10 a 50 ms).
-- **Regras de caminho (§8.2):** já existem na 001 (`internal/domain/pagepath.go`); a T001 reconfere.
-- **Ajustes feitos em outras features nesta revisão:** 002/T039 (regras 1, 4, 5 e 6 de exposição), 002/T040 (trava do sistema e `.serve.lock.holder`), 007/T028 (regras 2 e 3), 013/T016 (resolução de executável com PATHEXT).
+- **Git no Windows (`docs/windows-native-extras.md` §6.2):** igual ao original: biblioteca Git embutida (em Go, `go-git`) como caminho normal; só no Windows, quando a abertura falha com "não encontrado" ou erro do sistema com `failed to resolve path` (nunca com erro de dono), cai para o programa `git` no commit, na contagem, nos checkpoints e na leitura por revisão, e qualquer falha de `init` cai para `git init -q`. Regras completas em `001-nucleo/notes/wiki-layout-contract.md` (d). O `git` só precisa estar no PATH para o fallback.
+- **Troca atômica com repetição no Windows (§6.1):** definida na 001 (5 tentativas, 10 a 50 ms, só códigos 32 e 33).
+- **Regras de caminho (§8.2):** definidas na 001 (`ensure_portable`).
+- **Ajustes feitos em outras features nesta revisão:** 002 (regras 1, 4, 5 e 6 de exposição; trava do sistema e `.serve.lock.holder`), 007 (regras 2 e 3), 013 (resolução de executável com PATHEXT).
 
 ## Dependências
 - 014, 007, 002; `docs/deploy.md`, `docs/airgapped-install.md`, `docs/https-via-proxy.md`, `docs/windows.md`, `docs/windows-native-extras.md`, `docs/backup.md`, `docs/hook-scripts-and-container-deploy.md` §4 e §5, `docs/cli.md` §3.4 e §3.5.

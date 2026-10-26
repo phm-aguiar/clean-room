@@ -7,8 +7,9 @@ além da instalação rápida do README. Para cada
 cliente, o comando `ai-memory install-mcp` imprime a configuração ou, com
 `--apply`, grava a entrada no arquivo de configuração do cliente.
 
-Itens marcados como **a confirmar** descrevem comportamento de produtos de
-terceiros que não pôde ser verificado a partir do próprio ai-memory. Eles devem
+Itens marcados como **depende do produto externo** (antes "a confirmar") descrevem
+comportamento de produtos de terceiros que o código do instalador não define. Na auditoria 002,
+o que o instalador define (caminhos, chaves, formatos e flags) foi conferido no código. Eles devem
 ser conferidos com a documentação do cliente antes de depender deles.
 
 ## Antes de começar
@@ -110,7 +111,7 @@ para `session-start`, `post_tool_call` para `post-tool-use` e `on_session_end` p
 `session-end`.
 
 `install-hooks --agent hermes` imprime o bloco `hooks:` pronto para colar em
-`~/.hermes/config.yaml`, mas não grava esse arquivo. O Hermes ignora a saída do hook (**a confirmar**)
+`~/.hermes/config.yaml`, mas não grava esse arquivo. O Hermes ignora a saída do hook (**depende do produto externo**)
 de início de sessão, então a injeção automática de handoff não funciona nele. Use
 `memory_handoff_accept`.
 
@@ -376,7 +377,7 @@ mode = "per_session"
 Uma entrada HTTP estática não consegue carregar o id de sessão do hook. Por isso,
 sem a ponte, `per_session` não isola duas sessões simultâneas do Claude Code.
 
-Limites do cliente (a confirmar com a documentação do Claude Code):
+Limites do cliente (**depende do produto externo**: documentação do Claude Code):
 
 - O subprocesso stdio mantém o id com que foi iniciado depois de `/clear`. Reinicie o
   Claude Code após `/clear` quando precisar de continuidade exata da chave de sessão.
@@ -673,7 +674,7 @@ Dois detalhes do schema:
 
 Skills. `ai-memory install-skills` grava as skills do ai-memory em `~/.agents/skills`,
 que é a raiz de skills entre clientes. Que o Muse também leia essa raiz e
-`$XDG_CONFIG_HOME/muse/skills` é **a confirmar**. Confira com `muse skills list`.
+`$XDG_CONFIG_HOME/muse/skills` **depende do produto externo**. Confira com `muse skills list`.
 
 Sobre captura: o Muse tem uma superfície de hooks, mas o formato de saída do evento
 de início não está especificado. Por isso a injeção automática de handoff não é
@@ -696,11 +697,17 @@ garantida. Use `memory_handoff_begin` e `memory_handoff_accept` manualmente.
 No Windows, o comando detecta pacotes MSIX em `%LOCALAPPDATA%\Packages`, cujo nome
 começa com `Claude_` (sem diferenciar maiúsculas). A regra de escolha é:
 
-1. Se algum pacote já tiver o arquivo de configuração, usa esse.
-2. Se houver um único pacote candidato sem arquivo, usa o caminho dele.
-3. Se houver vários candidatos e nenhum com arquivo, o comando para e pede
-   `--config-file` com o caminho do pacote ativo.
-4. Se não houver pacote, usa o caminho `%APPDATA%` da instalação comum.
+1. Se **exatamente um** pacote já tiver o arquivo de configuração, usa esse.
+2. Se nenhum tiver o arquivo e houver um único pacote candidato, usa o caminho dele (as pastas
+   `LocalCache\…` que faltam são criadas pela gravação atômica).
+3. Qualquer outro caso (vários candidatos sem arquivo, **ou dois ou mais com arquivo**): o
+   comando para com `multiple Claude Desktop packages were found under <pasta> (<nomes>); pass --config-file with the active package's LocalCache\Roaming\Claude\claude_desktop_config.json path`
+   (corrigido pela auditoria 002).
+4. Se não houver pacote (ou a pasta `Packages` não existir), usa o caminho `%APPDATA%` da
+   instalação comum. Erro de leitura da pasta `Packages` interrompe o comando.
+
+`LOCALAPPDATA` e `APPDATA` são lidos primeiro das variáveis de ambiente (valor vazio é ignorado)
+e só depois da pasta conhecida do sistema, para respeitar um perfil realocado.
 
 Entrada gerada:
 
@@ -743,11 +750,11 @@ A opção "Check for Updates…" não basta.
 Gotchas:
 
 - Logs do MCP ficam em `~/Library/Logs/Claude/mcp*.log` no macOS, e em
-  `%APPDATA%\Claude\logs\` (ou no equivalente dentro do pacote MSIX) no Windows. **A
-  confirmar** com a documentação do Claude Desktop.
+  `%APPDATA%\Claude\logs\` (ou no equivalente dentro do pacote MSIX) no Windows. **Depende do produto
+  externo**: documentação do Claude Desktop.
 - O Claude Desktop também oferece conectores remotos e extensões `.mcpb` na conta.
   O CLI gerencia somente o arquivo JSON local, que funciona com servidores em
-  localhost e LAN sem exigir um conector HTTPS publicado. **A confirmar** com a
+  localhost e LAN sem exigir um conector HTTPS publicado. **Depende do produto externo**: confira com a
   documentação do produto.
 - Pacotes MSIX rodam em contêiner de aplicativo, e o Windows redireciona as gravações
   de `%APPDATA%` para uma árvore isolada em `LocalCache`. Por isso o `--apply` precisa
@@ -882,7 +889,7 @@ seja truncado no meio do JSON, desde que o usuário não tenha escolhido outro v
 - **Suporte MCP:** sim. **Hooks e workstreams gerenciadas:** não suportados. O
   Swival chama um único callback compartilhado de início e fim, sem um identificador
   estável de sessão. Assim, sessões simultâneas não podem ser correlacionadas com
-  segurança (**a confirmar** com a documentação do Swival).
+  segurança (**depende do produto externo**: documentação do Swival).
 - **Arquivo de configuração:** `.swival/mcp.json` na raiz do projeto. A raiz é o
   diretório ancestral mais próximo que contenha `.git` ou `swival.toml`. Se nenhum
   existir, usa o diretório atual. Esse é o padrão de busca documentado do Swival.
@@ -917,7 +924,7 @@ ai-memory, preservando os demais servidores.
 - **Suporte MCP:** sim. **Hooks:** `ai-memory install-hooks --agent grok --apply`.
   Os hooks ficam em um arquivo próprio, `$GROK_HOME/hooks/ai-memory.json`, detalhado em
   [desktop/grok-desktop.md](desktop/grok-desktop.md). O arquivo é separado de outros
-  arquivos de hook do mesmo diretório, que o comando não altera (**a confirmar** que o
+  arquivos de hook do mesmo diretório, que o comando não altera (**depende do produto externo**: que o
   Grok carrega todos os `*.json` desse diretório).
 - **Limite de handoff:** o Grok ignora a saída do `SessionStart`. Por isso o handoff
   não é injetado automaticamente. Peça ao Grok que chame `memory_handoff_accept` ao
@@ -950,7 +957,7 @@ Authorization = "Bearer <token>"
 - A alternativa pela linha de comando é `grok mcp add --transport http ai-memory <url>`,
   com `--header` para o bearer.
 - Expansão de `${VAR}` nos campos de texto para não gravar o token em claro (por
-  exemplo, `Authorization = "Bearer ${AI_MEMORY_AUTH_TOKEN}"`) é **a confirmar** com a
+  exemplo, `Authorization = "Bearer ${AI_MEMORY_AUTH_TOKEN}"`) **depende do produto externo**: confira com a
   documentação do Grok.
 - O `--apply` preserva comentários e outras tabelas. Um `mcp_servers` em forma inline
   é convertido para a forma de tabelas em bloco.
@@ -983,7 +990,11 @@ Mescla esta entrada em `mcpServers`:
 ```
 
 Para gravar os hooks dentro de `~/.devin/config.json`, passe esse caminho com
-`--config-file`. O ai-memory os mescla sob a chave `hooks` (a confirmar).
+`--config-file`. O ai-memory os mescla sob a chave `hooks` (confirmado na auditoria 002):
+qualquer arquivo cujo nome não seja `hooks.v1.json` recebe os eventos dentro de `hooks`
+(criada se faltar; se `hooks` existir e não for objeto, a instalação falha com
+``hooks` is present in config.json but not an object`); em `hooks.v1.json` o arquivo inteiro é
+o objeto de hooks. Em ambos, a escrita é atômica e sobrepõe só os eventos do ai-memory.
 
 Detalhes de identidade dos hooks:
 
@@ -1034,17 +1045,17 @@ Mescla esta entrada em `mcpServers`:
 - Não remova `?flavor=moonshot` da URL instalada.
 
 Cuidado com o registro feito por outro caminho. O `kimi mcp add` do próprio Kimi
-grava a URL sem a marca (**a confirmar**). Com essa URL, os turnos do modelo falham
+grava a URL sem a marca (**depende do produto externo**). Com essa URL, os turnos do modelo falham
 com 400, inclusive os que não usam ferramentas, porque os schemas vão em toda
 requisição. O teste `kimi mcp test` pode passar, porque só lista as ferramentas e não
-as envia ao modelo (**a confirmar**). Use `ai-memory install-mcp --client kimi-code
+as envia ao modelo (**depende do produto externo**). Use `ai-memory install-mcp --client kimi-code
 --apply` no lugar.
 
 Se a entrada já foi criada sem a marca, há duas saídas: rodar `install-mcp` de novo,
 ou configurar o servidor para servir o dialeto restrito a todos os `tools/list`, com
 `AI_MEMORY_STRIP_ROOT_COMBINATORS=true` ou `strip_root_combinators = true`. Essa
 chave só remove os combinadores da raiz. Ela não embute referências `$ref`, então
-**não é a confirmar** que basta para o Moonshot. O dialeto completo do Moonshot só é
+**não está garantido** que basta para o Moonshot. O dialeto completo do Moonshot só é
 escolhido pela marca. Veja [Dialetos de schema](#dialetos-de-schema-para-upstreams-estritos).
 
 Hooks. Os hooks de Kimi Code ficam como entradas `[[hooks]]` em
@@ -1052,7 +1063,7 @@ Hooks. Os hooks de Kimi Code ficam como entradas `[[hooks]]` em
 guarda as configurações de provedor e modelo. O `install-hooks` mescla apenas as
 entradas do ai-memory e preserva o restante. Cada entrada aceita os campos `event`,
 `matcher`, `command` e `timeout`, este último em segundos. O padrão é 30 s, e o valor
-válido vai de 1 a 600 (**a confirmar** com a documentação do Kimi). Campos extras
+válido vai de 1 a 600 (**depende do produto externo**: o ai-memory não grava `timeout`; confira com a documentação do Kimi). Campos extras
 podem impedir o carregamento do arquivo, por isso prefira `install-hooks --apply` a
 editar à mão.
 
@@ -1060,7 +1071,10 @@ editar à mão.
 
 - **Suporte MCP:** sim. **Hooks:** `ai-memory install-hooks --agent command-code --apply`,
   com quatro eventos estáveis de shell (início de sessão, antes e depois de ferramenta,
-  e parada). Workstreams gerenciadas não são instaladas por este fluxo (**a confirmar**).
+  e parada). Workstreams gerenciadas não são instaladas por este fluxo (confirmado na
+  auditoria 002): o Command Code é um harness gerenciado de `ai-memory run` (está entre os
+  harnesses de seleção automática), então workstreams vêm de `ai-memory run command-code`, não
+  de `install-hooks`.
 - **Arquivo de configuração (MCP):** `~/.commandcode/mcp.json`.
 - **Arquivo de configuração (hooks):** `~/.commandcode/settings.json`.
 
@@ -1092,7 +1106,7 @@ ai-memory <url>`. O executável `cmdc` é o nome nativo no Windows.
 Os hooks são registrados sem a chave `matcher` externa. Essa é a forma documentada
 pelo próprio Command Code, em que a ausência de matcher significa "todas as
 ferramentas". Um matcher impediria os eventos sem ferramenta, como início e parada, de
-dispararem (**a confirmar**). Instalações nativas gravam eventos localmente, aplicam
+dispararem (**depende do produto externo**). Instalações nativas gravam eventos localmente, aplicam
 as exclusões de captura sobre o envelope de ferramenta documentado e injetam handoffs
 pendentes com `hookSpecificOutput.additionalContext` no início.
 
@@ -1107,7 +1121,7 @@ projeto, adicione `--session-id <uuid>`.
   [support-matrix.md](support-matrix.md).
 - **Arquivo de configuração:** `$KIRO_HOME/settings/mcp.json`, padrão
   `~/.kiro/settings/mcp.json`. Para o escopo de projeto de menor prioridade do Kiro, use
-  `--config-file .kiro/settings/mcp.json` (**a confirmar**). O alias do cliente é
+  `--config-file .kiro/settings/mcp.json` (**depende do produto externo**). O alias do cliente é
   `kiro`.
 
 ```bash
@@ -1149,7 +1163,7 @@ de forma idempotente:
   que gera um plugin nativo do OpenClaw.
 - **Arquivo de configuração:** `~/.openclaw/config.json` (caminho usado pelo comando;
   confira com `openclaw config show`, pois a documentação do OpenClaw cita esse caminho
-  só indiretamente (**a confirmar**)).
+  só indiretamente (**depende do produto externo**)).
 
 Ao contrário dos outros clientes JSON, o OpenClaw usa `mcp.servers`, com o transporte
 declarado explicitamente:
@@ -1184,7 +1198,7 @@ Plugin de hooks:
   `prependContext`.
 - Depois de instalar ou atualizar o plugin, reinicie o Gateway do OpenClaw. Isso não é
   necessário se o Gateway gerenciado reiniciar sozinho após mudanças no código do plugin
-  (**a confirmar**).
+  (**depende do produto externo**).
 
 ### Oh My Pi (OMP)
 
@@ -1200,7 +1214,7 @@ Plugin de hooks:
 
   A variável `PI_CONFIG_DIR` renomeia a pasta raiz `.omp` dentro do diretório pessoal.
   O mesmo cálculo define onde a extensão é gravada. Para um arquivo de projeto
-  (`.omp/mcp.json`), use `--config-file` (**a confirmar** como escopo de projeto do OMP).
+  (`.omp/mcp.json`), use `--config-file` (**depende do produto externo**: escopo de projeto do OMP).
 
 ```bash
 ai-memory install-mcp --client omp --apply
@@ -1362,7 +1376,7 @@ Modelo: (qualquer cliente) Posso chamar as ferramentas do ai-memory, incluindo
       0 observações, 0 sessões.
 ```
 
-O servidor expõe 23 ferramentas MCP. A lista completa, com entradas e saídas, está em
+O servidor expõe 24 ferramentas MCP. A lista completa, com entradas e saídas, está em
 [mcp-server.md](mcp-server.md). O exemplo acima é ilustrativo.
 
 Se o modelo vir as ferramentas mas não as usar por iniciativa própria, atualize o pacote

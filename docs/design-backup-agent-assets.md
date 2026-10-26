@@ -48,6 +48,18 @@ Notes:
   On Windows, a packaged (MSIX) install is detected under the local application
   data directory; otherwise the roaming application data directory is used.
   Restore resolves the same platform path on any operating system.
+  Windows resolution, exactly (audited 2026-10-25): the candidates are the
+  directories under `%LOCALAPPDATA%\Packages` whose name starts with `Claude_`
+  (case-insensitive), sorted; each candidate's config is
+  `<package>\LocalCache\Roaming\Claude\claude_desktop_config.json`. If exactly one
+  candidate already has that file, it wins. If none has it and there is exactly one
+  candidate, that candidate's path is used. If there are no candidates, the roaming
+  path `%APPDATA%\Claude\claude_desktop_config.json` is used. Any other combination
+  (several candidates and not exactly one with a config) is an error that names the
+  packages and asks for an explicit config file; because Claude Desktop is resolved
+  while candidates are collected, this error **aborts the whole backup**, not just
+  the Claude Desktop entry. Restore uses the same resolution (on Linux, the
+  `$XDG_CONFIG_HOME/Claude/` rule of the MCP installer).
 - **Other agents.** Their paths are fixed under the home directory. Relocation
   variables of those agents are not consulted.
 - **Home directory override.** When `AI_MEMORY_HOME` is set and not blank, it

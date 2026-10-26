@@ -76,6 +76,8 @@ A ordem é `entities` primeiro, depois `tags`. Em seguida cada nome passa por no
 
 Uma entidade é única dentro de cada par workspace e projeto. Cada versão tem no máximo um vínculo com a mesma entidade.
 
+**Metadados públicos de escrita (verificado no original).** Na ferramenta de escrita de página e no endpoint administrativo de escrita, o campo `entities` dos metadados é validado **antes** e de forma estrita: mais de 10 itens, ou qualquer item com mais de 64 caracteres, com caractere de controle (espaços em branco como tab e quebra de linha não contam como controle aqui), ou que normalize para vazio, rejeita a escrita inteira com o erro de validação `invalid or oversized page metadata: entities` e nada é gravado. Os itens válidos são gravados já normalizados no frontmatter `entities`. O descarte silencioso descrito acima vale para o frontmatter de arquivos e para a saída do consolidador.
+
 ## Retirada de versões
 
 Quando a versão atual de um caminho é retirada, o mesmo instante é gravado na janela de página e na janela de vínculo, na mesma transação:

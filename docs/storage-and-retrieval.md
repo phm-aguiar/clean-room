@@ -273,9 +273,9 @@ Admissão de um evento de sessão é **uma transação**:
    de `ended_observation_count`. Caso contrário, o resultado é "já encerrada".
 4. **Chave de ingestão (opcional).** Antes da consulta, remove chaves com mais de **30 dias** (a limpeza
    é global, não por projeto). Depois consulta `(projeto, chave)`:
-   - chave já completa: `AlreadyComplete` (não insere nada);
-   - chave existente sem conclusão: `ResumePending` (retoma os efeitos sem nova observação);
-   - chave nova: grava a chave **e** a observação juntas (`Inserted`).
+   - chave já completa: resultado **já completa** (não insere nada);
+   - chave existente sem conclusão: resultado **retomar pendente** (retoma os efeitos sem nova observação);
+   - chave nova: grava a chave **e** a observação juntas (resultado **inserida**).
 5. **Movimento de diretório.** Se o evento traz um diretório de origem diferente do armazenado, a sessão
    só é realocada na primeira admissão de um evento com chave, com comparação e troca condicionais
    (compare-and-set). Redelivery não arrasta a sessão de volta. Eventos sem chave não podem provar que não
@@ -287,7 +287,7 @@ já encerrada; fim inválido de escopo; fim sem sessão.
 ### 6.2 Semântica de ingestão
 
 - `complete` marca a chave como concluída **depois** dos efeitos a jusante. A semântica é **pelo menos
-  uma vez** sob queda: se houver falha no meio, o evento pode ser retomado (`ResumePending`).
+  uma vez** sob queda: se houver falha no meio, o evento pode ser retomado (resultado "retomar pendente").
 - Encerramento com handoff: numa transação, insere o handoff automático, carimba `ended_at` e grava
   `ended_observation_count`.
 - **Poda de observações:** apaga, em lotes, observações anteriores a um instante de corte **somente** de
@@ -326,7 +326,7 @@ Função de seleção, em ordem:
 4. **Desempate:** manual vence automático; depois o mais recente; em empate de instante, entre automáticos,
    o diretório mais específico (mais longo, após normalização) vence.
 
-**Startup:** a entrega automática no início de sessão (`startup_handoff`) não oferece o batão de uma sessão
+**Startup:** a entrega automática no início de sessão não oferece o batão de uma sessão
 que ainda está aberta e que registrou observação depois de `busy_since`. Sessões encerradas e handoffs
 manuais não são afetados. A leitura manual não tem essa restrição.
 
@@ -412,7 +412,7 @@ movimento e reorganização de sessões e compactação (recuperação de págin
 - A configuração de ranking (seção 11.4) e a lista de palavras de parada são parte do handle. Clones feitos
   depois de uma alteração herdam a alteração.
 
-### 11.2 Consulta FTS segura (`prepare_fts5_query`)
+### 11.2 Preparação segura da consulta FTS
 
 Entrada: texto livre de usuário ou agente, mais a lista de palavras de parada ativa. Objetivo: **nunca**
 produzir erro de consulta por causa do texto.
@@ -464,7 +464,7 @@ esses tokens brutos.
 7. Consulta vazia (só espaços), ou sem nenhum termo depois do tratamento, devolve texto vazio. O
    chamador deve pular a consulta nesse caso.
 
-### 11.3 Busca híbrida (`hybrid_search`)
+### 11.3 Busca híbrida
 
 **Entradas:** workspace, projeto, texto da consulta, vetor da consulta (opcional), provedor, modelo,
 dimensão, limite, instante de corte de expiração e flag de incluir versões superseded.
@@ -480,7 +480,12 @@ Com limite 0, a janela é 0. A janela é larga porque a autoridade é aplicada *
   marcas `<mark>` e `</mark>`, reticências `…` e janela de **24** tokens. Cada candidato traz também o
   que a autoridade precisa (seção 11.5).
 - **Entidades:** a consulta é tokenizada. Tokens com **3 a 64** caracteres, no máximo **12** tokens, sem
-  repetição. Termos compostos com `-` ou `_` também geram suas partes. Um token casa uma entidade se o nome
+  repetição. Termos compostos com `-` ou `_` também geram suas partes. Tokenização exata (referência
+  3.1.1): a consulta é cortada em todo caractere que não seja alfanumérico Unicode, `-` ou `_`; cada pedaço
+  perde `-` e `_` das pontas e é descartado se ficar vazio; o tamanho (3 a 64, em caracteres Unicode) é
+  medido antes da conversão para minúsculas, que é a Unicode completa; um token fora do tamanho é só
+  pulado (não encerra a lista). O token composto entra primeiro, depois cada parte (cortada em `-` e `_`),
+  sob as mesmas regras; ao chegar a 12 tokens distintos, a tokenização para. Um token casa uma entidade se o nome
   é igual, começa com o token, ou contém o token logo após espaço, `-` ou `_`. O peso de cada página é a
   soma de `1 / freq` por entidade casada, onde `freq` é o número de páginas correntes do projeto que têm
   essa entidade (frequência inversa). Ordem: peso desc., número de casamentos desc., caminho asc.
@@ -520,6 +525,22 @@ trecho, o trecho mostrado é o da observação e, quando a página não tinha t�
 
 **Passo 4: títulos.** Páginas que chegaram sem título (somente pelo vetor, ou por voto sem trecho)
 recebem título e descritor. O descritor não substitui um trecho de observação já escolhido.
+
+**Descritor da página** (trecho de quem não veio da FTS: vetor, entidades, grafo e listas por recência,
+que não têm termo casado para centrar o `snippet`). Conferido na referência 3.1.1:
+
+1. Matéria-prima: o `summary` do frontmatter, se existe e não fica vazio depois de aparado; senão, os
+   primeiros **600** caracteres do corpo.
+2. Percorre as linhas (cada uma aparada) e **pula**: linha vazia; linha que começa com `#`; linha que
+   começa com `---`, `___` ou `***`; linha de metadado no formato `- **chave:** valor` (começa com `- **`
+   e contém `:**`).
+3. Tira um marcador de lista do começo (`- `, `* `, `+ ` ou dígitos seguidos de `. `). Se sobra vazio, pula.
+4. Pula a linha que só repete o título: se o título (aparado) termina com reticências `…`, compara pelo
+   prefixo (sem as reticências); senão, por igualdade exata.
+5. Junta as linhas restantes com um espaço, enquanto couberem em **240** caracteres (a linha que
+   estouraria o orçamento encerra a montagem; a primeira linha sempre entra).
+6. Se nada sobrou, usa a matéria-prima inteira aparada. Em ambos os casos, texto com mais de 240
+   caracteres é cortado em 239 caracteres mais `…` (contagem em caracteres Unicode, nunca no meio de um).
 
 **Passo 5: autoridade.** Cada página recebe um fator de autoridade, limitado a **[0.55, 1.50]**.
 Os ajustes são somados a partir de 1.0 (ver tabela na seção 11.5). Os dados de autoridade das páginas
@@ -693,11 +714,16 @@ breadth   = 1 + breadth_weight · ln_1p(max(distinct_actors, 1) − 1)
   ficam fora dessa varredura.
 - Páginas fixadas (coluna `pinned` ou `pinned: true` no frontmatter) são isentas.
 - A evicção cria tombstone. Tombstones mais antigos que `hard_delete_after_days` são removidos definitivamente.
-- Páginas com `expires_at` vencido passam por uma varredura de TTL, independente do tier e da fixação.
-- Isenção de páginas em `_slots/` da evicção por retenção: **a confirmar** (no código verificado, a isenção
-  é por fixação).
-- Comportamento de páginas *working* ao fim da sessão: **a confirmar** (não há regra de fim de sessão para
-  esse tier no código de armazenamento verificado).
+- Páginas com `expires_at` vencido passam por uma varredura de TTL, independente do tier e da fixação. A
+  varredura de TTL **remove de vez** pela camada da wiki (arquivo e linhas de todas as versões, como a
+  exclusão da seção 5.2), sem tombstone: uma expiração explícita vale mais que uma fixação.
+- Páginas em `_slots/`: a varredura **não** olha o caminho. Elas só ficam fora da evicção por serem
+  fixadas (e, na prática, por não serem `episodic`). Um slot `episodic` e não fixado seria candidato como
+  qualquer outra página. (Conferido na referência 3.1.1.)
+- Páginas *working*: **não existe** regra de fim de sessão para esse tier. Elas não são promovidas,
+  removidas nem rebaixadas quando a sessão termina, e ficam fora da evicção por retenção como semantic e
+  procedural; só o TTL (`expires_at`) as remove. O tier `working` participa apenas do ranking (seção 11.5)
+  e da taxa de meia-vida por tier. (Conferido na referência 3.1.1.)
 
 Ver também [envelhecimento de memória](design-memory-aging.md).
 
@@ -735,7 +761,7 @@ Propriedades:
 
 ### 14.1 Resolução de escopo
 
-`ScopeResolver`, por requisição, só empresta handles. Funções auxiliares: buscar escopo existente sem criar,
+O resolvedor de escopo é criado por requisição e só empresta os acessos ao banco. Funções auxiliares: buscar escopo existente sem criar,
 criar escopo explícito e criar escopo global.
 
 Nomes de workspace e de projeto recebidos são **aparados**; texto vazio depois de aparado conta como
@@ -748,9 +774,9 @@ escrita) é o da operação, não o formato dos argumentos.
 
 | Argumentos | Resultado |
 |---|---|
-| workspace e projeto | Procura o workspace pelo nome e o projeto pelo nome dentro dele. Se não acha e o projeto é um rótulo `ws/proj`, tenta esse par; se o par também falha, devolve o erro da primeira tentativa. Inexistente: erro de **não encontrado**. Origem: `Explicit`. |
+| workspace e projeto | Procura o workspace pelo nome e o projeto pelo nome dentro dele. Se não acha e o projeto é um rótulo `ws/proj`, tenta esse par; se o par também falha, devolve o erro da primeira tentativa. Inexistente: erro de **não encontrado**. Origem: `explicit`. |
 | só workspace | Erro de entrada: workspace e projeto precisam vir juntos. |
-| só projeto | Procura o projeto no workspace do ponteiro de projeto ativo do chamador; se não acha (ou não há ponteiro), no workspace padrão do servidor. Nenhum dos dois: erro de projeto não encontrado no workspace ativo nem no padrão. Origem: `Explicit`. |
+| só projeto | Procura o projeto no workspace do ponteiro de projeto ativo do chamador; se não acha (ou não há ponteiro), no workspace padrão do servidor. Nenhum dos dois: erro de projeto não encontrado no workspace ativo nem no padrão. Origem: `explicit`. |
 | nenhum | Usa o projeto do ponteiro de leitura do chamador. Sem ponteiro, usa o projeto padrão do servidor. **Nunca falha** por falta de escopo. A origem diz de onde veio (tabela de origens abaixo). |
 
 O ponteiro de leitura inclui, além do ponteiro do chamador, a **semente de startup** (o projeto
@@ -768,13 +794,13 @@ escrita não inclui a semente.
 
 Toda resolução passa pela autorização por projeto (seção 14.2). Uma recusa vira erro de **proibido**.
 
-- **Origem da resolução** (`ScopeSource`), com o texto usado nos avisos: `Explicit` (`explicit`),
-  `Session` (`session`), `SharedSlot` (`shared_slot`), `StartupSeed` (`startup_seed`), `Default`
-  (`default`) e `DefaultAfterMismatch` (`default_after_mismatch`). São "fallback" a semente de startup e o
+- **Origem da resolução**, com o texto usado nos avisos e no campo `resolved_by`: explícita (`explicit`),
+  sessão (`session`), slot compartilhado (`shared_slot`), semente de startup (`startup_seed`), padrão
+  (`default`) e padrão após divergência (`default_after_mismatch`). São "fallback" a semente de startup e o
   padrão após divergência. São "inferidas" todas, exceto explícita e sessão. Na leitura sem argumentos, a
-  origem vem do ponteiro: ponteiro de sessão → `Session`, slot compartilhado → `SharedSlot`, semente →
-  `StartupSeed`, ponteiro divergente → `DefaultAfterMismatch` (e o escopo usado é o padrão), sem ponteiro
-  → `Default`.
+  origem vem do ponteiro: ponteiro de sessão → `session`, slot compartilhado → `shared_slot`, semente →
+  `startup_seed`, ponteiro divergente → `default_after_mismatch` (e o escopo usado é o padrão), sem ponteiro
+  → `default`.
 - Erros de escopo se dividem em **entrada inválida** (equivalente a 400: par incompleto, nome ambíguo,
   escrita ambígua, entradas vazias numa lista de escopos, lista acima do máximo), **não encontrado**
   (equivalente a 404) e **proibido** (equivalente a 403).
@@ -859,7 +885,7 @@ Estados: `pending → running → completed | failed | superseded`.
 - **Reconciliação manual:** marca como concluídos os jobs de uma sessão que estão `failed`, `pending` ou
   `superseded`, sem tocar em job `running` (lease vivo).
 
-Limite de tentativas: **5** (`SESSION_CONSOLIDATION_MAX_ATTEMPTS`).
+Limite de tentativas: **5**.
 
 ---
 
@@ -877,8 +903,8 @@ Limite de tentativas: **5** (`SESSION_CONSOLIDATION_MAX_ATTEMPTS`).
 - **Eventos:** histórico de status append-only (`staged`, `approved`, `rejected`, `failed`, `conflict`).
 - **Rejeições:** normalizadas com impressão digital insensível a espaço e caixa, para telemetria detectar a
   mesma rejeição repetida.
-- **Agendador:** marca d'água por projeto e claims por sessão. Cada sessão tem no máximo **3** tentativas
-  (`AUTO_IMPROVE_CLAIM_MAX_ATTEMPTS`). Isso evita reprocessamento eterno. As claims tornam o revisor
+- **Agendador:** marca d'água por projeto e claims por sessão. Cada sessão tem no máximo **3** tentativas.
+  Isso evita reprocessamento eterno. As claims tornam o revisor
   idempotente entre reinicializações.
 
 Ver [loop de auto-melhoria](auto-improvement-loop.md) e [gates de avaliação](auto-improve-eval-gates.md).
@@ -938,6 +964,26 @@ Categorias de erro de armazenamento. O conjunto é **aberto**: clientes devem tr
   (workspace, projeto ou workstream), **nome de projeto ambíguo**, **workspace não vazio**, **sessão purgada**,
   **execução gerenciada ativa**, **workstream ocupado** e **duplicado**;
 - **erro do domínio de memória**, encapsulado.
+
+**Textos literais** das categorias do núcleo (referência 3.1.1; `<…>` é o valor inserido). Clientes não
+devem casar por texto, mas logs, testes de contrato e mensagens ao operador usam estes:
+
+| Categoria | Texto |
+|---|---|
+| Schema à frente | `memory database schema is newer than this ai-memory build: the store has migration <V<n> (<nome>)> applied, but this build only ships migrations through V<maior>. Run an ai-memory release at least as new as the one that wrote this data; a newer store cannot be opened by an older binary.` |
+| Escritor fechado | `writer actor is no longer running` |
+| Leitor fechado | `read connection pool is closed` |
+| Colisão de sessão | `session collision` |
+| Pânico no pool | `reader pool task did not complete: <detalhe>` |
+| Colisão de caminho de página | `page path '<pedido>' collides with existing page '<existente>': they differ only in case or Unicode normalization, so a case-insensitive or normalizing filesystem (macOS, Windows) stores both at one file and this write would destroy the other page. Choose a distinct path, or delete/rename the existing page first.` |
+| Caminho já ocupado no destino (mover sessão) | `page path '<caminho>' already has a latest version in the destination scope` |
+| Não encontrado | `not found: <detalhe>` |
+| Sessão purgada | `session <id> was purged and cannot be recreated` |
+| Nome de projeto ocupado / ambíguo / inválido | `project name '<nome>' is already taken in this workspace` / `project name '<nome>' is ambiguous in this workspace<detentores>` / `invalid project name: <detalhe>` |
+| Nome de workspace ocupado / inválido | `workspace name '<nome>' is already taken` / `invalid workspace name: <detalhe>` |
+| Workspace não vazio | `workspace still has <n> project(s); pass force to delete anyway` |
+| Proibido / estado inválido / registro malformado / duplicado | `forbidden: <motivo>` / `invalid state: <detalhe>` / `malformed record: <detalhe>` / `duplicate: <detalhe>` |
+| Banco, migração, serialização, sistema | `sqlite: <erro>` / `migration: <erro>` / `serde: <erro>` / `os error: <detalhe>`; erro de E/S e do domínio passam o texto original sem prefixo |
 
 ---
 

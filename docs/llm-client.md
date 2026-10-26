@@ -484,7 +484,7 @@ Regras complementares:
   - status HTTP e mensagem do último erro.
 - **Mensagem de erro:** é o texto do erro, truncado a 1024 **caracteres** (não bytes), com `...` (três pontos ASCII) acrescentado quando há corte. Para erro de provedor, a mensagem é o corpo já redigido e cortado do §3.3; para os demais, o texto de exibição do §3.1. A última chamada define o estado: um sucesso põe `ok` e **apaga** instante, status e mensagem do último erro; um erro põe `error` e guarda instante, status (quando existe) e mensagem. O instante da última chamada, do último sucesso e do último erro usam o relógio do processo (UTC, formato RFC 3339).
 - **Dica de nova tentativa:** para o papel de chat, o servidor monta o texto `ai-memory llm-test --provider <provedor> --model <modelo>[ --base-url <base>] --prompt ping` (provedor, modelo e base do **primário**), exibido apenas enquanto o status é `error`.
-- **Papel de embedding:** é registrado por `embed`, `embed_document` e `embed_query`; a dimensão é a configurada. O rótulo de provedor e o modelo mostrados são os da configuração (`embedding_model`, o nome de fio), não a identidade com sufixo de prefixo.
+- **Papel de embedding:** é registrado pelas operações de embedding genérico, de documento e de consulta; a dimensão é a configurada. O rótulo de provedor e o modelo mostrados são os da configuração (`embedding_model`, o nome de fio), não a identidade com sufixo de prefixo.
 - **Candidatos do fallback:** para cada candidato, na ordem de declaração, o estado traz: marca de último selecionado; instantes de sucesso e de erro; status HTTP e classe do último erro; e `circuit_open_until`, preenchido só enquanto o instante ainda está no futuro. Esses dados contêm apenas rótulos, status, classe e instantes, nunca corpo ou segredo.
 - **Consumidores:** o status administrativo e o status da CLI.
 - **Escopo:** o estado é do processo e se perde ao reiniciar.
@@ -501,11 +501,11 @@ Um embedder expõe:
 - nome do modelo, exatamente como enviado;
 - identidade do modelo para documentos (é o próprio nome, exceto quando há prefixo de documento);
 - dimensão;
-- `embed`, que devolve um vetor unitário; `embed_document` e `embed_query`, que por padrão chamam `embed` (o Google sobrescreve `embed` para ser igual a `embed_document`; `openai` e `openai-compat` aplicam prefixos nas duas variantes, §8.4).
+- embedding genérico, que devolve um vetor unitário; embedding de documento e embedding de consulta, que por padrão equivalem ao genérico (no Google o genérico é igual ao de documento; `openai` e `openai-compat` aplicam prefixos nas duas variantes, §8.4).
 
 Vetores unitários fazem do produto escalar a similaridade de cosseno. Vetores são sequências de `float32`; a armazenagem é de 4 bytes por valor em ordem little-endian (ver [vector-backend-policy](vector-backend-policy.md)).
 
-**Consulta de busca:** toda superfície de busca transforma a consulta em vetor por `embed_query` (nunca `embed`), junto com a tripla (rótulo, **identidade do modelo**, dimensão) das linhas elegíveis; se o embedder falha, registra aviso (`embedder failed; degrading search to FTS5 + entity + graph`) e a busca segue sem o fluxo vetorial.
+**Consulta de busca:** toda superfície de busca transforma a consulta em vetor pelo embedding de consulta (nunca pelo genérico), junto com a tripla (rótulo, **identidade do modelo**, dimensão) das linhas elegíveis; se o embedder falha, registra aviso (`embedder failed; degrading search to FTS5 + entity + graph`) e a busca segue sem o fluxo vetorial.
 
 **Identidade:** cada vetor é gravado com a tupla (rótulo, identidade do modelo, dimensão). Vetores com identidade diferente da configurada não entram na busca. Essa regra é contrato do consumidor do armazenamento.
 

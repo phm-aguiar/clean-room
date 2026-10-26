@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 012
-- **Status:** draft (docs e spec auditados contra o ai-memory de referência em 2026-10-19; Windows é a primeira plataforma)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (`/handoff`, MCP, marcador), 004 (manutenção e agendadores), 007 (topologia de operadores, projetos restritos)
@@ -48,17 +48,27 @@ O usuário repete as mesmas preferências em todo projeto ("sempre rode os teste
 
 ## Correções da auditoria (2026-10-19)
 Pontos em que a versão anterior desta spec, ou os docs dos quais ela dependia, divergiam do ai-memory de referência. Os docs foram corrigidos; a spec passa a exigir:
-- **Listas fixas completas** (marcadores, palavras de ação, stop words, negações, vocabulário de stack, palavras de categoria, tabelas de manifestos/extensões, rótulos de metadados ADR): `docs/design-cross-project-profile.md` Apêndice A. A task T002 não deve "decidir" listas: deve transcrevê-las.
+- **Listas fixas completas** (marcadores, palavras de ação, stop words, negações, vocabulário de stack, palavras de categoria, tabelas de manifestos/extensões, rótulos de metadados ADR): `docs/design-cross-project-profile.md` Apêndice A. A implementação não deve "decidir" listas: deve transcrevê-las.
 - **Textos literais** do resumo (título, precedência, fronteira de segurança, rodapé, dica de linha de base, variante de equipe, linha de omitidos) e do bloco do `apply`: Apêndices B e C. O orçamento é medido nesses bytes exatos.
 - **Página de entrada byte a byte** (corpo e `generated_sha`), datas em UTC, `projects` = projetos distintos do grupo (não os independentes), confiança por origem (prompt 0,5; página 0,55; stack 0,5; 0,6 se o LLM classificou).
 - **Candidatas:** identidade com `INSERT OR IGNORE`; prompts passam por "texto escrito pelo usuário" (blocos de marcação, instruções do Codex e regiões do bloco de roteamento/histórico não confiável são removidos); páginas auto-aprovadas pelo agendador de auto-melhoria nunca alimentam o perfil; stack lido dos títulos das 2000 observações mais recentes de qualquer tipo.
 - **Convergência:** ordem de agrupamento (tempo, referência, chave), Jaccard ≥ 0,5 com desempate pelo grupo mais antigo, janela de uma hora contada a partir da última ocorrência contada, "uma citação, uma entrada", páginas reclamadas, esquecidos por Jaccard e instante, caminho a partir do enunciado mais novo, regra de "mesmo veredito" por sequência de palavras.
 - **`enforced_by`:** qualquer valor que não seja ausente/nulo/texto em branco/lista vazia conta como aplicado (inclusive `false`).
 - **Flags do projeto:** só quem tem escrita grava; leitura só consegue desligar; erro de leitura desliga; `profile_digest=0` é enviado apenas pelo hook do Kimi Code depois do primeiro prompt.
-- **`profile apply`:** `--remove` independe do servidor e do `consume`; backup em `<dados>/backups/profile-apply/`; escrita atômica com nova tentativa no Windows (erros 32/33); bloco sempre com `
-`.
+- **`profile apply`:** `--remove` independe do servidor e do `consume`; backup em `<dados>/backups/profile-apply/`; escrita atômica com nova tentativa no Windows (erros 32/33); bloco sempre com `\n`.
 - **Trabalhador:** erro ao ler a topologia = multiusuário; sinais de fim de sessão são coalescidos; 1 h conta do fim da passada anterior.
 - **MCP:** `applies_to`/`enforced_by` só são aceitos em entradas de perfil; `scope: "profile"` não combina com workspace/projeto; mensagens de recusa no doc.
+
+## Correções da auditoria — segunda passada (2026-10-24)
+Fechamento da auditoria da 012 (o relatório dessa rodada não está mais em `reports/`). A spec passa a exigir também:
+- **Texto escrito pelo usuário:** bloco de marcação = texto entre `<` e o PRIMEIRO `>` com 1–64 caracteres `[A-Za-z0-9_/-]`; remoções em sequência (bloco de roteamento, depois histórico não confiável); vetores de referência em `docs/design-cross-project-profile.md` §5.1.
+- **Casos-limite do detector** (§5.1), classes Unicode (Apêndice A.11) e **vetores dourados** (Apêndice D) como testes unitários obrigatórios.
+- **Matriz adversarial** do §9.1 (B1–B20) e as **lacunas G1–G8** do original, que a implementação Go deve cobrir.
+- **Flags do projeto:** marcador resolvido envia sempre `0`/`1` (chave ausente = `1`, reativa); sem marcador, nada é enviado.
+- **`profile apply`:** ordem das verificações e mensagens exatas, UTF-8 obrigatório, BOM, erro 5 não é retentado, ACL não aplicada no Windows, delimitador órfão (reproduzir com teste de caracterização).
+- **MCP:** validação de `applies_to` (22 etiquetas, ≤16 itens, ≤32 caracteres) e `enforced_by` (texto ≤256), códigos de erro por ferramenta.
+- **Trabalhador:** só no transporte HTTP; sinal durante a espera de 30 s gera uma passada extra; `rebuild` sem exclusão mútua com o trabalhador.
+- **LLM (020):** pós-processamento do §6 (lista vazia de `applies_to` substitui a derivação; item omitido é descartado).
 
 ## Edge Cases
 - Mesma mensagem enviada a vários projetos em uma hora conta como um projeto.
@@ -70,16 +80,14 @@ Pontos em que a versão anterior desta spec, ou os docs dos quais ela dependia, 
 - **Determinismo:** a renderização não depende do relógio; o resumo é idêntico byte a byte até o perfil mudar.
 - **Segurança:** candidatos só de prompts e páginas curadas, depois do sanitizador; perfil `user` privado; perfil compartilhado colhe só de projetos não restritos em multiusuário.
 - **Tecnologia:** sem dependência nova; tabelas `profile_*` já na V01.
-- **Windows (MVP):** `
-` aceito na leitura de texto; escritas em `
-`; renomeação atômica com 5 tentativas (10–50 ms) em erro 32/33; raiz do repositório = ancestral com entrada `.git`; nomes de marcador de entrega sanitizados.
+- **Windows (MVP):** `\r\n` aceito na leitura de texto; escritas em `\n`; renomeação atômica com 5 tentativas (10–50 ms) em erro 32/33; raiz do repositório = ancestral com entrada `.git`; nomes de marcador de entrega sanitizados.
 
 ## Critérios de Sucesso
 - [ ] Regras de detecção, agrupamento, admissão e confiança do §5 cobertas por teste com textos fixos
 - [ ] Resumo estável byte a byte entre sessões com o mesmo perfil
 - [ ] Fronteiras de segurança do §9 com teste adversarial cada
 - [ ] `profile apply` com cada alvo e com `--dry-run` e `--remove`
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Colheita, detecção, agrupamento e renderização como funções puras em `domain`; o trabalhador no `cli` (boot do `serve`) lê pelo `storage` e grava pela `wiki`; o resumo e o brief entram na montagem do `/handoff` da 002 na ordem do doc.

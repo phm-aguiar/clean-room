@@ -620,7 +620,7 @@ source, so they are not verified here (a confirmar):
 - Claude Code: the external documentation lists the actions no permission mode
   auto-approves.
 
-### 9.1 Resolution of the "a confirmar" items against the reference implementation (audit 008)
+### 9.1 Resolution of the "a confirmar" items against the reference implementation
 
 Each item below was checked against the reference implementation's own source and
 tests (the original is read-only evidence). "External" means the answer lives in a

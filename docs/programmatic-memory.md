@@ -268,7 +268,7 @@ Errors for this API have the body `{"error": "<message>"}`:
 - A successful call returns a result with one text content item holding JSON.
 - A failed call returns a JSON-RPC `error` object. The codes in use are:
   - `-32602` (invalid params): bad or unknown scope, invalid path, invalid `expires_at`, `memory_read_page` with neither `path` nor `query`, and `session_id` combined with `scope` in a write.
-  - Invalid request: authorization refusals, such as admin-only tools called by a non-admin, and admission refusals.
+  - `-32600` (invalid request; code confirmed in audit 002): authorization refusals, such as admin-only tools called by a non-admin, and admission refusals.
   - `-32603` (internal error): storage or wiki failures, refusals of project access in some scope paths, and an unparseable `as_of` instant.
 - Also treat `result.isError: true` as a failure if a response carries it.
 

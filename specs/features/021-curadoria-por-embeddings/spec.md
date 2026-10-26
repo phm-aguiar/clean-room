@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 021
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 020 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 017 (vetores armazenados por tripla), 016 (provedor), 004 (varredura, conjunto frio, compactação, lint), 008 (admissão `consolidate`)
@@ -50,7 +50,7 @@ Com vetores armazenados, a manutenção pode juntar páginas frias quase duplica
 ## Critérios de Sucesso
 - [ ] Cenários 5 e 6 do `design-memory-aging.md` §12 como teste
 - [ ] Eps adaptativo e DBSCAN com testes de tabela determinísticos
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Funções puras (cosseno, eps, DBSCAN, surprisal, entropia) em `internal/domain/maintenance`, ao lado da retenção da 004; deduplicação, banda e dream na `wiki`, junto da varredura e do lint da 004; agendador do dream no `cli`; relógio de atividade no `mcp`.

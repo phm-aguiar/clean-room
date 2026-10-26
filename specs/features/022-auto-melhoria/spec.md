@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 022
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 021 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 020 (projeção de observações, sanitização de caminho, retentativa), 021 (filtro de entropia), 016 (provedor), 014 (navegador web), 008 (admissão), 007 (atores e slots por usuário), 004 (curador)
@@ -57,7 +57,7 @@ Com um provedor, o servidor revisa sessões concluídas e propõe pequenas ediç
 - [ ] Cada motivo de rejeição da tabela do doc com teste
 - [ ] Os 7 testes de aceitação do portão de avaliação
 - [ ] Teste multi-sessão da reivindicação do agendador
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Validação e materialização de patch como funções puras em `internal/domain/autoimprove`; revisão, experiência e aplicação na `wiki` (recebendo o `Provider`); registro, eventos, buffer e agendador no `storage`; portão no `cli` (processo externo); superfícies no `cli`, `mcp` e no navegador da 014.

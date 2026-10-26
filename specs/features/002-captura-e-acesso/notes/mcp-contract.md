@@ -1,43 +1,42 @@
-# Contrato das 12 tools MCP e resolução de escopo (T003)
+# Contrato das 12 tools MCP e resolução de escopo
 
-Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-captura-e-acesso/spec.md` e `plan.md`. Onde o doc é omisso, o texto marca **decisão nossa**. Siglas: MS = `docs/mcp-server.md`; AR = `docs/architecture.md` (seção "MCP tool surface"); SR = `docs/storage-and-retrieval.md`; DV = `docs/domain-vocabulary.md`; HO = `docs/design-handoff-offer-not-claim.md`; DD = `docs/design-decisions.md`.
+Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-captura-e-acesso/spec.md`. Em toda dúvida vale o comportamento do original. Siglas: MS = `docs/mcp-server.md`; AR = `docs/architecture.md` (seção "MCP tool surface"); SR = `docs/storage-and-retrieval.md`; DV = `docs/domain-vocabulary.md`; HO = `docs/design-handoff-offer-not-claim.md`; DD = `docs/design-decisions.md`.
 
-## 0. Divergências entre fontes (atenção do Analyst)
+## 0. Escopo
 
-- MS §1 e cabeçalho dizem "23 ferramentas". AR diz "20 tools" no título, mas a tabela lista 22 linhas. A contagem não é consistente nos docs. A 002 implementa um **subconjunto de 12** (spec.md "Dentro do escopo", linha das tools; plan.md §2.3). Ficam **fora** da 002: `memory_feedback`, `memory_forget_sweep`, `memory_lint`, `memory_install_self_routing`, `memory_explore`, `memory_consolidate`, `memory_auto_improve`, `memory_message_*` (4) (spec.md "Fora do escopo"; plan.md §6 "O que não construir").
-- O doc usa `memory_handoff` como 4 tools separadas (AR; MS §3.3; HO §7). O plano já alinhou (plan.md linha 15; spec.md tabela de divergências, item 1).
-- Algumas respostas só aparecem no doc com "a confirmar" (marcadas abaixo).
+- O servidor do original tem **24** ferramentas (MS §1, corrigido na auditoria de 2026-10-25). A 002 implementa um **subconjunto de 12** (spec.md "Dentro do escopo"). Ficam **fora** da 002: `memory_feedback`, `memory_forget_sweep`, `memory_lint`, `memory_install_self_routing`, `memory_explore`, `memory_consolidate`, `memory_auto_improve`, `memory_restore_page`, `memory_message_*` (spec.md "Fora do escopo").
+- O handoff são 4 tools separadas (AR; MS §3.3; HO §7).
+- Os contratos abaixo resumem MS §3; onde divergirem, vale o doc.
 
-## 1. Princípios do servidor (MS §1, §2; plan.md §2.3, Q-07)
+## 1. Princípios do servidor (MS §1, §2)
 
-- Protocolo MCP fixo em **2024-11-05**; nome do servidor `ai-memory`; capacidade `tools`; o servidor anuncia instruções de uso (MS §1). Se o `mcp-go` não permitir fixar a versão, a primeira task de MCP registra ADR (plan.md Q-07).
-- Transportes: stdio (padrão) e HTTP streamable sem estado, resposta JSON, em `POST /mcp` (plan.md §2.2 e Q-07). Autenticação Bearer; sessão web nunca autentica `/mcp` (MS §4.3, §5).
+- Protocolo MCP fixo em **2024-11-05**, qualquer que seja a versão pedida pelo cliente; nome do servidor `ai-memory`; capacidade `tools`; o servidor anuncia instruções de uso (MS §1). O SDK escolhido não pode mudar esse comportamento.
+- Transportes: stdio (padrão) e HTTP streamable sem estado por padrão, resposta JSON, em `POST /mcp`; com `--http-stateful` há sessão (MS; `docs/api-reference.md`). Autenticação Bearer; sessão web nunca autentica `/mcp` (MS §4.3, §5).
 - Identidade vem só do contexto da requisição, preenchido pelo middleware de autenticação, nunca de cabeçalho cru no handler. Não usar variáveis associadas à tarefa, porque a lib MCP roda cada tool em tarefa separada (MS §1).
 - Escopo sempre pelo resolvedor de escopo; leitura não cria e falha fechado; escrita pode criar workspace e projeto nomeados (MS §1).
-- **Ponto único de chamada de tool** registra atividade do cliente e alimenta o relógio de atividade do ciclo de sonho (MS §1). Na 002 não há dream pass; **decisão nossa**: manter o ponto único (wrapper) e registrar a atividade só se a 001 já tiver o armazenamento (`client_activity`); caso contrário, deixar fora, sem stub (plan.md §6).
-- Schemas das tools gerados pelo `mcp-go` a partir das structs de argumento (plan.md §1, "Geração de Código"). Dialetos `?flavor=` ficam **fora** (plan.md §6).
-- Toda escrita de página passa pelo caminho único da wiki (sanitização, admissão, atribuição, rollback, índice) (MS §1). Na 002 não há cadeia de admissão (plan.md linha 6).
-- O pacote `mcp` não importa `ingest` em produção; ponteiro de projeto ativo, seleção e reivindicação de handoff moram em `storage` (plan.md §1, Q-05, Q-06).
-- Sem `panic`: pânico em handler vira erro de tool, sem derrubar o servidor (plan.md checklist, linha 223).
+- **Ponto único de chamada de tool** registra atividade do cliente (`last_client_activity` em memória) e alimenta o relógio de atividade do ciclo de sonho (MS §1), como no original.
+- Dialetos de schema `?flavor=` ficam para a feature que os expõe; os schemas seguem MS §3.
+- Toda escrita de página passa pelo caminho único da wiki (sanitização, admissão, atribuição, rollback, índice) (MS §1). A cadeia de admissão é da feature 008.
+- O pacote `mcp` não importa `ingest` em produção (convenção futura de pacotes Go).
 
 ## 2. Resolução de escopo e chave do ator
 
-### 2.1 Chave do ator (MS §2.1; DV §9.3, §8.4; plan.md §2.3)
+### 2.1 Chave do ator (MS §2.1; DV §9.3, §8.4)
 
-- Chave do ator = (usuário, id de sessão). O "usuário" é a **chave de identidade** de armazenamento (DV §8.4): `user:<nome>` ou `oidc:<len emissor>:<emissor><sujeito>`. Na 002 só existe o ator anônimo ou o do token único, então o usuário é vazio ou `user:<nome>` (**decisão nossa**: multiusuário/OIDC fora do escopo, plan.md linha 6).
-- Id de sessão, nesta ordem (MS §2.1; plan.md §2.3): (1) contexto de transporte; (2) cabeçalho `x-memory-actor-session-id`; (3) id de sessão nativo; (4) cabeçalho `mcp-session-id`.
+- Chave do ator = (usuário, id de sessão). O "usuário" é a **chave de identidade** de armazenamento (DV §8.4): `user:<nome>` ou `oidc:<len emissor>:<emissor><sujeito>`. Multiusuário e OIDC são das features 007 e 009.
+- Id de sessão, nesta ordem (MS §2.1): (1) contexto de transporte; (2) cabeçalho `x-memory-actor-session-id`; (3) id de sessão nativo; (4) cabeçalho `mcp-session-id`.
 - O roteador de hooks precisa usar a **mesma regra**; senão leituras e escritas do mesmo operador caem em slots diferentes (MS §2.1).
 - Chave vazia (sem usuário nem sessão) usa o slot compartilhado (DV §9.1, §9.3).
 
-### 2.2 Ponteiro de projeto ativo (DV §9; plan.md Q-06, §2.4)
+### 2.2 Ponteiro de projeto ativo (DV §9; `docs/auto-scope.md`)
 
-- Modos: `single`, `per_session`, `per_actor` (**padrão**) (DV §9.1). Na 002: `per_actor` padrão; `single` e `per_session` por configuração (plan.md Q-06).
-- Cada entrada guarda projeto resolvido, preferência `default_global` e instante de inserção. TTL **1 h**; teto **4096** entradas, removendo as mais antigas; expiradas removidas na leitura e na escrita (DV §9.3).
+- Modos: `single`, `per_session`, `per_actor` (**padrão**) (DV §9.1).
+- Cada entrada guarda projeto resolvido, preferência `default_global` e instante de inserção. TTL **1 h**; teto **4096** entradas, removendo as mais antigas; expiradas removidas na leitura e na escrita (DV §9.3). Não há limite de tamanho das chaves, como no original (auto-scope.md).
 - Marca "ponteiro ativo" (alguma entrada já publicada) nunca é apagada (DV §9.4).
 - Consulta de escrita `Lookup` devolve `Resolved | Mismatch | Unset`. `Mismatch` = chamador tem coordenada, ponteiro ativo e nada casou; **nunca** responde com o slot de outra sessão, falha fechada (DV §9.4).
 - Consulta de leitura `Read` devolve origem: `Session`, `SharedSlot`, `StartupSeed`, mais `Mismatch` e `Unset` (DV §9.4).
 - A semente de startup (`--project`) é **só para leitura**; nunca grava (DV §9.4).
-- Hooks (início de sessão, prompt, pré-ferramenta) avançam o ponteiro; eventos de conclusão só atualizam a entrada exata do ator (plan.md Q-06).
+- Hooks (início de sessão, prompt, pré-ferramenta) avançam o ponteiro; eventos de conclusão só atualizam a entrada exata do ator (`docs/auto-scope.md`).
 
 ### 2.3 `ScopeSource` (SR §14.1; DD §11; MS §2.1; AR `memory_status`)
 
@@ -88,32 +87,32 @@ Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-capt
 - **Resposta:** `{workspace, project, counts, activity, rules, pinned?, settled?, slots, recent_pages, scope, warnings}` (`pinned` ≤ 10 excluindo `_slots/*`; `settled` ≤ 8 quando `settled_first=true`).
 
 ### 3.7 `memory_handoff_list` (leitura) — MS §3.3
-- **Argumentos:** `workspace`, `project`, `state` (`open|accepted|expired|all`, padrão `open`), `limit` (padrão 20, clamp 1..100), `all_owners` (bool, só administrador: `-32600` se não admin).
-- **Resposta:** `{handoffs, scope, warnings}` ordenado por `created_at DESC`.
+- **Argumentos:** `workspace`, `project`, `state` (`open|accepted|expired|all`, padrão `open`), `limit` (padrão 20, clamp 1..100), `any_owner` (bool, só administrador: `-32600` se não admin).
+- **Resposta:** `{handoffs: [...]}` ordenado por `created_at DESC` (MS §3.3).
 
 ### 3.8 `memory_write_page` (escrita) — MS §3.3
 - **Argumentos:** `path`, `body` (alias `content`), `title`, `tier` (padrão `"episodic"`), `tags`, `pinned`, `expires_at`, `session_id`, `expected_page_id` (`-32600` em divergência), `create_only` (`-32600` se já existir), campos OKF (`kind`, `entities`, `abstract`, `relations`, `applies_to`, `enforced_by`), `workspace`, `project`, `scope` (`"global"` ou `"profile"`).
-- **Commits:** tenta `pre-checkpoint before mcp write-page <path>` antes e `mcp write-page <path>` depois (falhas viram `warnings`).
-- **Resposta:** `{id, path, version, superseded_id, pre_checkpoint, checkpoint, scope, warnings}`.
+- **Commits:** tenta `pre-checkpoint before mcp write-page <path>` antes e `mcp write-page <path>` depois (falhas viram aviso).
+- **Resposta:** `{page_id, path, checkpoint}` (e `manifest_warning` opcional) (MS §3.3).
 
 ### 3.9 `memory_delete_page` (escrita) — MS §3.3
 - **Argumentos:** `path`, `expected_page_id` (opcional; `-32600` em divergência), `workspace`, `project`, `scope` (apenas `"profile"` é aceito na validação; `"global"` retorna `-32602`).
 - **Comportamento:** remove fisicamente todas as versões do caminho, limpa entidades órfãs e grava `audit_log` (`delete_page`). Sem `expected_page_id`, é idempotente e retorna sempre `deleted: true`.
-- **Resposta:** `{deleted: true, path, pre_checkpoint, checkpoint, scope, warnings}`.
+- **Resposta:** `{path, deleted: true, pre_checkpoint?, checkpoint?}` (MS §3.3). Com `expected_page_id` divergente ou página inexistente: `-32600` `precondition_failed`.
 
 ### 3.10 `memory_handoff_begin` (escrita) — MS §3.3
-- **Argumentos:** `summary` (obrigatório, ≤ 3000), `open_questions`, `next_steps` (item ≤ 1500, total ≤ 6000, ≤ 20 itens), `files_touched` (item ≤ 512, total ≤ 4096, ≤ 20 itens), `from_agent` (padrão `"mcp"`), `cwd`, `shared` (bool), `workspace`, `project`.
-- **Resposta:** `{handoff_id, state: "open", created_at, scope, warnings}`.
+- **Argumentos:** `summary` (obrigatório), `next_steps`, `open_questions`, `files_touched`, `from_agent` (padrão `"mcp"`), `to_agent`, `cwd`, `session_id`, `shared` (padrão `false`), `workspace`, `project`. Textos sanitizados e truncados com sufixo explícito, nunca rejeitados por tamanho (resumo 3000; item 1500; caminho 512; listas 6000/4096; ≤ 20 itens; sufixos literais em MS §3.3).
+- **Resposta:** `{handoff_id, created_at}`.
 
 ### 3.11 `memory_handoff_accept` (escrita) — MS §3.3
-- **Argumentos:** `handoff_id` (opcional), `cwd` (opcional), `by_agent` (padrão `"mcp"`), `by_session` (opcional), `workspace`, `project`.
-- **Comportamento:** sem `handoff_id`, seleciona com filtro de sessão viva (10 min); com `handoff_id`, busca aquele id aberto **sem** filtro de sessão viva (`busy_since = None`). Executa varredura pós-reivindicação sempre que o handoff reivindicado for automático.
-- **Resposta:** `{handoff, status: "claimed" | "consumed_by_hook" | "none_pending", scope, warnings}`.
+- **Argumentos:** `handoff_id` (opcional), `cwd` (opcional), `by_agent` (padrão `"mcp"`), `by_session` (opcional), `any_owner` (só administrador), `workspace`, `project`.
+- **Comportamento:** reivindica pelo id exato ou o melhor candidato para `cwd`, com comparação atômica; **não** aplica o filtro de 10 minutos de sessão viva (MS §3.3); executa a varredura pós-reivindicação quando reivindica um handoff automático.
+- **Resposta:** `{handoff: <objeto|null>, status: "claimed" | "consumed_by_hook" | "none_pending"}`.
 
 ### 3.12 `memory_handoff_cancel` (escrita) — MS §3.3
-- **Argumentos:** `handoff_id` (obrigatório), `all_owners` (bool, só admin), `workspace`, `project`.
-- **Resposta:** `{handoff_id, cancelled: bool, scope, warnings}`.
+- **Argumentos:** `handoff_id` (obrigatório), `any_owner` (bool, só admin), `workspace`, `project`.
+- **Resposta:** cancelado agora `{handoff_id, cancelled: true, state: "expired"}`; já fechado `{handoff_id, cancelled: false, state: "accepted" | "expired"}`; não encontrado ou invisível: erro JSON-RPC `-32603`.
 
 ## 4. Formato de erro e Autenticação HTTP (`/mcp`)
 - Erros das tools usam códigos JSON-RPC (`-32602`, `-32600`, `-32603`).
-- Autenticação Bearer em tempo constante (comparando hashes SHA-256 dos tokens); em falha, `401 Unauthorized` com `WWW-Authenticate: Bearer` e corpo JSON `{"error": "unauthorized: missing or invalid Authorization: Bearer <token> header"}`. Filtro de `Host` na camada mais externa (cobrindo inclusive `/healthz`: 400 sem `Host`, 403 para `Host` não permitido).
+- Autenticação Bearer em tempo constante (comparando hashes SHA-256 dos tokens); em falha, `401 Unauthorized` com `WWW-Authenticate: Bearer realm="ai-memory", error="invalid_token"` e corpo em texto simples `auth required` (MS §4–§6, corrigido na auditoria de 2026-10-25). Filtro de `Host` na camada mais externa (cobrindo inclusive `/healthz`: 400 sem `Host`, 403 para `Host` não permitido).

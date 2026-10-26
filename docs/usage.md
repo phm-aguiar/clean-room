@@ -79,6 +79,15 @@ fires and ai-memory writes a fresh `sessions/<id>.md` page summarising the
 session so far. After compaction, the agent can recover that summary via
 `memory_recent`, even though its raw chat history was compacted away.
 
+To get back the stretch the last compaction dropped, start a prompt with
+`reload context` (for example `reload context, then continue`). Claude Code and
+Codex receive a recap in the same turn: your prompts between the last two
+compactions, the agent's last captured reply (only with assistant capture
+enabled on both the hooks and the server), and up to five open handoffs of the
+project. Grok receives it with the next tool result. The recap never claims a
+handoff. See [lifecycle-event-ingestion.md](lifecycle-event-ingestion.md) §2.5
+and [cli.md](cli.md) §5.2 (added by audit 002).
+
 Generated session pages carry `session_id` and `agent` in their frontmatter.
 The `agent` value is the harness that originated the session (for example
 `claude-code` or `codex`), not the client or operator that later requested a
@@ -268,7 +277,7 @@ select `--skills-agent grok` so skills install under its own root.
 
 When a project keeps `AGENTS.md` as its canonical instruction file, give it a
 `CLAUDE.md` whose first line is a bare `@AGENTS.md` import. Claude Code loads
-`CLAUDE.md` (a confirmar: whether it also reads `AGENTS.md` on its own is
+`CLAUDE.md` (**depends on the external product**: whether it also reads `AGENTS.md` on its own is
 external tool behavior). A prose pointer that says "read AGENTS.md" only asks
 the agent to open the file, so adherence depends on the agent doing so.
 
@@ -462,11 +471,14 @@ To host the web UI under a URL subpath behind a reverse proxy, use the
 ## Inspect the raw wiki
 
 The wiki is plain Markdown plus git history. Each write creates a checkpoint
-commit in the wiki repository.
+commit in the wiki repository. There is one git repository at the wiki root;
+each project's pages live under `<wiki root>/<workspace id>/<project id>/`,
+named by the internal UUIDs, not by the workspace and project names
+(corrected in audit 002).
 
 ```bash
-docker exec ai-memory ls /data/wiki/sessions/
-docker exec ai-memory cat /data/wiki/sessions/<uuid>.md
+docker exec ai-memory ls /data/wiki/<workspace-id>/<project-id>/sessions/
+docker exec ai-memory cat /data/wiki/<workspace-id>/<project-id>/sessions/<uuid>.md
 
 # Open in Obsidian or any Markdown viewer:
 docker cp ai-memory:/data/wiki ./my-ai-memory-wiki

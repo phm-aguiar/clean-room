@@ -48,6 +48,14 @@ Entradas:
 a. **TTL:** remove as páginas expiradas que ainda são a última versão. O TTL remove mesmo
    páginas fixadas. A remoção é **física e apaga todas as versões do caminho** (arquivo, linhas, vínculos, embeddings), sem
    deixar marcador. O lint avisa sobre essa combinação (`pinned_expiring`), mas só antes de a página expirar.
+a'. **Deduplicação A3 de frias por agrupamento** (opt-in, desligada por padrão; depende de
+   embeddings, então fica **fora do escopo sem LLM**; sem embeddings é inerte): agrupa o mesmo
+   conjunto limitado de frias que as passadas b/c usariam (densidade mínima padrão **2**, teto de
+   distância de cosseno **0,15**; valores 0 caem nesses padrões), funde cada grupo num
+   sobrevivente cujo corpo une as palavras-chave do grupo e cita os membros, e nada é apagado
+   fisicamente (proveniência em evidências). As páginas reivindicadas pela deduplicação são
+   puladas pelas passadas seguintes. Aparece no relatório como "mescladas". Detalhes em
+   design-memory-aging.md (registrado pela auditoria 002).
 b. **Compactação A2** em lote, para as frias, quando a flag está ligada. Páginas já
    compactadas são terminais: não são recompactadas nem removidas.
 c. **Remoção por decaimento** (quando a compactação está desligada): remove a página e
@@ -134,7 +142,7 @@ Como a gravação é supersessão, repetir o lint no mesmo dia sem mudança de a
 Também a cada execução que não seja simulação são apagadas as páginas legadas `_lint/AAAA-MM-DD.md` (nome exatamente nesse formato, dígitos e hífens).
 `dry_run` não grava, não apaga e não poda nada. O lint só roda com wiki.
 
-**Ordem dos achados no resultado:** regras por página (na ordem das páginas atuais: `stale`, `rule_suggestion`, `pinned_expiring`), depois `duplicate` (ordem de grupos não especificada; recomenda-se ordenar por título), `broken_link`, `contradiction` (arestas declaradas), `feedback_flagged`, `contradiction` (faixa de similaridade, só com vetores) e, por último, os do LLM.
+**Ordem dos achados no resultado:** regras por página (na ordem das páginas atuais: `stale`, `rule_suggestion`, `pinned_expiring`), depois `duplicate` (ordem de grupos não especificada no original; reproduzir sem ordenação adicional), `broken_link`, `contradiction` (arestas declaradas), `feedback_flagged`, `contradiction` (faixa de similaridade, só com vetores) e, por último, os do LLM.
 **Páginas expiradas (`expires_at` no passado) são ignoradas por todas as regras por página.**
 
 **Achados por regra (sem LLM):**
@@ -150,12 +158,13 @@ Também a cada execução que não seja simulação são apagadas as páginas le
   O TTL prevalece na varredura. Mensagem: `Page <caminho> is pinned but carries an expires_at TTL; the forget sweep will hard-delete it when the TTL passes despite the pin. Remove one of the two.`
 - `broken_link` (warning): link (de qualquer rótulo) de página atual não expirada para outro projeto (alvo com qualificador de projeto) cujo alvo não
   resolve para página atual não expirada. Se o projeto existe: `Page <origem> links to <alvo> but that page does not exist in project `<projeto>` (missing, renamed, or deleted) — a broken cross-project dependency`;
-  se não existe: `Page <origem> links to <alvo> but project `<projeto>` does not exist (typo or wrong name)`. `<alvo>` = `[workspace/]projeto:caminho`. Ordem: origem, projeto, caminho.
+  se não existe: `Page <origem> links to <alvo> but project `<projeto>` does not exist (typo or wrong name)`. `<alvo>` = `[workspace/]projeto:caminho`. Ordem: origem, projeto, caminho. "Outro projeto" = qualquer alvo gravado **com** qualificador de projeto, inclusive um que nomeia o próprio projeto; alvos sem qualificador (mesmo projeto) nunca entram nesta regra. A existência do projeto compara nome de projeto e de workspace (workspace ausente = o da página de origem) de forma exata (sensível a maiúsculas).
 - `feedback_flagged` (warning): feedback `stale` ou `wrong` ainda anexado à versão atual não expirada; um achado por (página, sinal).
   Repete até a página ser reescrita. Mensagem: ``Page <caminho> was flagged `<sinal>` (<n> signal|signals, latest <instante ISO-8601 UTC>)`` seguida de `: <motivo mais recente>` quando houver motivo. Ordem: sinal mais recente primeiro, depois caminho, depois sinal.
 - `contradiction` (warning): aresta declarada `contradicts` de página atual não expirada. Resolvida (alvo atual e não expirado):
   `Page <origem> declares it contradicts <alvo> — reconcile them or supersede the outdated one`; não resolvida:
-  `Page <origem> declares it contradicts <alvo>, which does not resolve to a page (deleted or renamed) — the declaration is stale`. Páginas: `[origem, alvo]`. Ordem: origem, alvo.
+  `Page <origem> declares it contradicts <alvo>, which does not resolve to a page (deleted or renamed) — the declaration is stale`. Páginas: `[origem, alvo]`. Ordem: origem, alvo. `<alvo>` é só o caminho gravado do alvo, **sem** o qualificador de projeto/workspace, mesmo quando a aresta é entre projetos. O achado é de toda aresta `contradicts` de página atual não expirada do projeto, com alvo em qualquer projeto.
+- Mensagem de `duplicate`: o título entre aspas segue a convenção de escape de string (aspas e barras invertidas internas escapadas com `\`, caracteres de controle como `\n`/`\t`/`\u{..}`).
 - `contradiction` (info, faixa de similaridade): ver o documento de envelhecimento §9; só no lint pedido pelo usuário e com vetores.
 
 ### 3.2 Curador

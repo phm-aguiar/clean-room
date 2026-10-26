@@ -111,8 +111,24 @@ Creation is limited to explicit write paths:
 
 - Read, search, maintenance, retention, embedding, and destructive paths use
   find-only lookups. They never create a workspace or a project, so a typo does
-  not produce an empty scope. A full list of which operations use which lookup
-  is a confirmar.
+  not produce an empty scope. Full list (confirmed in audit 002 for the MCP tools):
+  - **May create** (write-target resolution): `memory_write_page` (also via
+    `memory_restore_page`, which resolves first without creating and then writes
+    into that resolved scope) and `memory_handoff_begin`. Outside MCP, hook
+    ingestion and `POST /workstream/runs` also create the workspace and project.
+  - **Find-only, read access**: `memory_query`, `memory_recent`,
+    `memory_read_page`, `memory_read_session_observations`, `memory_handoff_list`,
+    `memory_message_list`, `memory_status`, `memory_briefing`, `memory_explore`,
+    `memory_consolidate` (session lookup), and the sender side of
+    `memory_message_send`.
+  - **Find-only, write access** (mutate something that must already exist):
+    `memory_feedback`, `memory_forget_sweep`, `memory_lint`,
+    `memory_auto_improve`, `memory_delete_page`, `memory_restore_page`,
+    `memory_handoff_accept`, `memory_handoff_cancel`, `memory_message_pop`,
+    `memory_message_cancel`, and the recipient side of `memory_message_send`.
+  - `memory_install_self_routing` resolves no scope.
+  An unscoped call resolved by a fallback (not by a hook session) is logged as a
+  warning.
 - Explicit write paths may create a missing workspace and project. A
   `workspace/project` label never creates anything.
 
@@ -178,7 +194,7 @@ else's session.
 Lifecycle hooks already include the agent-run session id in their payloads. MCP
 tool calls are separate HTTP requests. Static MCP configuration usually declares
 only a fixed URL and fixed headers, so it cannot send the current session id on
-every call. Whether a given client can add headers per request is a confirmar
+every call. Whether a given client can add headers per request **depends on the external product**
 for each client.
 
 Claude Code can opt into a session-aware stdio bridge:
@@ -198,11 +214,11 @@ Claude Code details that affect session keys:
 
 - The stdio subprocess keeps the session id it received at startup across
   `/clear`, while later hooks receive the new id. Restart Claude Code after
-  `/clear` when exact session continuity matters. The exact behavior is a
-  confirmar against the client version in use.
+  `/clear` when exact session continuity matters. The exact behavior **depends on the external product**
+  (check the client version in use).
 - On `--continue` or `--resume` without an explicit id, the subprocess may keep
   the startup id instead of the resumed one. Prefer `--resume <session-id>` for
-  explicit resumes. This is a confirmar against the client version in use.
+  explicit resumes. This **depends on the external product** (check the client version in use).
 
 Use `per_session` only when the client or bridge sends the same session id from
 the hook payload on every MCP request, as `X-Memory-Actor-Session-Id` (preferred)
@@ -307,8 +323,13 @@ running server uses.
 Each keyed entry stores a project id, a workspace id, a default-global flag, and
 an insertion time. Its key stores two strings: the identity and the session id.
 The size of the two strings is not limited by the code reviewed, so the total
-memory depends on them. The default cap is 4096 entries. The expected total for
-a large installation is a confirmar.
+memory depends on them. The default cap is 4096 entries. (Audit 002: confirmed
+that no application-level length limit applies to the actor identity or to the
+`X-Memory-Actor-Session-Id` value; they are only trimmed, and an empty value
+counts as absent. The only bound is the HTTP server's own header-size limit, so
+the worst case is roughly 4096 × two header-sized strings. Original behavior,
+reproduce as is: no length cap on these strings. The default per-key lifetime
+is 1 hour.)
 
 Expired entries are removed on every read and write. The cap removes the oldest
 insertions first when the map is full.

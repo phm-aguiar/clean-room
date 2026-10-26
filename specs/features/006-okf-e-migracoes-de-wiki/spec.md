@@ -2,10 +2,10 @@
 
 ## Metadados
 - **ID:** 006
-- **Status:** draft (revisada contra os docs em 2026-10-13; **auditada contra o comportamento do original e corrigida em 2026-10-19** — `okf.md` atualizado; `plan.md` e `tasks.md` precisam ser regenerados)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
-- **Feature Anterior:** 002 (conformidade OKF na escrita: 002/T090 e T091; servidor e rotas administrativas)
+- **Feature Anterior:** 002 (conformidade OKF na escrita; servidor e rotas administrativas)
 - **Roadmap:** `specs/features/roadmap.md`
 - **Aprovado:** false
 
@@ -28,7 +28,7 @@ A memória precisa ser portável para fora do ai-memory: um pacote de projeto em
 ### Fora do escopo (explicitamente)
 - Diálogo de aviso na página inicial web (feature 014).
 - Comando de importação: não existe no doc; desempacotar e reindexar.
-- Conformidade OKF na escrita (feita na 002, T090 e T091).
+- Conformidade OKF na escrita (feature 002).
 
 ## Comportamento Esperado
 
@@ -51,7 +51,7 @@ A memória precisa ser portável para fora do ai-memory: um pacote de projeto em
 - **Links para outro projeto ou workspace:** ficam `[[...]]` literal no pacote; código cercado e inline não é alterado; destino inexprimível vai entre `<...>` ou fica literal.
 
 ## Constraints
-- **Tecnologia:** `archive/tar` e `compress/gzip` da stdlib; `AI_MEMORY_BACKUP_DIR` lido por `internal/config` (INV-01).
+- **Tecnologia:** `archive/tar` e `compress/gzip` da stdlib; `AI_MEMORY_BACKUP_DIR` lido pelo pacote de configuração (INV-01).
 - **Segurança:** cópia falha diante de link simbólico ou ponto de reparse; destino da cópia nunca é a raiz do diretório de dados.
 - **Ordem de boot:** trava de instância única → cópia prévia → abertura do banco e backfills → saneamento/credenciais → migrações da wiki → manifestos `_meta.md` → reparo de `stale_after` → checkpoint de linha de base → watcher (`docs/okf.md`, `docs/wiki-migrations.md` § "Quando roda").
 - **Windows:** a trava exclusiva do servidor impede ler `.serve.lock*`; a cópia os pula por nome. Caminhos de erro de exportação saem com `\`. `AI_MEMORY_BACKUP_DIR` vazio vale como ausente na migração, mas não na cópia prévia (replicar a diferença, como no original).
@@ -60,13 +60,13 @@ A memória precisa ser portável para fora do ai-memory: um pacote de projeto em
 - [ ] As propriedades de `docs/okf.md` § Verificação (ida e volta, conformidade, sem churn, idempotência, trava da cópia, exportação) passam como teste, exceto a do aviso web e a do benchmark
 - [ ] Cada migração tem teste de pré-condição, pós-condição e reexecução sem efeito (`docs/wiki-migrations.md`)
 - [ ] Recusa de formato mais novo testada
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Executor e migração no pacote `wiki`, chamados pelo `serve` na ordem do doc; a cópia prévia roda no `cli` antes de abrir o banco. A exportação é uma rota administrativa que lê a árvore do projeto, valida e monta o tarball em memória de fluxo, sem alterar a wiki.
 
 ## Dependências
-- 002: conformidade OKF na escrita (T090, T091), escritas rastreadas e commit (T080), servidor e `/admin/*`, reconhecimento de ledger (T022), boot do `serve` (T042), `.serve.lock` (T040).
+- 002: conformidade OKF na escrita, escritas rastreadas e commit, servidor e `/admin/*`, reconhecimento de ledger, boot do `serve`, `.serve.lock`.
 - `docs/okf.md`, `docs/wiki-migrations.md`, `docs/wiki-files-layer.md` §10, `docs/complementary-contracts.md` §4.
 
 ## Checklist de Prontidão
@@ -77,3 +77,11 @@ Executor e migração no pacote `wiki`, chamados pelo `serve` na ordem do doc; a
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria 012 (Chinese Wall, contra o código original). Relatório: `reports/012-auditoria-006-007-009.md`.
+
+- `docs/wiki-migrations.md`: acrescentados o nome registrado e a descrição literal da migração OKF, a inspeção de confinamento prévia (link simbólico ou reparse point, inclusive junção no Windows, é erro), o texto literal da recusa de formato mais novo, as mensagens de log do executor e o `applied_at = 0` com relógio antes da época.
+- `docs/okf.md`: frontmatter que não é mapeamento vira mapeamento vazio antes da conformidade; chaves de origem só contam quando são texto; `generated` mapeamento sem `by` recebe `by` preservando as demais chaves.
+- Verificados sem divergência: versão `0.2`, tabela de famílias→`type`, precedência `kind`/`slot_kind`, `sources`/`author: process:<agent>`, `stale_after` e reparo, `generated.by`/`generated.at`, algoritmo do executor e registro `wiki_migrations`.
