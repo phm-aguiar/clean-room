@@ -13,7 +13,7 @@ ordenação. Onde uma regra depende de configuração, a configuração é indic
 
 | | O que é possível | O que não é possível |
 |---|---|---|
-| `/api/v1/*` | Navegar por workspaces, projetos e páginas; ler a página completa (markdown, frontmatter, links e backlinks); buscar por texto completo (global, de um projeto ou de vários projetos); obter snapshots agregados ("overview"); listar páginas recentes e atualizações incrementais; listar handoffs; listar as sessões de um projeto e ler as observações brutas de uma sessão; listar arestas entre projetos. | Escrever, apagar, renomear, rodar lint, consolidar, executar varreduras ou alterar handoffs. Esta superfície não possui nenhuma operação de escrita. Escritas passam pelas rotas `/admin/*` (usadas pela CLI) ou pelas ferramentas MCP. |
+| `/api/v1/*` | Navegar por workspaces, projetos e páginas; ler a página completa (markdown, frontmatter, links e backlinks); buscar por texto completo (global, de um projeto ou de vários projetos); obter snapshots agregados ("overview"); listar páginas recentes e atualizações incrementais; listar handoffs; listar as sessões de um projeto e ler as observações brutas de uma sessão; ler o histórico de versões de uma página com diff (4.14); listar arestas entre projetos. | Escrever, apagar, renomear, rodar lint, consolidar, executar varreduras ou alterar handoffs. Esta superfície não possui nenhuma operação de escrita. Escritas passam pelas rotas `/admin/*` (usadas pela CLI) ou pelas ferramentas MCP. |
 | Hospedagem de interface própria (`--web-ui-dir`) | Servir uma SPA em `/web` (ou no slug configurado), com mesma origem da API. Sem essa opção, o navegador HTML embutido continua disponível. | Hospedar a SPA em outra origem sem proxy reverso. Use mesma origem ou configure CORS (seção 9). |
 
 A API `/api/v1` só é montada quando `--enable-web` (variável
@@ -115,8 +115,26 @@ Exceções:
 - `401` gerado pela autenticação por Bearer tem corpo em texto simples
   (`auth required`) e cabeçalho `WWW-Authenticate: Bearer`.
 - Parâmetros de query ou corpos JSON que não podem ser convertidos para o tipo
-  esperado são rejeitados pela camada HTTP antes do handler. O corpo dessa
-  resposta não é garantido como JSON (a confirmar).
+  esperado são rejeitados pela camada HTTP antes do tratador, com corpo em
+  **texto simples** (não JSON): query de tipo errado (`limit=abc`, `limit=-1`,
+  `include_open=1` — booleanos só aceitam `true` e `false`) = 400; corpo JSON
+  sintaticamente inválido = 400; `POST /search` sem `Content-Type:
+  application/json` = 415; JSON válido com campo de tipo errado = 422. A
+  mensagem exata é da camada HTTP e não faz parte do contrato; um cliente deve
+  tratar qualquer 4xx sem depender do formato do corpo. (Na busca `GET`, o
+  `limit` é lido pelo próprio tratador e erra em JSON, ver 4.5.)
+- Mensagens de escopo (corpo JSON `{"error": …}`):
+
+| Situação | Status | Mensagem |
+|---|---|---|
+| Workspace inexistente | 404 | `workspace '<w>' not found` |
+| Projeto inexistente nas rotas por projeto (listagem de páginas, `recent`, `briefing`, `overview`, `handoffs`, `sessions`, observações, `history`) e na busca de um projeto (`workspace`+`project`) | 404 | `project '<p>' not found` |
+| Projeto inexistente num escopo de `scopes`/`scope` da busca, e na leitura de **página completa** quando o chamador tem restrição por projeto | 404 | `project '<p>' not found in workspace '<w>'` (e, se o nome do projeto contém uma única `/`, acrescenta `; project names never contain '/': pass workspace "<ws>" and project "<proj>" as separate arguments`) |
+| Nome de projeto ambíguo no workspace | 400 | `project '<p>' is ambiguous in workspace '<w>'` (seguido da lista de titulares, quando conhecida) |
+| Escopo de `scopes` com workspace/projeto vazio | 400 | `scope workspace cannot be empty` / `scope project cannot be empty` |
+| Sem permissão de leitura, com nível de acesso `N` | 403 | `not authorized for <projeto>: you have <N> access and this needs read. Ask the server operator to raise your access.` |
+| Sem permissão de leitura e sem nenhum acesso | 403 | `not authorized for <projeto>. This is an access problem, not an empty memory — ask the server operator to grant you read access on it.` |
+| Overview de workspace sem projeto legível | 403 | `not authorized for <workspace>: no project in it is readable by this user. This is an access problem, not an empty workspace.` |
 
 | Status | Quando |
 |---|---|
@@ -144,8 +162,8 @@ GET /api/v1/workspaces
 | Campo | Tipo | Descrição |
 |---|---|---|
 | `workspace_name` | string | Nome do workspace. |
-| `project_count` | inteiro | Projetos do workspace. |
-| `page_count` | inteiro | Páginas com `is_latest = 1` no workspace. |
+| `project_count` | inteiro | Projetos do workspace (só os legíveis pelo chamador, com autorização por projeto). |
+| `page_count` | inteiro | Páginas com `is_latest = 1` **e não expiradas** no workspace. |
 | `last_updated` | string ou `null` | `updated_at` mais recente; `null` quando não há páginas. |
 
 ```json
@@ -160,7 +178,9 @@ GET /api/v1/workspaces
 ```
 
 Com autorização por repositório ativa, só entram os projetos legíveis pelo
-chamador, e workspaces sem nenhum projeto legível são omitidos.
+chamador, e workspaces sem nenhum projeto legível são omitidos. Ordem: nome do
+workspace crescente. Um workspace sem projetos (e sem restrição por projeto)
+aparece com `project_count` 0.
 
 ### 4.2 Projetos
 
@@ -177,15 +197,22 @@ daquele workspace.
 
 | Campo | Tipo | Descrição |
 |---|---|---|
+| `workspace_id` | string | Identificador (UUID) do workspace. Estável, ao contrário do nome. |
 | `workspace_name` | string | Workspace do projeto. |
+| `project_id` | string | Identificador (UUID) do projeto: a coordenada que não é ambígua quando dois projetos têm o mesmo nome legado. |
 | `project_name` | string | Nome do projeto. |
-| `page_count` | inteiro | Páginas com `is_latest = 1`. |
+| `page_count` | inteiro | Páginas com `is_latest = 1` e não expiradas. |
 | `last_updated` | string ou `null` | `updated_at` mais recente; `null` sem páginas. |
+
+Ordem: `last_updated` decrescente, projetos sem páginas por último (empates
+sem ordem definida). O HTML da página inicial usa a mesma lista.
 
 ```json
 [
   {
+    "workspace_id": "0198f0a2-0000-7000-8000-000000000001",
     "workspace_name": "default",
+    "project_id": "0198f0a2-0000-7000-8000-000000000002",
     "project_name": "ai-memory",
     "page_count": 138,
     "last_updated": "2026-05-28T14:02:11.123Z"
@@ -237,6 +264,7 @@ GET /api/v1/workspaces/{workspace}/projects/{project}/pages/{path}
 
 | Campo | Tipo | Descrição |
 |---|---|---|
+| `id` | string | Identificador (UUID) da **versão atual**. É o token que uma escrita/remoção condicional passa de volta. Muda a cada nova versão, e por isso o `ETag` também muda. |
 | `workspace` | string | Nome do workspace. |
 | `project` | string | Nome do projeto. |
 | `path` | string | Caminho da página. |
@@ -244,7 +272,7 @@ GET /api/v1/workspaces/{workspace}/projects/{project}/pages/{path}
 | `kind` | string | Tipo semântico. |
 | `tier` | string | Camada de memória. |
 | `pinned` | boolean | Página fixada. |
-| `created_at` | string | Criação. |
+| `created_at` | string | Criação: instante da **versão mais antiga** da cadeia de substituições que ainda existe (versões removidas por retenção encurtam a cadeia). |
 | `updated_at` | string | Última atualização. |
 | `supersedes` | string ou `null` | Caminho da versão anterior substituída. |
 | `frontmatter` | objeto | Frontmatter da página. |
@@ -258,6 +286,7 @@ Cada item de `links` e `backlinks` tem `path`, `title`, `kind`, `workspace` e
 
 ```json
 {
+  "id": "0198f0a2-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
   "workspace": "default",
   "project": "ai-memory",
   "path": "decisions/0007-db.md",
@@ -283,7 +312,16 @@ Cada item de `links` e `backlinks` tem `path`, `title`, `kind`, `workspace` e
 
 - `404` com `"page not found"` quando não há registro `is_latest = 1` para o caminho.
 - `404` com `"page file not found"` quando o registro existe, mas o arquivo não está no disco.
-- `400` para caminho inválido. A validação do caminho ocorre depois de localizar o registro da página.
+- `400` com `"invalid path: <motivo>"` para caminho inválido. A validação do
+  caminho ocorre depois de localizar o registro da página (a busca do registro
+  usa o texto exato), então, na prática, um caminho inválido responde `404
+  "page not found"`: nenhum caminho inválido existe no índice.
+- Ordem das checagens: escopo (só com restrição por projeto: 403/404 de
+  escopo) → registro → validação do caminho → leitura do arquivo → links.
+- A leitura **não** esconde uma página expirada (a listagem, o `recent` e a
+  busca escondem); `links` e `backlinks` omitem páginas expiradas e as de
+  projetos que o chamador não pode ler, vêm sem repetição, ordenados por
+  workspace, projeto e caminho, sem limite de tamanho.
 
 **Cache:** `Cache-Control: private, max-age=300` e `ETag`. O `ETag` é o
 SHA-256, em hexadecimal e entre aspas, do JSON exato retornado. Se
@@ -339,13 +377,30 @@ Content-Type: application/json
 - Sem `workspace`/`project`/`scopes`, a busca cobre todos os projetos legíveis
   pelo chamador. Com `workspace` e `project`, cobre um projeto. Com `scopes`,
   cobre a união dos escopos listados.
-- Escopos múltiplos: cada escopo é pesquisado separadamente. Hits repetidos são
-  unificados pelo identificador da página, mantendo o melhor `rank`. Depois, os
-  hits são ordenados por `rank` crescente e cortados em `limit`.
+- Escopos múltiplos: cada escopo é pesquisado separadamente (cada um devolve
+  até `limit` hits). Hits repetidos são unificados pelo identificador da página,
+  mantendo o melhor `rank` (o menor). Depois, os hits são ordenados por `rank`
+  crescente, com desempate por `path` crescente e depois pelos bytes do
+  identificador da página, e cortados em `limit`. Com um só escopo não há
+  unificação nem reordenação extra.
+- Busca de um projeto ou de vários (`workspace`+`project`, `scope`, `scopes`)
+  usa o ranqueador híbrido completo (texto, entidades, vetores se houver
+  embedder, grafo, observações, autoridade, reranqueador opcional); a busca
+  global (sem escopo) é só texto completo. Ver
+  [storage-and-retrieval.md](storage-and-retrieval.md). As ordens são as mesmas
+  da ferramenta MCP de consulta.
+- O corte em `limit` acontece antes de descartar hits sem registro; por isso a
+  resposta pode ter menos itens que `limit` mesmo havendo mais resultados.
+- A ordem das checagens e as mensagens literais de cada 400 estão em
+  [wiki-browser.md](wiki-browser.md) 3.3 ("Busca, regras gerais"). Em
+  particular, o termo vazio vence qualquer erro de combinação de parâmetros
+  (200 `[]`), mas não vence um erro de decodificação da query nem `limit`
+  inválido no `GET`.
 - Escopos múltiplos são limitados a 25 (`"at most 25 scopes are allowed"`).
   `scopes` não pode ser combinado com `workspace`/`project`
   (`"scopes cannot be combined with workspace/project"`). Escopo inexistente
-  recebe `404`; escopo sem permissão de leitura recebe `403`.
+  recebe `404`; escopo sem permissão de leitura recebe `403` (textos na tabela
+  de mensagens de escopo da seção 3).
 - `limit` tem padrão `10` e é limitado ao intervalo `1..100`.
 - Apenas páginas `is_latest = 1` e não expiradas são pesquisadas.
 - O `rank` já inclui um ajuste de autoridade pela página (tipo, camada e
@@ -525,16 +580,21 @@ Reúne em uma chamada o que a tela inicial costuma precisar. Cache:
 
 | Campo de `health` | Tipo | Descrição |
 |---|---|---|
-| `stale` | inteiro | Páginas obsoletas. |
-| `duplicates` | inteiro | Páginas duplicadas. |
+| `stale` | inteiro | Páginas atuais, não expiradas, de tier `episodic`, com `updated_at` anterior a (agora − 30 dias). |
+| `duplicates` | inteiro | Páginas atuais e não expiradas que repetem um título: para cada título (comparação exata) com `n > 1` páginas no escopo (workspace ou projeto), soma `n − 1`. |
 | `contradictions` | inteiro | Sempre `0` nesta versão. |
-| `orphans` | inteiro | Páginas órfãs. |
+| `orphans` | inteiro | Páginas atuais e não expiradas sem nenhuma linha de link de saída **nem** de entrada. |
 | `audited_at` | `null` | Sempre `null` nesta versão. |
-| `stale_pages` | array de `HealthPage` | Até `limit` itens. |
-| `duplicate_pages` | array de `HealthPage` | Até `limit` itens. |
-| `orphan_pages` | array de `HealthPage` | Até `limit` itens. |
+| `stale_pages` | array de páginas de saúde | Até `limit` itens, `updated_at` crescente (as mais antigas primeiro). |
+| `duplicate_pages` | array de páginas de saúde | Até `limit` itens das páginas cujo título se repete, ordenadas por título e depois nome do projeto. |
+| `orphan_pages` | array de páginas de saúde | Até `limit` itens, `updated_at` decrescente. |
 
-`HealthPage` tem `workspace`, `project`, `path`, `title` e `kind`.
+Os contadores são calculados sobre o workspace (overview de workspace, só nos
+projetos legíveis pelo chamador) ou sobre o projeto (overview de projeto);
+nas listas de duplicatas e no contador, uma página oculta ao chamador também
+não faz outra parecer duplicada.
+
+Cada página de saúde tem `workspace`, `project`, `path`, `title` e `kind`.
 
 ```json
 {
@@ -599,8 +659,18 @@ são derivados de prompts do operador. Eles são omitidos e `redacted` vale
 `true` quando:
 
 - o servidor tem autenticação configurada e o chamador não tem identidade
-  nomeada e não é root; ou
-- o parâmetro `all_owners` está em uso e o chamador não é root.
+  nomeada e não é root (tabela completa abaixo); ou
+- (defesa em profundidade) o filtro "todos os donos" estiver em uso por quem
+  não é root. Na prática isso não ocorre: `all_owners=true` de quem não é root
+  já recebeu `403` antes de qualquer leitura.
+
+Tabela de decisão (filtro de dono × nível de autenticação do chamador):
+
+| Filtro de dono | Corpo servido quando o nível é… |
+|---|---|
+| Dono nomeado (o chamador tem identidade) | `user` ou `root` (nível anônimo ou ausente: omitido) |
+| Todos os donos (`all_owners=true`) | somente `root` |
+| Sem dono atribuível (chamador sem identidade) | `root`, `anônimo` (servidor sem autenticação) ou ausente (API montada sem camada de autenticação); `user` sem identidade nomeada: omitido |
 
 Em servidor sem autenticação, o corpo é sempre servido. Quando o corpo é
 omitido, a interface deve mostrar que é preciso autenticar, não um cartão vazio.
@@ -813,6 +883,61 @@ recebe `400` com `"invalid session id: …"`.
 Esta leitura usa a mesma visibilidade e o mesmo formato da ferramenta MCP
 `memory_read_session_observations`. Cache: `private, no-store`.
 
+### 4.14 Histórico de versões de uma página e diff
+
+```http
+GET /api/v1/workspaces/{workspace}/projects/{project}/history/{path}?from=<id>&to=<id>&limit=50&offset=0
+```
+
+Lista as versões guardadas do caminho (da mais nova para a mais antiga) e o
+diff de linhas entre duas delas. É a mesma leitura da página HTML de histórico
+([wiki-browser.md](wiki-browser.md) 2.8, que também descreve as regras de
+visibilidade, os limites do diff e o algoritmo).
+
+**Parâmetros:**
+
+- `from`, `to`: ids de versão (UUID); vazios contam como ausentes. Id malformado
+  = `400` com `"invalid from version id"` / `"invalid to version id"`. `to`
+  padrão: a versão mais nova do caminho (mesmo com `offset` > 0). `from`
+  padrão: a versão que `to` substituiu; se ela não existe neste caminho (página
+  movida/ressuscitada) ou está oculta, o diff parte do **vazio** (`from` fica
+  `null`). Um `from`/`to` explícito que não pertence a este caminho e projeto =
+  `404` com `"version not found"`.
+- `limit`: padrão `50`, intervalo `1..200`. `offset`: padrão `0`.
+- Caminho inválido = `400` com `"invalid path: <motivo>"`. Sem versão visível =
+  `404` com `"page not found"`.
+
+**Visibilidade:** versões expiradas são ocultas; se a versão atual do caminho
+expirou, o histórico inteiro some. O `supersedes` de uma versão que aponta para
+uma versão oculta vem como `null`. Escopo como nas demais rotas (404/403).
+
+**Resposta:** objeto JSON, campos nesta ordem:
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `workspace`, `project`, `path` | string | O que foi pedido (o caminho como veio na URL). |
+| `total` | inteiro | Versões visíveis do caminho, antes da paginação. |
+| `offset`, `limit` | inteiro | Valores usados (`limit` já ajustado). |
+| `versions` | array | A janela pedida, da mais nova para a mais antiga (empate de instante: ordem de inserção decrescente). |
+| `diff` | objeto | O diff (abaixo). |
+
+Cada item de `versions`: `id`, `supersedes` (id ou `null`), `is_latest`
+(boolean), `title`, `tier`, `created_at`, `body_chars` (tamanho do corpo em
+**caracteres**) e `author` (`username`, e opcionalmente `name` e `email`;
+omitido quando a escrita não foi atribuída).
+
+`diff`: `from` (objeto `{id, title, created_at}` ou `null`), `to` (idem),
+`status` (`same`, `changed` ou `too_large`), `reason` (só com `too_large`: uma
+de `a version is larger than the diff limit`, `a version has more lines than the
+diff limit`, `the versions differ in more lines than the diff limit`), `truncated`
+(boolean: o limite de 2 000 linhas de saída cortou `hunks`) e `hunks` (array;
+vazio com `same`, `too_large` e na diferença só de fim de linha). Cada `hunk`:
+`old_start`, `old_len`, `new_start`, `new_len` (inteiros) e `lines`, com itens
+`{op, text}` onde `op` é `" "` (contexto), `"-"` ou `"+"` e `text` é a linha sem
+o fim de linha.
+
+Cache: `private, no-store`.
+
 ## 5. Limites, paginação e cache
 
 **Limites de `limit`:**
@@ -841,7 +966,7 @@ Esta leitura usa a mesma visibilidade e o mesmo formato da ferramenta MCP
 | `private, max-age=30` | Workspaces, projetos, recentes sem `updated_since` nem `cursor`, busca com `q` não vazio, grafo. |
 | `private, max-age=60` | Listagem de páginas. |
 | `private, max-age=300` e `ETag` | Leitura de página (com `304`). |
-| `private, no-store` | Recentes com `updated_since` ou `cursor`, briefing, overviews, handoffs, sessões e observações de sessão. |
+| `private, no-store` | Recentes com `updated_since` ou `cursor`, briefing, overviews, handoffs, sessões, observações de sessão e histórico de página. |
 
 Atenção: quando a autorização por repositório está ativa, as respostas com
 `max-age` dependem do usuário autenticado. Um navegador pode reutilizar a
@@ -849,9 +974,12 @@ resposta do usuário anterior por até o TTL, mesmo após a troca de credenciais
 mesma URL. Respostas que dependem de identidade ou contêm texto derivado de
 prompts usam `no-store`.
 
-**Tamanho do corpo.** Esta superfície não define limite explícito de corpo. Vale
-o padrão do servidor HTTP (valor a confirmar). As rotas de máquina (`/mcp`,
-hooks e workstreams) têm limite de 10 MB.
+**Tamanho do corpo.** Esta superfície não define limite próprio de corpo (só
+`POST /search` lê corpo). Vale o limite padrão da camada HTTP para corpos JSON,
+**2 MiB** (2 097 152 bytes); acima disso a requisição é recusada com `413` em
+texto simples. As rotas de máquina (`/mcp`, hooks e workstreams) têm limite de
+10 MB. Na injeção de `<base>` (interface customizada ou navegador embutido), o
+corpo HTML de **resposta** é lido com teto de 10 MiB (acima: 500).
 
 **Limitação de taxa.** Não há limitador geral nesta superfície. O único
 limitador é o de login e recuperação de senha, que responde `429`.
@@ -921,8 +1049,10 @@ Três situações reduzem o prefixo para `""` (montagem na raiz), com um aviso
 - Entrada vazia ou só com espaços.
 
 O redirecionamento de barra final `{base_path}{web_slug}/` para
-`{base_path}{web_slug}` é permanente e preserva a query string. Fragmentos são
-do lado do cliente e nunca chegam ao servidor.
+`{base_path}{web_slug}` é permanente (status **308**, que preserva o método) e
+preserva a query string; vale só para o navegador embutido (a interface
+customizada responde 200 na barra final). Fragmentos são do lado do cliente e
+nunca chegam ao servidor.
 
 Sem `--web-ui-dir`, o navegador HTML embutido é o padrão: renderização somente
 leitura, busca em texto completo e árvore de projetos.

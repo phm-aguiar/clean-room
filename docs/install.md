@@ -892,6 +892,45 @@ have lifecycle capture paths through `install-hooks`.
 > the bundled scripts to your home directory, then run `install-hooks` in the
 > container to render the configuration snippet.
 
+### How `install-hooks --apply` merges into an agent's hook file
+
+For the JSON-settings agents (Claude Code, Codex, Gemini CLI, Cursor, Devin, Command Code, Droid, Muse Code, CodeBuddy Code, IBM Bob, Copilot CLI, Grok, Antigravity CLI and similar) `--apply` edits the file, never replaces it:
+
+- **Per event, ai-memory's own entries are replaced and every other tool's entries are kept.** The existing array for the event is filtered to drop ai-memory entries, then the freshly rendered entries are appended. Re-running never duplicates.
+- **What counts as an ai-memory entry** (so a third-party hook is never removed): a command handler that (a) has no `args` and whose command string is one of ai-memory's own forms (the native form `<…ai-memory…> hook --event … --agent … --server-url …`, or the legacy script form carrying the exact `AI_MEMORY_HOOK_URL=` marker), or (b) is in exec form (`command` plus `args`) with an executable whose name contains `ai-memory`/`ai_memory` **and** the argument tokens `hook`, `--event`, `--agent` and `--server-url`. A helper such as `ai-memory-helper.exe --check project`, or a third-party tool that happens to run `ai-memory boot …`, is left alone. An entry may be flat or nested (inside an inner `hooks` array); either shape is recognized. Kiro CLI v2 uses its own ownership test on the command string.
+- Other keys of the file (theme, schema version, other tools' settings) are preserved; a modified file keeps a timestamped backup next to it (`<file>.bak-<seconds>`); a no-op reports `already up to date`.
+- Printed output: `✓ created|updated|no-op <path> (new file | backup written next to it | already up to date)`, followed by the agent's notes (below).
+
+**Command forms.** On a native install each hook entry runs the binary itself: `<absolute ai-memory path> [--data-dir <dir>] hook --event <event> --agent <agent> --server-url <url> [--auth-token <t>] [--project-strategy <s>] [--capture-assistant]`. The executable path is the running binary's absolute path (a bare `ai-memory` when the binary sits in a Nix store, no longer exists, or the install is in a container; a `(deleted)` suffix left by an in-place upgrade is stripped). `--auth-token` appears in a **printed** snippet; `--apply` keeps the token out of the file and stores it under the data directory instead. Quoting is POSIX single quotes on Unix-like systems, double quotes on Windows; on Windows Codex and Grok (whose runners evaluate the string with PowerShell) get a leading `& ` call operator and Antigravity CLI gets the bare unquoted form (its runner wraps the string in `cmd /c "…"` and does not strip inner quotes); Claude Code on Windows uses exec form (`command` + `args`). The legacy compatibility scripts use `AI_MEMORY_HOOK_URL=<url> [AI_MEMORY_AUTH_TOKEN=<t>] [AI_MEMORY_PROJECT_STRATEGY=<s>] <script>` (POSIX), a `powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand <UTF-16LE base64>` command that sets `$ProgressPreference='SilentlyContinue'` first (Windows), or `bash -c '<posix form with the Git-Bash path>'` (Windows with Bash).
+
+**Entry shapes by agent.**
+
+| Shape | Agents |
+|---|---|
+| Nested `{"matcher": "", "hooks": [{"type": "command", "command": …}]}` | Claude Code, Codex, Gemini CLI, Devin, Droid, Muse Code, CodeBuddy Code |
+| Nested **without** `matcher` (omission means "all tools"; Bob rejects a matcher on lifecycle events) | IBM Bob, Command Code |
+| Flat `{"type": "command", "command": …, "matcher": ""}` plus top-level `"version": 1` | Cursor |
+| Flat without `matcher` plus top-level `"version": 1` (a matcher is rejected on `sessionStart`/`sessionEnd`/`userPromptSubmitted`/`agentStop`/`subagentStop`/`errorOccurred`) | Copilot CLI |
+
+Muse Code additionally writes `"timeout": 30` (seconds) on every handler and the file's `"schema_version": 1` when absent.
+
+### Factory Droid CLI, Muse Code, CodeBuddy Code and IBM Bob
+
+All four use native commands only (no script bundle, whatever `AI_MEMORY_HOOK_PLATFORM` says), deliver the handoff on `SessionStart`, and print a note after `--apply`:
+
+| Agent | Hook file and key | `--apply` notes | Session end |
+|---|---|---|---|
+| Droid (`--agent droid`) | `~/.factory/hooks.json` (the event map itself, no wrapper key) | `Droid adds SessionStart stdout to the session as context, so the prior session's handoff is delivered automatically, and its own SessionEnd closes the session.` / `start a new droid session for it to load the new hooks.` **`--apply` refuses to create `hooks.json` over hooks that still live in the `hooks` key of `~/.factory/settings.json`** (Droid only reads those while `hooks.json` is absent; the settings file is parsed as JSONC, and one that cannot be parsed is refused). The printed form tells the operator to add the entries to `settings.json` instead in that case. | `SessionEnd` |
+| Muse Code (`--agent muse`) | `hooks` key of `${XDG_CONFIG_HOME:-~/.config}/muse/settings.json` (an absolute `XDG_CONFIG_HOME` only) | `Muse adds SessionStart's additionalContext to the session …` / `Muse runs hooks with a cleared environment, so the server URL and data dir are baked into each command; re-run this command after changing either. Start a new muse session to load the new hooks.` The printed snippet carries `"schema_version": 1` with the hooks. | `SessionEnd` |
+| CodeBuddy Code (`--agent codebuddy`) | `hooks` key of `~/.codebuddy/settings.json` | `CodeBuddy appends SessionStart stdout (`hookSpecificOutput.additionalContext`) to the session, so the prior session's handoff is delivered automatically.` / `start a new codebuddy session for it to load the new hooks.` | `SessionEnd` |
+| IBM Bob (`--agent ibm-bob`) | `hooks` key of `~/.bob/settings/settings.json` (shared by the IDE and Bob Shell) | `IBM Bob injects plain SessionStart stdout into the model context, so the prior session's handoff is delivered automatically.` / `Bob exposes Stop but no SessionEnd; close a finished session with `ai-memory finalize-session --agent ibm-bob`.` / `start a new Bob session for it to load the new hooks.` | none |
+
+Event lists are in [support-matrix.md](support-matrix.md). Working-directory resolution for the hook: the payload's own directory first; for CodeBuddy Code (whose interactive `SessionStart` can arrive without one) the `CODEBUDDY_PROJECT_DIR` environment variable of the hook process, **never** the process's current directory (its meaning is undocumented); for Devin, a chain of fallbacks that ends at the process's current directory; every other agent has no fallback. Session id: Devin and ZCode payloads may lack one, so the hook keeps `<data>/hook-state/<agent>-session-id` (a new id on `session-start`, the stored one afterwards, one fresh id if none is stored) so one agent session shares one id; `finalize-session` clears it.
+
+### GitHub Copilot CLI
+
+`ai-memory install-hooks --agent copilot-cli --apply` writes `$COPILOT_HOME/hooks/ai-memory.json` (default `~/.copilot/hooks/ai-memory.json`), a file owned by ai-memory, with PascalCase event names so Copilot sends the Claude-compatible payload shape (`session_id`, `cwd`, `tool_name`, `tool_input`, `tool_result`); `PostToolUseFailure` is aliased to the post-tool event. The handoff goes through a **top-level** `additionalContext` key (not Claude Code's `hookSpecificOutput` envelope). There is no bare `copilot` alias for `--agent`, because `copilot` already means the VS Code client in `install-mcp`.
+
 ### OpenAI Codex
 
 ```bash
@@ -1745,7 +1784,7 @@ ai-memory works in three intensity tiers:
 | **+ ChatGPT or Codex OAuth** | The same LLM features, using a ChatGPT Pro or Plus login instead of an OpenAI Platform key | `AI_MEMORY_LLM_PROVIDER=openai-oauth` and `ai-memory auth login openai-oauth` | Uses your ChatGPT subscription |
 | **+ Codex credential reuse** | The same LLM features, using the login owned by the Codex CLI, without copying or owning its refresh token | `AI_MEMORY_LLM_PROVIDER=codex` and an authenticated Codex CLI | Uses your ChatGPT subscription |
 | **+ GitHub Copilot** | The same LLM features, using a GitHub Copilot subscription | `AI_MEMORY_LLM_PROVIDER=copilot` and either `ai-memory auth login copilot` or `COPILOT_GITHUB_TOKEN` | Uses your Copilot subscription |
-| **+ LLM reranking** | At most one relevance pass over up to 30 bounded search candidates from projects and scopes (a confirmar: the limits). The normal order is kept when a response is invalid, fails, times out, or hits the concurrency limit. | `AI_MEMORY_RERANKER=llm` and any configured LLM provider | One LLM call per eligible query, with at most four running at once (a confirmar) |
+| **+ LLM reranking** | At most one relevance pass over up to 30 bounded search candidates from projects and scopes (limits: candidates `max(limit, min(limit x 3, 30))`, 20 s per call, 4 concurrent calls). The normal order is kept when a response is invalid, fails, times out, or hits the concurrency limit. | `AI_MEMORY_RERANKER=llm` and any configured LLM provider | One LLM call per eligible query, with at most four running at once |
 | **+ Hybrid retrieval** | Adds vector cosine similarity to the FTS5, entity, and graph reciprocal-rank fusion. This improves recall for paraphrased queries. | `AI_MEMORY_EMBEDDING_PROVIDER=openai` and `OPENAI_API_KEY` (or `EMBEDDING_API_KEY`) | About $0.0001 per page on backfill (estimate, a confirmar) |
 
 ### Recommended models (chosen as defaults)
@@ -1856,7 +1895,7 @@ own environment, as in the example above.
 
 For both Anthropic providers, ai-memory omits `temperature` for Claude 4.7 and
 later models, and for the Claude Mythos Preview model. Those models reject
-non-default sampling parameters (a confirmar: the exact model list). `llm-test`
+non-default sampling parameters (every recognized Claude model from 4.7 on, in any family, plus Mythos Preview). `llm-test`
 starts with the same representative value of 0.2 that bootstrap and consolidation
 use, and then applies the provider's compatibility normalization before it sends
 the request.
@@ -1898,7 +1937,7 @@ Use `ai-memory auth status` to check whether a token is present. Use
 > **Leave the model at the provider default (`gpt-5.5`).** The Codex and ChatGPT
 > backend behind `openai-oauth` accepts only a small, server-defined set of model
 > IDs, and it rejects others with a deterministic 400 error (for example
-> `gpt-5-mini`) (a confirmar). Do not set `AI_MEMORY_LLM_MODEL` for this backend.
+> `gpt-5-mini`) (behavior of the external service; ai-memory does not validate the id). Do not set `AI_MEMORY_LLM_MODEL` for this backend.
 > Consolidation, lint, and explore are summarization tasks. If the default
 > reasoning is too heavy, set `AI_MEMORY_LLM_REASONING_EFFORT=none` or `low`, so
 > that hidden thought tokens do not consume the JSON budget. Keep high-effort
@@ -2151,7 +2190,7 @@ docker run --rm <imagem-ai-memory>:latest --help     # full subcommand tree
 | `reset --confirm` | `docker exec` | Wipes the data. Refuses while sibling processes are alive. |
 | `generate-auth-token` | `docker run --rm` | Prints a random hex bearer token. |
 | `user add-human`, `list`, `reset-password`, `disable`, `enable`, `patch` | `docker exec` or native binary | Manages human identities and temporary passwords. Never issues an API key. |
-| `user add`, `expire`, `revive`, `rotate-token` | `docker exec` or native binary | Deprecated compatibility-token lifecycle from version 1.x, backed by a legacy token store (a confirmar: the backing store name). |
+| `user add`, `expire`, `revive`, `rotate-token` | — | Removed in 3.0. Existing 1.x tokens survive as `legacy-user-token` API keys managed with `api-key`. |
 | `api-key add`, `list`, `rotate`, `revoke` | `docker exec` or native binary | Manages native `aim_` machine credentials. |
 | `auth login openai-oauth` | same data volume as the server | Stores a ChatGPT or Codex OAuth refresh token for the optional `openai-oauth` LLM provider. |
 | `auth login copilot` | same data volume as the server | Stores a GitHub token for the optional `copilot` LLM provider. |
@@ -2327,6 +2366,7 @@ ai-memory bootstrap --dry-run
   "sources_collected": 117,
   "sources_sent": 22,
   "sources_dropped": 95,
+  "sources_by_kind": {"git_commits": 14, "readme": 1, "doc_files": 5, "module_headers": 0, "project_rules": 2},
   "estimated_input_tokens": 48760,
   "pages_written": [],
   "rationale": "(dry-run; LLM not invoked)",
@@ -2334,6 +2374,8 @@ ai-memory bootstrap --dry-run
   "llm_chunks": 1
 }
 ```
+
+The command first prints a human-readable report, then a line `--- machine-readable ---`, then the JSON above. Project-rules files are `CLAUDE.md`, `AGENTS.md`, `AGENT.md` and `claude.md` (only names the directory actually lists). A `--since` value that is not `N days ago`, `N months ago`, `N year(s) ago` or `YYYY-MM-DD` is silently ignored. Full rules: `consolidation-llm.md` section 11.
 
 Large repositories, such as those with years of git history, are pruned on the
 client before they are posted. The remaining sources are then processed in

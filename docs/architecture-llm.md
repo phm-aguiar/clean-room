@@ -35,7 +35,7 @@ default and never runs from hook paths.
    scheduler records a per-project watermark, so historical sessions are not
    processed automatically on upgrade. It records a per-session claim before
    the LLM work starts, so a failed scheduled review does not retry forever
-   (a confirmar: watermark and claim behavior). Explicit CLI, admin, and MCP
+   (confirmed: the watermark is the newest ended session when the project is first seen; a claim is re-armed after a failed review up to 3 attempts, then parked). Explicit CLI, admin, and MCP
    auto-improve calls use the same pipeline for targeted reruns or catch-up.
    With `[auto_improve] require_approval = true`, scheduled and manual
    proposals stay pending until an explicit approval in pending-writes.
@@ -63,8 +63,7 @@ default and never runs from hook paths.
 **Near-duplicate clustering (opt-in).** With `[decay] dedup_cold_clusters = true`
 (default false), cold episodic pages are clustered by embedding similarity
 (density-based clustering with an adaptive epsilon). Each cluster collapses to
-one survivor, whose keep-tokens are the union of the cluster's tokens (a
-confirmar). The other members are superseded with a merge note. Defaults: minimum points 2 and
+one survivor, whose keep-tokens are the union of the cluster's tokens, capped at 48 in total (confirmed). The other members are superseded with a merge note. Defaults: minimum points 2 and
 maximum epsilon 0.15 (cosine distance). A lower epsilon merges less. Merge
 provenance is recorded in the page evidence. The pass uses no generative LLM
 and does nothing without an embedder.
@@ -78,14 +77,14 @@ deletes a source. The highest-retention member is rewritten, and every
 merged-away member is superseded with a merge-note stub, so the full pre-merge
 body stays reachable. Provenance for each merge is recorded in the page
 evidence. Writes go through the same gated apply path as other wiki writes, with a dry
-run available first (a confirmar). Output uses JSON-schema structured output
+run available first (confirmed). Output uses JSON-schema structured output
 only. The scheduler starts a run only after `[dream] idle_window_secs` (default
 300) with no client activity. Returning activity cancels an in-flight run at the
-next cluster boundary (a confirmar). A run processes at most
+next cluster boundary (confirmed; checked before each scope and each cluster). A run processes at most
 `max_clusters_per_run` clusters (default 8). Clusters are ordered by novelty, the
-most distant from the nearest existing non-cold page first (a confirmar). Each
+most distant from the nearest existing page first, where existing pages include non-cold pages and already-compacted residues (confirmed). Each
 run returns an observable report, so a bad run is never silent. The pass adds
-no migration and no MCP tool (a confirmar: the migration claim).
+no migration and no MCP tool (confirmed: the dream pass itself adds no migration and no MCP tool).
 
 
 ## Verificação de contradição por embeddings
@@ -94,17 +93,15 @@ no migration and no MCP tool (a confirmar: the migration claim).
 semantic and procedural pages whose stored embeddings have a cosine similarity
 between 0.4 and 0.75. That band means the same topic but not a near-duplicate
 (0.75 and above is the duplicate range, below 0.4 is unrelated). Each such pair
-gets a `contradiction` finding with advice that the newer page wins (a
-confirmar). The check is bounded to one load of the capped cold set, capped
-findings, and deterministic output (a confirmar). With no embedder it is a
+gets a `contradiction` finding with advice that the newer page wins on a timestamp basis (confirmed). The check is bounded to one load of the 60 coldest eligible pages, at most 25 findings, and deterministic output (confirmed; pairs in path order). It runs only in a user-invoked lint, never in the scheduled one. With no embedder it is a
 no-op. It never deletes, edits, or supersedes a page, and it persists no edge
-(a confirmar).
+(confirmed: no edge is persisted).
 
 ## Ferramentas MCP dependentes de LLM e de embeddings
 
 Linha original de `memory_query` (com reranqueador, resposta e vetores):
 
-| `memory_query` | read-only | Full-text, entity-match, and graph RRF search, plus optional vector RRF, followed by the bounded kind, tier, pinned, and tag authority adjustment and raw fallback. Bumps access counters for page hits. Defaults to the current project. Default-scoped calls also merge the reserved `_global` preferences scope as `global_scope_hits`. `scopes` searches named sibling projects. `global=true` searches every project at once, and each hit is labelled with its workspace and project. With `AI_MEMORY_RERANKER=llm`, project and scopes candidate pools are fused before at most one LLM relevance pass. Timeouts, provider errors, invalid score sets, and saturation keep the adjusted order. The `global=true` ranker and the supplemental global-preference hits are not reranked. `explain=true` adds per-hit score details: per-stream ranks, matched entities, raw scores, RRF contributions, graph provenance including the typed edge kind (`causes`, `fixes`, `contradicts`), the evidence count, the authority multiplier, and the optional rerank score. It also adds a top-level `streams_active` list. `include_expired=true` also returns TTL-expired pages. `include_superseded=true` also returns superseded versions, each labelled `superseded: true`. The current version is never labelled. With the default `false`, the response is identical to the latest-only behavior. `pin_first=true` prepends up to 10 pinned latest pages of the project, deduplicated by page id and marked `pinned: true`, then re-truncates to the requested limit. It applies to single-project searches only. `answer=true` (off by default) adds a cited natural-language answer over the top hits through the configured provider, as `answer: { text, citations }`. With no provider it returns the hits with an `answer_unavailable` note, not an error. With `answer` unset or false, no provider is accessed. The `reasoning` tier (`minimal` default, `low`, `medium`, `high`, `max`) scales the answer's token budget from a base of 2,000: `minimal` 1x, `low` 1.5x, `medium` 2x, `high` 3x, `max` 4x. An unknown tier is rejected by the schema. Answer quality has not yet been evaluated. The response field names in this row are a confirmar. |
+| `memory_query` | read-only | Full-text, entity-match, and graph RRF search, plus optional vector RRF, followed by the bounded kind, tier, pinned, and tag authority adjustment and raw fallback. Bumps access counters for page hits. Defaults to the current project. Default-scoped calls also merge the reserved `_global` preferences scope as `global_scope_hits`. `scopes` searches named sibling projects. `global=true` searches every project at once, and each hit is labelled with its workspace and project. With `AI_MEMORY_RERANKER=llm`, project and scopes candidate pools are fused before at most one LLM relevance pass. Timeouts, provider errors, invalid score sets, and saturation keep the adjusted order. The `global=true` ranker and the supplemental global-preference hits are not reranked. `explain=true` adds per-hit score details: per-stream ranks, matched entities, raw scores, RRF contributions, graph provenance including the typed edge kind (`causes`, `fixes`, `contradicts`), the evidence count, the authority multiplier, and the optional rerank score. It also adds a top-level `streams_active` list. `include_expired=true` also returns TTL-expired pages. `include_superseded=true` also returns superseded versions, each labelled `superseded: true`. The current version is never labelled. With the default `false`, the response is identical to the latest-only behavior. `pin_first=true` prepends up to 10 pinned latest pages of the project, deduplicated by page id and marked `pinned: true`, then re-truncates to the requested limit. It applies to single-project searches only. `answer=true` (off by default) adds a cited natural-language answer over the top hits through the configured provider, as `answer: { text, citations }`. With no provider it returns the hits with an `answer_unavailable` note, not an error. With `answer` unset or false, no provider is accessed. The `reasoning` tier (`minimal` default, `low`, `medium`, `high`, `max`) scales the answer's token budget from a base of 2,000: `minimal` 1x, `low` 1.5x, `medium` 2x, `high` 3x, `max` 4x. An unknown tier is rejected by the schema. Answer quality has not yet been evaluated by the original project. The response fields are exactly `answer: { text, citations }` and `answer_unavailable` (a string), as specified in `prompts-schemas-and-sanitizer.md` section 8.3. |
 
 | `memory_explore` | read-only | An LLM prose digest over the briefing snapshot. Without a provider it degrades to the structured JSON. The `reasoning` tier scales the digest's token budget from a base of 16,000, with the same multipliers as `memory_query`. |
 | `memory_consolidate` | destructive | LLM-driven page rewrite. `multi_page=true` fans out atomically. Without a session id (or with a blank one), it consolidates the latest completed session in the resolved project. If the project has no completed session, it fails with `no completed session in <scope>`. Consolidation prompts append the project's active reserved `_prompts/consolidation.md` page as sanitized, JSON-encoded, untrusted advisory preferences. The page is capped at 2,000 characters. Expired pages are ignored. A per-call `instructions` argument overrides the page for that call. Both system prompts keep the schema, evidence, disclosure, tool-use, and output rules authoritative. |
@@ -135,7 +132,7 @@ dedup_cold_clusters = false        # opt-in: collapse near-duplicate cold episod
 # dedup_min_pts = 2                # density floor for clustering (0 = default 2)
 # dedup_max_eps = 0.15             # cosine-distance ceiling (0 = default). Lower merges less.
 [consolidation]                    # LLM consolidation prompt sizing
-max_input_tokens = 100000          # approximate input target. Minimum 6000.
+max_input_tokens = 100000          # approximate input target. Minimum 8350 at the default safety margin (0.8).
 max_output_tokens = 32000          # provider generation limit. Minimum 1000.
                                    # Their sum must fit the model's context window, with headroom
                                    # for tokenizer variance.
@@ -190,7 +187,7 @@ abstract_vectors = false           # fifth fusion stream over page abstract embe
 [dream]                            # opt-in LLM dream pass. Off by default. Never deletes a source.
 enabled = false                    # true starts the scheduled pass, only if a provider and an
                                    # embedder are also configured.
-interval_secs = 3600               # how often the scheduler considers a run (0 = 3600; default a confirmar)
+interval_secs = 3600               # how often the scheduler considers a run (0 = 3600; confirmed default 3600)
 idle_window_secs = 300             # quiet period required before a run. Returning activity
                                    # cancels an in-flight run at the next cluster boundary. 0 = 300.
 # min_pts = 2                      # density floor (0 = default 2)
@@ -207,8 +204,7 @@ first. Fallback entries run only after a transient failure: HTTP 429, a 5xx stat
 a timeout, or a connection error. They run in declaration order, and the original
 request, schema, and operation id are kept on every attempt. A deterministic
 failure (a 4xx other than 429, an unsupported schema, or a malformed response)
-stops on the first candidate. The exact set of transient errors beyond the HTTP
-statuses is a confirmar. There is no retry loop across the whole chain.
+stops on the first candidate. Transient errors are exactly: HTTP 429, any 5xx (including 52x), a transport timeout and a connection failure; the terminal error event of the ChatGPT/Codex stream is a synthetic 502 and so is also transient. There is no retry loop across the whole chain.
 
 ```toml
 llm_provider = "opencode"
@@ -237,22 +233,20 @@ every profile and resolves its credential once, at startup. A missing or empty
 provider or model, an unknown provider, or a missing credential fails startup.
 Each candidate has its own in-memory circuit with a 30 s cooldown. A transient
 failure opens it, and a success closes it. A restart clears all circuit state.
-There is no durable circuit and no chain-wide deadline. The configuration key
-name `llm_fallbacks`, the startup validation, and the status fields described
-below are a confirmar.
+There is no durable circuit and no chain-wide deadline. The configuration key name `llm_fallbacks`, the startup validation and the status fields were checked against the original behavior.
 
 The server status endpoint (`GET /admin/status`, shown by `ai-memory status`)
 reports an `llm_candidates` list alongside the primary `llm` and `embedding`
 roles. Each candidate shows its provider and model label, whether it answered the
 most recent call, its last success and error timestamps, a redacted error class and
 HTTP status, and its circuit-open-until time. The list is empty for a
-single-provider setup (a confirmar).
+single-provider setup.
 
 **LLM provider environment** (opt-in):
 
 ```text
 AI_MEMORY_LLM_PROVIDER     anthropic | anthropic-oauth | openai | openai-oauth | codex | copilot |
-                           gemini | openai-compat | opencode
+                           gemini | openai-compat | opencode | cursor
 AI_MEMORY_LLM_MODEL        optional when the provider has a default, e.g. claude-haiku-4-5, gpt-5.4-mini
 ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / LLM_API_KEY
 AI_MEMORY_LLM_BASE_URL     required for openai-compat (Ollama, vLLM). Optional override for
@@ -260,14 +254,17 @@ AI_MEMORY_LLM_BASE_URL     required for openai-compat (Ollama, vLLM). Optional o
                            for the Zen catalogue). Applies to any provider, because naming the
                            base URL is how an operator says a vendor endpoint is proxied on purpose.
 LLM_BASE_URL               the unprefixed cross-tool convention, accepted for openai-compat and
-                           opencode only (a confirmar). Providers with a fixed vendor endpoint ignore
+                           opencode only. Providers with a fixed vendor endpoint ignore
                            it and log why, so a leftover local URL cannot silently redirect other providers.
 AI_MEMORY_LLM_COMPAT_STRICT true by default. false disables response_format=json_schema.
+AI_MEMORY_LLM_COMPAT_DISABLE_THINKING false by default. true sends chat_template_kwargs
+                           {"enable_thinking": false} on every openai-compat request (vLLM/SGLang Qwen3-class).
+AI_MEMORY_CURSOR_AGENT     optional path of the Cursor `agent` executable (provider cursor).
 AI_MEMORY_LLM_TIMEOUT_SECS per-request timeout for chat providers. 300 by default.
 AI_MEMORY_LLM_REASONING_EFFORT optional reasoning effort (none, minimal, low, medium, high,
                            xhigh, max, ultra, persistent). Mapped per provider to the provider's own
                            field. Gemini and Copilot ignore it. Values the host does not support are
-                           clamped to the provider's published set (a confirmar: the full value list).
+                           clamped to the provider's published set (the full per-provider mapping is in llm-client.md, section 2.4).
 AI_MEMORY_LLM_HEADERS      optional extra HTTP headers on every chat request, as comma-separated
                            Name=Value (or Name: Value) entries. For gateways that need a caller
                            identity header. Headers the server sets itself (authorization,
@@ -286,7 +283,7 @@ Every chat request sends `User-Agent: ai-memory/<version>`. Without a configured
 agent, HTTP clients send none, and gateways that require caller identification
 then treat requests as anonymous. `AI_MEMORY_LLM_HEADERS=user-agent=...` overrides
 the default. The Copilot provider keeps its editor-plugin agent string instead, as
-the Copilot API expects (a confirmar).
+the Copilot API expects.
 
 The `openai-oauth` provider uses `auth login openai-oauth` and stores its refresh
 token in `<data_dir>/auth.json`. That token is separate from the server's bearer
@@ -336,7 +333,7 @@ chat provider (`auth login copilot`, `COPILOT_GITHUB_TOKEN`, or
 `text-embedding-3-small` with dimension 1536, and calls the Copilot embeddings
 endpoint with the same integration headers as chat. That endpoint's shape follows
 the OpenAI-compatible contract Copilot documents for chat. It is not a published
-embeddings specification, and no live test against Copilot covers it (a confirmar).
+embeddings specification, and no live test against Copilot covers it (an accepted limitation of the original).
 
 ## Trabalho futuro dependente de LLM e de embeddings
 

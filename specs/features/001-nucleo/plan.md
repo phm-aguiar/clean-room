@@ -1,182 +1,147 @@
-# plan.md: Plano de Implementação Técnica — Núcleo (001)
+# Plano: Núcleo (domínio, armazenamento e wiki)
 
-## 1. Metadados do Plano
-- **Stack Tecnológico:** Go 1.26 (toolchain local 1.26.5), `modernc.org/sqlite` (WAL, FTS5), `git` do sistema 2.56 via `os/exec`, `log/slog`, `regexp` (RE2), `google/uuid` (UUIDv7), `gopkg.in/yaml.v3` para frontmatter, `fsnotify` para o watcher, `koanf` (TOML + env) e `cobra` só para o mínimo de CLI de teste. `CGO_ENABLED=0`, alvos `windows/amd64` e `linux/amd64`. Itens novos (`yaml.v3`, `fsnotify`) precisam entrar em `tech.md` antes do primeiro uso (portão da constituição).
-- **Feature Fonte:** `specs/features/001-nucleo/spec.md`
-- **Escopo:** domínio sem I/O, configuração, SQLite com escritor único e busca RRF, wiki com escrita atômica, supersessão e git, watcher/reindex. Sem hooks, MCP, LLM, embeddings ou multiusuário (feature 002 e seguintes, ver `roadmap.md`).
+## Metadados
+- **Feature:** 001 — `specs/features/001-nucleo/spec.md` (Aprovado: true)
+- **Aceitação:** `specs/features/001-nucleo/acceptance/nucleo.feature`
+- **Notas de contrato:** `notes/domain-contract.md`, `notes/markdown-contract.md`, `notes/search-contract.md`, `notes/wiki-layout-contract.md`
+- **Stack:** Go 1.26, módulo único, `CGO_ENABLED=0`; `modernc.org/sqlite`, `gopkg.in/yaml.v3`, `fsnotify`, `google/uuid`, `golang.org/x/text`, `go-git/v5`, `koanf`, `log/slog` (todas em `.github/memory/tech.md`)
+- **Alvos:** `windows/amd64` (primeiro MVP) e `linux/amd64`
+- **Escopo:** alicerce zero-LLM testável por contratos: domínio sem I/O, configuração carregada uma vez, SQLite com escritor único e busca híbrida RRF, wiki markdown com escrita atômica, supersessão, remoção com quarentena, watcher/reconciliação, reindex e cópia online do banco. Sem hooks, MCP nem CLI de usuário (002).
+- **Precedência:** `docs/` > notas > este plano. Em dúvida, comportamento do original.
 
-### Layout de pacotes e regra de imports
+## Contratos e Fronteiras
 
-```text
-cmd/ai-memory/main.go            ← chama internal/cli
-internal/domain/                 ← sem I/O: ids, scope, pagepath, tier, observation, sanitize
-internal/config/                 ← carrega TOML + AI_MEMORY_* uma vez (único lugar com os.Getenv)
-internal/storage/                ← open, migrations/, writer (ator), reader (pool), search, scope
-internal/wiki/                   ← markdown, atomicfile, gitrepo, locks, write, reindex, watcher
-internal/cli/                    ← único compositor (cobra): serve e comandos mínimos
-```
+### Pacotes e grafo de imports (verificado por `TestImportGraph`)
+| Pacote | Responsabilidade | Pode importar |
+|---|---|---|
+| `internal/domain` | IDs UUIDv7 tipados, `PagePath` (validação básica + `ensure_portable` + chave portável), tiers, tipos de observação, tipo sanitizado e sanitizador, erros de domínio | stdlib, `google/uuid`, `x/text` |
+| `internal/config` | Camadas de `docs/cli.md` §2.1, diretório de dados canonicalizado (§2.5), logger `slog` com filtro do próprio módulo | stdlib, `koanf` |
+| `internal/storage` | Abertura (pragmas, WAL, `journal_size_limit` 64 MiB), migrações, escritor único, pool de leitura de 4, resolvedor de escopo, busca, cópia online | `domain` |
+| `internal/wiki` | Leitura/emissão de frontmatter, escrita atômica, fluxo de escrita/remoção de página, Git, watcher, reconciliação, reindex | `domain`, `storage` |
+| `internal/cli` | Composição mínima para testes (sem comandos de usuário) | todos |
 
-Imports permitidos (verificados por teste de imports, ver §4): `domain` → nada; `config` → nada;
-`storage` → `domain`; `wiki` → `domain`, `storage`; `cli` → todos. `config` é entregue pela `cli` por
-valor (struct tipada) aos demais pacotes, que nunca leem o ambiente.
+`ingest` e `mcp` não existem nesta feature.
 
-## 2. Design de Contratos e Fronteiras
-- **Contrato:** não há API de rede nesta feature. Os contratos são (a) as interfaces Go entre pacotes, (b) o esquema SQL `V01` e (c) o formato em disco da wiki. Os nomes de tabela e coluna do `docs/database-schema.md` são contrato e são mantidos.
-- **Geração de Código:** nenhuma (`sqlc` e afins ficam de fora; SQL escrito à mão em `embed.FS`). `go generate` não é usado.
+### Interfaces internas (formas indicativas; nomes Go são convenção, não contrato)
+- **Escritor** (`docs/storage-and-retrieval.md` §3): `Writer.Do(ctx, cmd)` envia a um canal de capacidade 1024 com canal de resposta de uso único; fila cheia **espera**; encerramento descarta a fila e responde `writer actor is no longer running`; `Writer.Occupancy() (queued, capacity int)`. Um comando = uma transação, com FTS, entidades, links, evidências e auditoria juntos.
+- **Leitor:** pool somente leitura de 4 conexões, `busy_timeout` 5000 ms; pânico vira `reader pool task did not complete: <detalhe>`; fechado vira `read connection pool is closed`.
+- **Resolvedor de escopo** (§14.1): `ResolveRead(ctx, caller, ws, proj) (Scope, ResolvedBy, error)` sem criar; `ResolveWrite(...)` conforme a tabela de escrita; origens `explicit|session|shared_slot|startup_seed|default|default_after_mismatch`. A escrita de página **não** usa `ResolveWrite` criador: só confere que o projeto existe no workspace (`docs/wiki-files-layer.md` §5.2 passo 7).
+- **Wiki:** `WritePage(ctx, req) (PageVersion, error)`, `DeletePath(ctx, scope, path, expectedVersion)`, `ReindexPage`, `ReindexAll`; rastreia caminhos alterados para o próximo commit automático (sem commit na 001).
+- **Busca** (§11.3, `notes/search-contract.md`): `Query(ctx, scope, q, opts) (Result{Pages, RawHits, ResolvedBy})`; RRF k=60 sobre FTS, entidades e vizinhos de link do mesmo projeto; autoridade limitada a `[0,55; 1,50]`; `raw_hits` quando nenhuma página casa; reforço de acesso throttled 1/min por página e operador (anônimo incluso).
 
-### 2.1 Domínio (`internal/domain`)
-- `ID [16]byte` (UUIDv7) com `NewID()`, `ParseID`, `String()`; armazenado como `BLOB` de 16 bytes.
-- `Scope{WorkspaceID, ProjectID ID}` e `PageRef{Scope, Path PagePath}` (identidade de 3 elementos, INV-04).
-- `PagePath`: construtor `ParsePagePath(string) (PagePath, error)` normaliza separador POSIX, recusa `..`, caminhos absolutos, segmentos reservados e nomes não portáveis no Windows (`CON`, `NUL`, `:`, `?`, ponto/espaço no fim). `PortableKey()` (minúsculas + Unicode NFC) detecta colisão de caixa. `SearchText()` calcula `path_search` pela regra do doc.
-- `Tier` (`working|episodic|semantic|procedural`), `PageKind`, `ObservationKind`.
-- `Sanitized` e `sanitize.Text(raw string, limits Limits) Sanitized`: **único** construtor do tipo (campo não exportado). Remove segredos e depois limita (título 80, corpo 16 KiB). Padrões em RE2.
-- `Page`, `Frontmatter` (mapa ordenado), `Observation{... Title, Body Sanitized}`.
+### Persistência
+- Esquema e convenções: `docs/database-schema.md` (IDs `BLOB` 16, microssegundos UTC, hashes 32 bytes). Migrações `V<nn>__<nome>.sql` embutidas por `embed.FS`, controladas por `refinery_schema_history` com os tipos de §0; banco com migração desconhecida falha com o texto literal de "schema à frente"; **sem cópia** do banco antes de migrar.
+- Disco: árvore de `docs/wiki-files-layer.md` §1 (`<data_dir>/wiki/<ws_id>/<proj_id>/…`, `_meta.md` por escopo, índice em `<data_dir>/db/memory.sqlite`).
+- Formato de página: frontmatter conforme §3.1–§3.3 (casos dourados reemitidos com os mesmos bytes).
 
-### 2.2 Armazenamento (`internal/storage`)
+### Erros
+Categorias e textos literais de `docs/storage-and-retrieval.md` §19 e o texto de estado inconsistente de `docs/wiki-files-layer.md` §5.2 passo 9, como valores sentinela/tipos em `domain` e `storage`, testados por igualdade de string.
 
-```go
-// Writer é o ator de escrita. Uma goroutine dona da conexão; fila de 1024.
-type Writer interface {
-    UpsertPage(ctx context.Context, in UpsertPage) (UpsertResult, error)
-    DeletePath(ctx context.Context, ref domain.PageRef) (DeleteResult, error)
-    EnsureScope(ctx context.Context, in EnsureScope) (domain.Scope, error) // único que cria
-    InsertObservation(ctx context.Context, in InsertObservation) error     // F002 chama
-    BumpAccess(ctx context.Context, in BumpAccess) error                   // reforço throttled
-    Snapshot(ctx context.Context, toPath string) error                     // backup online
-    QueueLen() int
-    Close(ctx context.Context) error
-}
+### Eventos externos e APIs HTTP
+Nenhum nesta feature.
 
-// Reader usa pool somente leitura (soft cap 4).
-type Reader interface {
-    ResolveScope(ctx context.Context, req ScopeRequest) (domain.Scope, ScopeSource, error) // nunca cria
-    ReadPage(ctx context.Context, ref domain.PageRef) (domain.Page, error)
-    Recent(ctx context.Context, s domain.Scope, limit int) ([]PageSummary, error)
-    Search(ctx context.Context, q SearchQuery) (SearchResult, error) // FTS+entidades+grafo, RRF, autoridade, raw_hits
-    PageChain(ctx context.Context, ref domain.PageRef) ([]domain.PageVersion, error)
-}
-```
+## ADRs
 
-- **Erros tipados:** `ErrWriterClosed`, `ErrScopeNotFound`, `ErrScopeAmbiguous`, `ErrPathCollision`, `ErrSchemaAhead`, `ErrInconsistentState`. O resolvedor de escopo **só** devolve `ErrScopeNotFound` (falha fechada) em leitura.
-- **Pragmas:** `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`, `foreign_keys=ON` (OFF durante as migrações).
+- **ADR-001 — Escritor único como goroutine dona da conexão**
+  - **Decision:** uma goroutine possui a conexão de escrita e consome `chan command` de capacidade 1024; cada comando traz `chan result` de capacidade 1; o laço termina por `context` e, ao parar, drena a fila respondendo "escritor fechado".
+  - **Rationale:** reproduz exatamente §3 (ordem de chegada, espera em fila cheia, descarte no encerramento), dá backpressure natural e evita disputa de lock entre escritores (INV-02, INV-16).
+  - **Alternative Rejected:** `sync.Mutex` sobre `*sql.DB` — sem ocupação observável, sem semântica de descarte no encerramento e convida a transações espalhadas.
 
-### 2.3 Esquema SQL `V01__init.sql` (estado final completo)
-`V01__init.sql` materializa o **estado final completo** de `docs/database-schema.md` (todas as tabelas, índices, triggers de FTS e de pareamento), mais `schema_migrations`. As tabelas são criadas já nesta migração por fidelidade, mas **só são usadas conforme cada feature precisar**:
-- **Usadas na 001:** `workspaces`, `projects`, `pages` + `pages_fts`, `links`, `entities`, `entity_page_links`, `page_access`, `page_evidence`, `audit_log`, `sessions`, `observations` + `observations_fts` (fallback `raw_hits`).
-- **Criadas e ainda sem código (features seguintes):** `ingest_keys`, `session_consolidation_jobs`, `handoffs`, `agent_messages` (002); embeddings, `page_feedback`, `users`, `api_credentials`, `web_sessions`, `project_grants`, auto-melhoria, workstreams, perfil e demais (features 003 a 016, ver `roadmap.md`).
-- Tabelas sem uso não têm repositório, handler nem teste de comportamento; só o teste `TestSchemaV01` confere que o esquema aplica e é idempotente. Isso não infringe "sem código morto" da constituição, porque é DDL e não código Go.
-- **Desvio deliberado mantido:** `sessions.agent_kind` **sem** `CHECK` fechado (validação na aplicação), conforme a dica do próprio doc.
-- Colunas `author_id` e `embedding_*` existem no esquema, mas a 001 não as lê nem as escreve (leitura nunca filtra por autoria, INV-16).
+- **ADR-002 — Runner de migrações próprio compatível com `refinery_schema_history`**
+  - **Decision:** runner mínimo em `storage` que lê `V<nn>__<nome>.sql` de `embed.FS`, aplica cada uma numa transação e grava a linha em `refinery_schema_history` com as colunas e tipos de `docs/database-schema.md` §0.
+  - **Rationale:** o nome e o formato da tabela são contrato observável (um banco do original precisa abrir); nenhuma biblioteca Go produz essa tabela; o runner é pequeno.
+  - **Alternative Rejected:** `golang-migrate`/`goose` — tabela de controle própria (divergência do original) e dependência fora de `tech.md`.
 
-### 2.4 Wiki em disco
-`<data_dir>/wiki/<workspace_id>/<project_id>/{_meta.md,index.md,log.md,sessions/,concepts/,decisions/,...}`. Diretórios por UUID, nunca por nome. Commits com autor fixo `ai-memory <ai-memory@local>`. Temporário `.ai-memory-tmp.*` no mesmo diretório do destino.
+- **ADR-003 — Sanitizador em RE2 com classes Unicode explícitas e fronteira verificada em código**
+  - **Decision:** os 27 padrões de `docs/prompts-schemas-and-sanitizer.md` §11.2 são mantidos na ordem do doc, mas compilados com `\s`, `\d` trocados por classes Unicode explícitas (`[\p{White_Space}…]` equivalente, `\p{Nd}`) e `\b` substituído por checagem de fronteira Unicode feita em Go ao redor de cada casamento; passada única conforme §11.1.
+  - **Rationale:** RE2 tem `\s\d\b` só ASCII; o doc exige semântica Unicode (ex.: `Bearer` com espaço não separável) e o original não usa retrocesso, então RE2 com classes ajustadas reproduz o resultado sem dependência nova.
+  - **Alternative Rejected:** `dlclark/regexp2` — retrocesso (semântica diferente do original e risco de ReDoS) e dependência fora de `tech.md`.
 
-## 3. Decisões Arquiteturais e Justificativas
+- **ADR-004 — YAML pelo `yaml.Node` com resolução de escalares própria**
+  - **Decision:** o frontmatter é decodificado em `yaml.Node` e os escalares sem tag são resolvidos por uma função própria que implementa a tabela de `docs/wiki-files-layer.md` §3.2 (`true`/`false` booleanos, `yes` texto, `007` texto, inteiro fora de 64 bits é erro); a emissão gera texto à mão a partir da ordem de chaves preservada, conforme §3.3.
+  - **Rationale:** a resolução implícita do `yaml.v3` e o seu emissor não garantem os mesmos valores nem os mesmos bytes do original; os casos dourados exigem byte a byte.
+  - **Alternative Rejected:** `Unmarshal` em `map[string]any` + `yaml.Marshal` — perde ordem, muda tipos em casos de borda e reformata a saída.
 
-- **Decisão (P-01): migrações com runner próprio sobre `embed.FS`**, arquivos `V<nn>__nome.sql`, uma transação por migração, tabela `schema_migrations(version,name,applied_on,checksum)`, `foreign_keys=OFF` durante e `ON` depois. Um schema à frente do binário recusa a abertura (`ErrSchemaAhead`). Snapshot do banco antes de migrar.
-  - **Justificativa:** o contrato do doc (checksum tolerado, recusa de schema novo, FK desligada) é pequeno e específico demais para ser contornado por uma biblioteca.
-  - **Alternativa Rejeitada:** `golang-migrate`/`goose`. Trazem dependência e semântica de FK e checksum que divergem do contrato; o runner próprio tem ~150 linhas.
+- **ADR-005 — Escrita de página com rollback explícito do arquivo**
+  - **Decision:** `wiki.WritePage` lê o conteúdo anterior (ou a ausência), instala o arquivo atomicamente (temporário `.ai-memory-tmp.`, `fsync`, `rename`, `fsync` do diretório em melhor esforço; no Windows repete só 32/33 com 10–50 ms reaproveitando o temporário), e só então envia **um** comando ao escritor com página + índices; falha no banco reverte em ordem inversa e, se a reversão falhar, devolve o erro de estado inconsistente literal.
+  - **Rationale:** é o fluxo de §5.2 e da regra transversal da constituição; arquivo é a fonte da verdade e o índice nunca fica à frente dele.
+  - **Alternative Rejected:** gravar no banco primeiro e depois o arquivo — o índice poderia apontar para conteúdo inexistente após queda, contra "Markdown em git é a fonte da verdade".
 
-- **Decisão (P-02): ator de escrita genérico por comando.** Uma goroutine consome `chan command` (capacidade 1024); cada comando é uma closure `func(*sql.Tx) error` com canal de resposta de uso único. Cada método público = uma transação (INV-02, INV-03). Fila cheia bloqueia o chamador até o `ctx` cancelar (o 429 é responsabilidade do ingest, feature 002).
-  - **Justificativa:** serializa escritas sem mutex, dá métrica de ocupação e mantém índices (FTS por triggers, links, entidades, evidência, auditoria) na mesma transação.
-  - **Alternativa Rejeitada:** `MaxOpenConns(1)` no `database/sql` (sem fila observável nem lote) e `sync.Mutex` (sem backpressure).
+- **ADR-006 — Git via `go-git` com fallback para `git` só no Windows**
+  - **Decision:** adaptador `wiki/git` com `go-git/v5` como caminho normal (autor fixo `ai-memory <ai-memory@local>`, sem hooks, assinatura nem identidade do usuário, ledgers fora do índice, nenhum commit sem mudança) e fallback `os/exec` restrito às condições de `docs/windows-native-extras.md` §6.2 e `notes/wiki-layout-contract.md` (d). Na 001 o adaptador só **registra** caminhos; o commit automático é da 002, mas inicialização e confinamento do repositório entram aqui.
+  - **Rationale:** igual ao original; o `git` não é exigido no PATH.
+  - **Alternative Rejected:** só `os/exec` — diverge do original e exige `git` instalado.
 
-- **Decisão (P-03): arquivo antes do índice, com rollback.** Fluxo de `wiki.WritePage`: confinamento e portabilidade → sanitização → derivações (título, links, entidades, `expires_at`) → emissão → trava por página (mapa de mutex ordenado) → instala arquivo guardando o anterior → `storage.UpsertPage` → em falha restaura o anterior; se a restauração falhar, retorna `ErrInconsistentState`. Commit git só depois do sucesso do índice (falha de commit vira aviso, não erro).
-  - **Justificativa:** o markdown nunca fica atrás do banco; o reindex reconcilia o resto (decisão do doc). Cobre o cenário Gherkin de falha no banco.
-  - **Alternativa Rejeitada:** índice primeiro e arquivo depois (deixa banco apontando para arquivo inexistente em crash) e 2PC (complexidade sem ganho em processo único).
+- **ADR-007 — Chave portável com `x/text/cases` + NFC**
+  - **Decision:** chave = `cases.Lower(language.Und)` (minúsculas completas, incluindo `İ` e sigma final) seguida de `norm.NFC`; colisão com página viva do projeto vira o erro literal de colisão de caminho.
+  - **Rationale:** `strings.ToLower` faz só mapeamento simples, e o doc exige o completo (`docs/domain-vocabulary.md` §4.2); `x/text` já está em `tech.md`.
+  - **Alternative Rejected:** `strings.ToLower` + `norm.NFC` — diverge nos casos especiais do doc.
 
-- **Decisão (P-04): supersessão no `UpsertPage`.** Casos A (idêntico: não cria versão, só registra evidência), B (mudou: antiga `is_latest=0`, `valid_to=agora`, fecha janelas de entidade; nova com `supersedes`) e C (nova: checa colisão de caminho por `PortableKey`; ressuscita tombstone se houver). Tudo em uma transação; índice único parcial `idx_pages_latest_path` é a rede de segurança.
-  - **Justificativa:** cumpre INV-16 (supersede, nunca destrói) mesmo sob escrita concorrente de duas sessões, já que o escritor é único e o índice único rejeita a corrida.
-  - **Alternativa Rejeitada:** `UPDATE` in-place da página (perde a versão perdedora) e optimistic locking por hash (empurra a corrida para o cliente).
+- **ADR-008 — Watcher com `fsnotify`, debounce por caminho e reconciliação periódica**
+  - **Decision:** `fsnotify` recursivo (registro por diretório), debounce de 300 ms, reconciliação a cada 30 s com o primeiro disparo descartado, filtros de `docs/wiki-files-layer.md` §8.1, disjuntor de 5 falhas (`watcher_degraded`); goroutines canceladas por `context`. Escritas próprias absorvidas pelo prefixo do temporário e pela regra de conteúdo idêntico (sem inode/NTFS id).
+  - **Rationale:** reproduz §8 e cobre perdas de evento do `fsnotify` (especialmente em OneDrive/Windows) pela reconciliação.
+  - **Alternative Rejected:** só polling — latência e custo maiores, diverge do debounce de 300 ms do original.
 
-- **Decisão (P-05): busca = três fluxos + grafo, RRF depois autoridade.** Janela `clamp(limit×4, 20, limit+300)`; fluxo FTS5 com preparação segura da consulta (`prepareFTS5Query`: detecta sintaxe explícita, remove 57 stop words, une com `OR`, neutraliza `:`, cita pontuação ASCII, valida com uma sonda FTS5 e degrada para termos citados); fluxo de entidades (tokens 3–64 chars, máx 12, peso `1/freq`); grafo bidirecional a partir das sementes; `score = Σ 1/(60+pos)`; fator de autoridade em `[0,55; 1,50]` somando ajustes por tipo, tier, `pinned`, caminho e tags, e aplicado multiplicando se `rank ≤ 0` e dividindo se `> 0`. Sem fluxo de vetor (campo ausente, não stub). Se nenhuma página compilada casar, `raw_hits` por `observations_fts`.
-  - **Justificativa:** reproduz o contrato do doc sem LLM; autoridade pós-fusão exige a janela larga.
-  - **Alternativa Rejeitada:** só BM25 do FTS5 (perde recall por entidade e vizinhança) e reranking por LLM (fora de escopo, INV-13).
+## Auditoria da Constituição
 
-- **Decisão (P-06): escrita atômica de arquivo com retry no Windows.** `atomicfile.Write` = temporário `.ai-memory-tmp.*` no mesmo diretório → `Sync` → `os.Rename` → `fsync` do diretório (melhor esforço; no-op no Windows). No Windows, `ERROR_SHARING_VIOLATION` (32) e `ERROR_LOCK_VIOLATION` (33) repetem até 5 vezes com 10–50 ms. Retorna o identificador do arquivo para o watcher reconhecer as próprias escritas (além do prefixo).
-  - **Justificativa:** INV-10 e a realidade de antivírus/indexador no Windows, que é o ambiente do autor.
-  - **Alternativa Rejeitada:** `os.WriteFile` direto (não atômico) e biblioteca de terceiros de rename atômico (dependência para ~40 linhas).
+### Portões de Qualidade
+- [x] Build `CGO_ENABLED=0` + `go vet` para `windows/amd64` e `linux/amd64` — todas as dependências são pure Go (ADR-002/003/004/006).
+- [x] `go test -race ./...` — previsto; tasks devem incluir execução em container `golang:1.26` ou gcc local.
+- [x] `golangci-lint run` — configuração criada na task de bootstrap do módulo.
+- [x] Teste multi-sessão explícito para supersessão, escritor SQLite e resolução de escopo (INV-16).
+- [x] Teste de contrato `TestINVnn_...` para INV-01..06, 09..11, 13, 15 e 16 (critério da spec). INV-05 nesta feature cobre só o primitivo de ocupação da fila; `/hook` é da 002. INV-09 cobre a guarda de processo vivo do `reindex`; `reset`/`restore`/`uninstall`/`backup` são da 002.
+- [x] Valores literais contra docs e `docs/assets/fixtures/` (erros §19, casos dourados de YAML, fixtures de busca e sanitização).
+- [x] Spec com `Aprovado: true` e `acceptance/nucleo.feature`.
+- [x] Nenhuma dependência fora de `tech.md` (ADR-002 e ADR-003 rejeitam bibliotecas não listadas).
 
-- **Decisão (P-07): sanitizador como fronteira de tipo.** Pacote `domain/sanitize` expõe `Text()` e o tipo `Sanitized` (campo privado); `storage` e `wiki` só aceitam `Sanitized` nas assinaturas de escrita. Padrões de segredo em lista versionada (chaves de API de provedores comuns, tokens Bearer, JWT, chaves privadas PEM, `password=`/`secret=`/`token=`, URLs com credenciais), testados contra fixtures em `internal/domain/sanitize/testdata`. Remove segredo antes de truncar; trunca em fronteira de rune.
-  - **Justificativa:** INV-06 imposta pelo compilador, não por convenção. `docs-adiados/` estava ausente, então a lista é nossa (hoje em `docs/prompts-schemas-and-sanitizer.md` §11; alinhamento na 002/T093) e fica registrada como débito de fidelidade.
-  - **Alternativa Rejeitada:** sanitizar nos handlers (esquecível) e `string` com função `Clean()` opcional.
+### Restrições Arquiteturais
+- [x] Binário único, módulo único, layout `cmd/ai-memory` + `internal/…` (só os pacotes da 001).
+- [x] Grafo de imports aplicado por `TestImportGraph`; `domain` sem I/O; `config` único leitor de arquivo/ambiente.
+- [x] INV-01 — configuração carregada uma vez em `config`, camadas de `docs/cli.md` §2.1, sem `.env`.
+- [x] INV-02 — ADR-001; pool de leitura somente leitura de 4.
+- [x] INV-03 — índices na mesma transação (ADR-001/005).
+- [x] INV-04 — identidade `(workspace_id, project_id, path)` tipada no domínio e em toda linha.
+- [~] INV-05 — fora do escopo (hooks são da 002); só a ocupação da fila do escritor é exposta.
+- [x] INV-06 — sanitizador antes do teto; barreira de tipo só para observações; páginas sanitizadas pelo chamador; reindex sem higienizar (ADR-003).
+- [~] INV-09 — guarda de processo vivo no `reindex`; trava `.serve.lock` e backup online por HTTP ficam para a 002 (a 001 entrega o primitivo de cópia online do SQLite).
+- [x] INV-10 — escrita atômica de ADR-005; watcher ignora `.ai-memory-tmp.`; ledger fora do escopo.
+- [x] INV-11 — diretório de dados absoluto, canonicalizado como no original e registrado no log.
+- [x] INV-12 — reservada, nada a fazer.
+- [x] INV-13 — feature inteira zero-LLM.
+- [x] INV-15 — handler `slog` filtra o próprio módulo.
+- [x] INV-16 — leitura sem filtro de autoria; supersessão preserva perdedora; ponteiro por ator no resolvedor. Handoff exatamente uma vez: fora do escopo (002).
+- [x] Resolução de escopo central; leitura não cria; escrita de página não cria; `reindex` recria a partir do `_meta.md` mantendo UUIDs.
+- [~] Autorização por capacidade e tokens em tempo constante — sem rotas nesta feature; nada a implementar.
+- [x] Mutações da wiki só pela camada `wiki`.
+- [x] Markdown em git como fonte da verdade; SQLite reconstruível (`reindex`).
 
-- **Decisão (P-08): watcher com `fsnotify`, debounce de 300 ms e reconciliação de 30 s; reindex como caminho único.** O watcher e a reconciliação convergem para `wiki.IndexFile(ref)`, o mesmo código do `reindex` completo, que lê o markdown, deriva e chama `storage.UpsertPage`. Escritas próprias são ignoradas pelo prefixo e pelo identificador do arquivo. `reindex` e `reset` consultam processo vivo antes de agir (INV-09). Remoção de arquivo não apaga a página por padrão (tombstone opcional, desligado).
-  - **Justificativa:** um único caminho de indexação evita divergência entre tempo real e reconstrução; a reconciliação cobre eventos perdidos (especialmente no Windows).
-  - **Alternativa Rejeitada:** só `fsnotify` (perde eventos) e só varredura periódica (latência alta).
+### Regras de Negócio Transversais
+- [~] Idempotência por chave de ingestão — ingestão é da 002.
+- [x] Falha no upsert após instalar o arquivo reverte o arquivo e propaga o erro (ADR-005).
+- [x] Lápide de páginas sumidas opcional e desligada por padrão.
+- [x] Fase zero-LLM respeitada; INV-07/08/14 não se aplicam.
 
-- **Decisão (P-09): git por `os/exec`, serializado.** `gitrepo` inicializa o repositório, valida `git` no PATH na abertura (erro claro), faz `add`+`commit` por evento sob mutex próprio, com `-c user.name=ai-memory -c user.email=ai-memory@local -c commit.gpgsign=false`. Paths sempre passados por `--` e relativos à raiz.
-  - **Justificativa:** ADR-03 do discovery; evita divergência do `go-git` com a config do usuário.
-  - **Alternativa Rejeitada:** `go-git` (comportamento incompleto) e git opcional (mais caminhos de teste; adiado).
+### Preferências de Bibliotecas
+- [x] `modernc.org/sqlite`, sem `mattn/go-sqlite3`.
+- [~] MCP — fora do escopo.
+- [x] `koanf` (sem `viper`); `cobra` só quando houver CLI (002).
+- [x] UUIDv7 via `google/uuid`; logs via `log/slog`.
+- [x] Sanitizador com semântica Unicode sem retrocesso (ADR-003).
+- [x] `go-git/v5` com fallback `git` só no Windows (ADR-006).
+- [x] Stdlib preferida (runner de migrações e emissor de YAML próprios só onde o contrato exige).
 
-- **Decisão (P-11): configuração em camadas, com `.env` local não versionado.** `config.Load` é o único ponto que lê ambiente (INV-01) e resolve, em ordem crescente de precedência: padrões embutidos < arquivo TOML < `.env` < variáveis do processo `AI_MEMORY_*` (separador `__`). O `.env` é opcional, lido da raiz do repositório (diretório de trabalho) ou de `AI_MEMORY_ENV_FILE`, e **nunca é versionado**: `.gitignore` o exclui e `.env.example` (versionado, só nomes e valores de exemplo, sem segredos) documenta as chaves. Chaves entram no `.env.example` à medida que cada feature precisar delas. O resultado é uma struct `Config` tipada e imutável, entregue por valor aos demais pacotes. Uso de `koanf` com os providers `file`, `env` e o parser `dotenv`.
-  - **Justificativa:** o autor quer um `.env` local populado conforme o projeto cresce; manter tudo em um caminho preserva a invariante e mantém segredos fora do git.
-  - **Alternativa Rejeitada:** `godotenv` chamando `os.Setenv` (muta o ambiente global e espalha a leitura) e `viper` (vetado pela constituição).
+### Anti-Padrões Proibidos
+- [x] Sem leitura de ambiente fora de `config`; sem segredos versionados.
+- [x] Sem escrita de arquivo da wiki fora de `wiki`.
+- [x] Sem "indexar depois".
+- [x] Sem filtro de leitura por autoria.
+- [x] Sem criação de escopo em leitura, busca ou remoção.
+- [x] Caminho de página só via `domain.PagePath`.
+- [x] Sem `panic` em caminho de execução (pânico no pool é recuperado e vira erro tipado).
+- [x] Sem abstração preemptiva nem stubs: interfaces só onde há dois consumidores ou teste (escritor, Git com fallback).
+- [x] Goroutines (escritor, watcher, reconciliação) com cancelamento por `context`; sem fan-out ilimitado.
+- [x] Sem "melhorar" o original (ex.: sem herança de `pinned`, regravação de arquivo idêntico mantida).
+- [x] "A confirmar" resolvido pelo original (spec, seção de correções da auditoria).
+- [x] Clean-room: nada copiado além dos docs.
 
-- **Decisão (P-10): contratos de teste por invariante.** Cada `INV-nn` ganha um teste `TestINVnn_*` (ver §4). Fixtures vêm de `docs/assets/fixtures` e `docs/test-fixtures.md`; testes multi-sessão usam duas `Writer`/`Reader` sobre o mesmo banco temporário com `t.Parallel` e `-race`. Benchmark `BenchmarkSearch5k` registra o baseline (< 100 ms).
-  - **Justificativa:** a constituição exige teste multi-sessão e invariante nomeada.
-  - **Alternativa Rejeitada:** só testes unitários por função (não exercitam concorrência entre sessões).
-
-## 4. Auditoria de Constituição
-
-**Portões de Qualidade**
-- [ ] `CGO_ENABLED=0 go build ./...` e `go vet ./...` para `windows/amd64` e `linux/amd64` — P-01 a P-09 usam só pure-Go; verificado no portão de CI/tasks.
-- [ ] `go test -race ./...` — P-02, P-04 e P-10.
-- [ ] Teste multi-sessão para escopo, supersessão, escritor e filtros de dono — P-04 e P-10 (`TestINV16_*`).
-- [ ] Cada invariante com teste nomeado ou débito registrado — P-10; INV-12 registrada como reservada.
-- [ ] Nenhuma feature sem `Aprovado: true` e sem Gherkin — spec 001 aprovado; cenários do discovery §4.
-- [x] Dependência nova só se listada em `tech.md` — `gopkg.in/yaml.v3`, `fsnotify` e `koanf` (providers/parsers) já registrados em `tech.md`.
-
-**Restrições Arquiteturais**
-- [ ] Binário único, módulo único, sem CGO, layout `cmd/ai-memory` + `internal/...` — §1 (acrescenta `internal/config`, ver nota abaixo).
-- [ ] Grafo de imports (`domain` sem I/O; `storage`→`domain`; `wiki`→`domain`,`storage`; só `cli` compõe) — §1; teste `TestImportGraph` com `go list -deps`.
-- [ ] INV-01 config uma vez, único `os.Getenv` — `internal/config` + P-11 (`.env` não versionado) + teste que falha se `os.Getenv`/`os.LookupEnv`/`os.Environ` aparecer fora dele.
-- [ ] INV-02 escritor único, fila 1024, pool de leitura — P-02.
-- [ ] INV-03 índices na mesma transação — P-02, P-04 (FTS por triggers).
-- [ ] INV-04 identidade `(workspace_id, project_id, path)` — §2.1 (`PageRef`).
-- [ ] INV-05 hooks 202/429 — **não se aplica** a esta feature (feature 002); nada em `ingest` aqui.
-- [ ] INV-06 sanitização como fronteira de tipo — P-07.
-- [ ] INV-09 processo vivo antes de `reset`/`reindex`/`restore`; backup online — P-08 e `Writer.Snapshot` (API de backup do modernc).
-- [ ] INV-10 escrita atômica e watcher ignora temporários — P-06 e P-08.
-- [ ] INV-11 `data_dir` absoluto e canônico, registrado no log — `config.Load` (`filepath.Abs` + `EvalSymlinks` do pai) e log em `info` na abertura.
-- [ ] INV-12 reservada — nenhuma regra imposta.
-- [ ] INV-13 zero-LLM — nenhum pacote de provedor; busca sem vetor.
-- [ ] INV-15 logs filtram o próprio módulo — `slog.Handler` com filtro por atributo `module` em `cli`.
-- [ ] INV-16 multi-sessão (páginas compartilhadas, supersessão, ponteiro por ator) — P-04; handoffs e ponteiro ficam na feature 002.
-- [ ] Resolução de escopo central e falha fechada; só escrita explícita cria — `Reader.ResolveScope` vs `Writer.EnsureScope`.
-- [ ] Autorização por capacidade e token em tempo constante — **não se aplica** (sem rede nesta feature).
-- [ ] Mutações da wiki só pela camada `wiki` — P-03; `storage.UpsertPage` não é chamado fora de `wiki`.
-- [ ] Markdown em git é a fonte da verdade; SQLite reconstruível — P-03 e P-08.
-
-**Regras de Negócio Transversais**
-- [ ] Idempotência de ingestão — **adiada** para a feature 002 (`ingest_keys` em `V02`).
-- [ ] Rollback do arquivo quando o banco falha — P-03.
-- [ ] Observação nunca chega ao storage sem sanitizador — P-07 (assinatura exige `Sanitized`).
-- [ ] Tombstone de páginas removidas desligado por padrão — P-08.
-- [ ] Escopo faseado, sem LLM — plano sem embeddings, rerank ou provedor.
-
-**Preferências de Bibliotecas**
-- [ ] `modernc.org/sqlite` (sem mattn) — §1.
-- [ ] `koanf` + `cobra` (sem viper) — §1.
-- [ ] `google/uuid`, `slog`, `regexp` RE2 — §1.
-- [ ] `git` do sistema (sem go-git) — P-09.
-- [ ] Stdlib sempre que resolver — migrações, ator e atomicfile são código próprio sobre a stdlib.
-
-**Anti-Padrões Proibidos**
-- [ ] Sem `os.Getenv` fora de `config` — teste de grep em CI.
-- [ ] Sem escrita de arquivo da wiki fora de `wiki` — `atomicfile` é interno de `wiki`.
-- [ ] Sem "indexar depois" fora da transação — P-02/P-04.
-- [ ] Sem filtro de leitura por autoria — `pages` não tem `author_id` nesta feature; leitura nunca filtra por ator.
-- [ ] Sem criar escopo em leitura/busca/destrutivo — `Reader` não tem método que cria.
-- [ ] Sem concatenar caminho à mão — `PagePath` e `wiki.pathFor(scope, path)`.
-- [ ] Sem `panic` em caminho de execução — erros tipados; pânico no pool de leitura vira erro.
-- [ ] Sem abstração preemptiva, código morto ou stubs — interfaces `Writer`/`Reader` têm chamador (wiki e testes); `InsertObservation` só entra se o `raw_hits` precisar dele em teste, caso contrário sai para a feature 002.
-- [ ] Goroutine sempre com `context` e sem fan-out ilimitado — ator, watcher e reconciliação.
-- [ ] "A confirmar" tratado como decisão em ADR — timeout de hook (feature 002) e INV-12 já registrados no discovery.
-- [ ] Clean-room: nenhuma cópia do binário original — contratos vêm só dos docs.
-
-> **Notas de desvio / pendências**
-> 1. `internal/config` é um pacote novo em relação ao layout original da constituição. Não viola o grafo (não importa ninguém) e concentra o único acesso ao ambiente. **Resolvido:** acrescentado à constituição (o autor definiu o `.env` local, P-11).
-> 2. **Resolvido:** `tech.md` atualizado com `gopkg.in/yaml.v3`, `fsnotify` e os providers/parsers do `koanf`.
-> 3. **Resolvido:** `V01` contém todo o esquema do doc; as tabelas sem uso ficam só como DDL até a feature que as exigir (§2.3).
-> 4. `InsertObservation` e a tabela `observations` entram porque o fallback `raw_hits` é exigido pelo escopo; a escrita real de observações só é exercida nos testes até a feature 002.
+Legenda: `[x]` atendido pelo plano; `[~]` não se aplica a esta feature (justificado).

@@ -337,8 +337,10 @@ section 2.2.
   existing rules for ended sessions. See [lifecycle-event-ingestion.md](lifecycle-event-ingestion.md),
   section 8.3.
 - Stopping a parent does not make the server end its child sessions. The producer must
-  report each child's lifecycle transition. (a confirmar: no code that infers child
-  endings was located in this review.)
+  report each child's lifecycle transition. (Confirmed in audit 002: the server never
+  infers a child ending from its parent. The only child-specific rule is that an OpenCode
+  child session, marked as subagent in its own `session-end`, is closed and summarized
+  **without** an automatic handoff; see lifecycle-event-ingestion.md §8.3.)
 
 ## 8. Native spool and drain limits
 
@@ -347,8 +349,10 @@ external capture was activated. Capture ownership does not change them.
 
 | Item | Value and behavior |
 |---|---|
-| Spool file cap per data directory | 10,000 files. On enqueue, the oldest undelivered entries are evicted once the cap is exceeded, with a warning. |
-| Entry expiry by age | Not enforced in the current code. Entries leave the spool by delivery, by the attempt limit, or by eviction. |
+| Spool file cap per data directory | 10,000 files (entries plus files in the recovery quarantine, which belongs to managed-run recovery). When the cap is reached, enqueue **keeps the existing backlog and drops the new event**, printing `ai-memory: hook-spool at capacity (10000); dropping one new UNDELIVERED event` (no error; the hook still succeeds). The cap is soft: a concurrent enqueuer that holds the capacity lock past 50 ms is not waited for, so a burst can overshoot by a few entries. |
+| Entry expiry by age | **7 days.** An entry older than 7 days (from its creation time) is deleted at load time and counted as dropped, whatever its attempt count, so a long-dead instance cannot grow the spool without bound. |
+| Entry size | A spool file larger than 10 MiB is refused when read (it stays counted as remaining, it is not delivered). An entry whose JSON cannot be parsed is deleted and counted as dropped. |
+| Directory | The spool directory is private (`0700` on Unix); entries are written to a temporary file and renamed, `0600`. File names are `<created_ms padded to 13 digits>-<pid>-<16-hex sequence>-<recovery key>.json`. |
 | Attempts before an entry is dropped | 8 by default, set by the hook spool configuration. A value of 0 disables dropping by attempts. Attempts are counted only when a server was reached and the delivery failed. An endpoint-level outage does not count. |
 | Batch size | 256 items per request. |
 | Batch byte budget | 8 MiB soft limit. A chunk always carries at least one event, even if that event alone is larger. |
@@ -369,7 +373,8 @@ upper bound.
 Failure behavior of the native drain:
 
 - A delivery that fails leaves the entry in the spool, and its attempt count increases.
-- When the attempt count reaches the limit, the entry is removed.
+- When the attempt count reaches the limit, the entry is removed. Any entry older than 7 days is
+  removed first (see the table).
 - If a spool write fails at capture time, the warning is printed and that event is
   skipped. No retry is scheduled for it.
 - A session-start drain first waits for the drain lock, up to its budget. If another
@@ -391,8 +396,12 @@ Failure behavior of the native drain:
   variable grants no permissions. `extension` is self-declared provenance, not an
   identity.
 - Project access modes and grants apply to database-user tokens. See [users.md](users.md).
-  Pages are shared by authorized project members. (a confirmar: these two access rules
-  were not re-verified in this review.)
+  Pages are shared by authorized project members. (Confirmed in audit 002 for the
+  ingestion path: the per-repository check only runs for a database-user viewer, and only
+  when per-repository authorization is on; root and single-operator installs are not
+  checked. A capture whose author may not write the project is acknowledged and dropped
+  (`dropped_unauthorized` in a batch), never retried. `GET /recap` answers a project the
+  viewer cannot read exactly like an unknown session.)
 - This document does not introduce a framework adapter, a workflow engine or a generic
   plugin runtime. A future adapter for an observability standard can map conversation
   and tool-call identities at the boundary. Keep the ingestion producer identity separate

@@ -76,6 +76,8 @@ A ordem é `entities` primeiro, depois `tags`. Em seguida cada nome passa por no
 
 Uma entidade é única dentro de cada par workspace e projeto. Cada versão tem no máximo um vínculo com a mesma entidade.
 
+**Metadados públicos de escrita (verificado no original).** Na ferramenta de escrita de página e no endpoint administrativo de escrita, o campo `entities` dos metadados é validado **antes** e de forma estrita: mais de 10 itens, ou qualquer item com mais de 64 caracteres, com caractere de controle (espaços em branco como tab e quebra de linha não contam como controle aqui), ou que normalize para vazio, rejeita a escrita inteira com o erro de validação `invalid or oversized page metadata: entities` e nada é gravado. Os itens válidos são gravados já normalizados no frontmatter `entities`. O descarte silencioso descrito acima vale para o frontmatter de arquivos e para a saída do consolidador.
+
 ## Retirada de versões
 
 Quando a versão atual de um caminho é retirada, o mesmo instante é gravado na janela de página e na janela de vínculo, na mesma transação:
@@ -89,7 +91,8 @@ Quando a versão atual de um caminho é retirada, o mesmo instante é gravado na
 | Movimento de sessão com regeneração | Instante da operação | `is_latest = 0` e `valid_to` | `superseded_at` nos vínculos ainda abertos | Não |
 
 - A retirada por decaimento só se aplica se o identificador esperado ainda for a versão atual. Um candidato antigo não retira uma página que já foi reescrita.
-- A remoção física (exclusão de página por caminho, purga de sessão, de projeto ou de workspace) apaga as linhas. Os vínculos saem em cascata. Não existe janela para uma linha removida.
+- A reorganização de workspace (`reorg`) aposenta **todas** as versões atuais do workspace (de todos os projetos), no mesmo instante, mas não grava marca de tombstone e **não toca nos arquivos**.
+- A remoção física (exclusão de página por caminho, **expiração por TTL da varredura de esquecimento**, purga de sessão, de projeto ou de workspace) apaga as linhas de **todas** as versões do caminho. Os vínculos saem em cascata. Não existe janela para uma linha removida.
 
 ## Escrita de uma nova versão
 
@@ -107,11 +110,14 @@ Pelos caminhos de escrita descritos, um caminho tem no máximo uma versão váli
 
 ### Entrada
 
-- O parâmetro `as_of` de `memory_query` aceita um instante ISO-8601 com data, hora e fuso, por exemplo `2026-06-01T00:00:00Z`. A aceitação de uma forma apenas com data é a confirmar.
+- O parâmetro `as_of` de `memory_query` aceita um instante ISO-8601/RFC 3339 **com data, hora e fuso**: `Z`, deslocamento numérico (`+02:00`) ou zona IANA entre colchetes. Exemplo: `2026-06-01T00:00:00Z`. O valor é aparado antes da leitura. **Forma só com data (`2026-06-01`) ou hora sem fuso é erro** (confirmado: o instante precisa de fuso). Frações de segundo são aceitas.
 - Texto vazio ou só com espaços equivale a ausência do parâmetro: a consulta é normal.
-- Valor que não é um instante gera erro.
-- Combinar `as_of` com `global` ou com `scopes` gera erro.
-- `answer` não é sintetizado em consulta `as_of`. A resposta traz um aviso em `answer_unavailable`.
+- Valor que não é um instante gera erro interno da ferramenta (não erro de parâmetro) com a mensagem `as_of must be an ISO-8601 instant: <detalhe>`.
+- Combinar `as_of` com `scopes` gera erro (`as_of cannot be combined with global or scopes`). Antes disso, `scopes` junto com `workspace`/`project` já é erro (`scopes cannot be combined with workspace/project`).
+- **`global`: comportamento observado do original.** A ramificação de busca global é avaliada **antes** de `as_of`. Com `global = true` e sem `workspace`/`project`/`scopes`, a consulta global (só texto, todos os projetos) responde normalmente e **`as_of` é ignorado, sem erro**. Com `global = true` e `workspace`, `project` ou `scopes`, o erro é o da própria busca global (`global cannot be combined with workspace/project/scopes`). O mesmo ocorre quando o repositório ativo opta por recall global por padrão e a chamada não traz escopo explícito. A documentação anterior dizia que `as_of` + `global` sempre falha; isso só é verdade nas combinações com escopo explícito.
+- `include_expired`, `include_superseded`, `pin_first` e `raw_hits` não têm efeito em consulta `as_of`; a busca não une as preferências do escopo `_global` (`global_scope_hits` vem vazio) nem aplica filtro de dono de observações.
+- `answer` não é sintetizado em consulta `as_of`. Se `answer` foi pedido, a resposta traz `answer_unavailable = "answer synthesis is not supported for as_of (time-travel) queries"`; sem `answer`, o campo é omitido.
+- O limite da consulta é o de `memory_query` (padrão configurado, limitado a 1..100).
 - Sem `as_of`, nada muda.
 
 ### Regra de vigência
@@ -126,8 +132,11 @@ Pelos caminhos de escrita descritos, um caminho tem no máximo uma versão váli
 
 - Termos da consulta: a consulta é separada em trechos formados por letras, números, hífen e sublinhado. Hífen e sublinhado das bordas são removidos e tudo vira minúsculas. Só entram termos com 3 a 64 caracteres, sem repetição. São usados no máximo **12** termos, na ordem em que aparecem. Um termo composto com hífen ou sublinhado também gera suas partes.
 - Casamento com o nome de uma entidade: o termo é igual ao nome, ou o nome começa pelo termo, ou alguma palavra do nome começa pelo termo. As palavras do nome são separadas por espaço, hífen ou sublinhado. Por exemplo, `actor` casa com `writer actor`, `writer-actor` e `writer_actor`.
-- Peso: cada entidade casada contribui com `1 / N`, onde N é o número de páginas que carregam essa entidade no instante T. Tags largas, presentes em muitas páginas, pesam pouco.
-- Uma página recebe a soma dos pesos das entidades casadas. A ordenação é por peso decrescente, depois por número de termos casados decrescente, e por último pelo caminho em ordem alfabética.
+- Peso: cada entidade casada contribui com `1 / N`, onde N é o número de **vínculos** (versões de página) dessa entidade cuja janela contém T (sem filtro de expiração). Tags largas, presentes em muitas páginas, pesam pouco.
+- Uma página (versão) recebe a soma dos pesos das entidades casadas. A ordenação é por peso decrescente, depois por **número de entidades casadas** (não de termos da consulta) decrescente, e por último pelo caminho em ordem alfabética. Uma entidade casada por vários termos conta uma vez.
+- Os nomes das entidades casadas, sem repetição e em ordem alfabética, vão no `explain` como `matched_entities`.
+- Os termos viram comparações sem diferença de caixa: nome igual ao termo; nome começando pelo termo; ou palavra do nome (após espaço, `-` ou `_`) começando pelo termo. Os caracteres `%`, `_` e `\` do termo são tratados como literais.
+- O fluxo devolve no máximo `max(4 × limite, 20)` candidatos (limitado a `limite + 300`; com o limite máximo de 100 o teto vale 400).
 - O vínculo precisa estar com a janela contendo T. A validade por tempo de expiração é ignorada neste fluxo.
 
 **Fluxo de texto.** Recupera as versões cuja janela de página contém T, e que não estavam expiradas em T.
@@ -138,11 +147,11 @@ Pelos caminhos de escrita descritos, um caminho tem no máximo uma versão váli
 **Fusão.**
 
 - Cada fluxo numera suas posições a partir de 1. Cada página recebe, de cada fluxo em que aparece, `1 / (60 + posição)`. A soma é sua pontuação combinada.
-- O mesmo ajuste de autoridade da busca padrão é aplicado a todas as candidatas. O fator fica entre 0,55 e 1,50. Marcadores de baixa autoridade no frontmatter reduzem o teto desse fator.
-- A ordenação final usa a pontuação ajustada, com a melhor primeiro. O empate é desfeito pelo caminho em ordem alfabética. Depois corta-se pelo limite pedido.
+- O mesmo ajuste de autoridade da busca padrão (kind, tier, fixada, caminho, tags; ver [armazenamento e recuperação](storage-and-retrieval.md) §11.5) é aplicado a todas as candidatas, inclusive versões já substituídas. O fator fica entre 0,55 e 1,50. Marcadores de baixa autoridade reduzem o teto (0,55, 0,65 ou 0,80). Para páginas que só vieram do fluxo de entidades, a autoridade é lida da própria versão, sem exigir que seja a atual. **Não há** roteamento de recall de sessão, peso de crença, confiança nem `evidence_count` no caminho `as_of`.
+- O rank devolvido é o oposto da pontuação RRF; o ajuste de autoridade multiplica esse rank (rank ≤ 0 é multiplicado pelo fator). A ordenação final usa o rank ajustado, melhor primeiro. O empate é desfeito pelo caminho em ordem alfabética. Depois corta-se pelo limite pedido.
 - Não participam da consulta `as_of`: busca vetorial, vizinhos de grafo e busca de observações brutas. Consultas de auditoria não contabilizam acesso e não passam por reordenação extra.
 
-**Explicação (`explain`).** Com `explain` ativo, a resposta traz `streams_active` igual a `["entity", "fts"]`, mesmo quando um dos fluxos não produziu resultados. Cada página traz a posição em cada fluxo, o peso de entidade, os termos casados, a contribuição de cada fluxo e o fator de autoridade.
+**Explicação (`explain`).** Com `explain` ativo, a resposta traz `streams_active` igual a `["entity", "fts"]`, mesmo quando um dos fluxos não produziu resultados. Cada página traz `fts_rank` e `fts_score` (posição 1-based e pontuação BM25 bruta), `entity_rank`, `entity_weight` e `matched_entities` (nomes das **entidades** casadas), `rrf` (`fts`, `vector`, `graph`, `entity`; `vector` e `graph` valem 0), `fused` (soma das contribuições) e `authority` (fator). Campos de um fluxo em que a página não apareceu são omitidos. `streams_active` é montado pela ferramenta, e `timings` é omitido.
 
 ## Exemplo
 

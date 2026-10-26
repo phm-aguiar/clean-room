@@ -61,8 +61,12 @@ managed-workstream continuity ledger.
    at-least-once: a crash during them can repeat an already applied effect, but
    it does not silently drop the rest. An interrupted SessionEnd replay converges
    the wiki commit and the pending key, without
-   appending another observation (a confirmar). Each wiki write appends a line
-   of the form `## [YYYY-MM-DDTHH:MM:SSZ] <event> | <title>` to the wiki log.
+   appending another observation (a confirmar). Each captured hook event appends
+   a line of the form `## [YYYY-MM-DDTHH:MM:SSZ] <event> | <title>` to the
+   project's monthly event ledger `log-YYYY-MM.md` (UTC month of the event;
+   a legacy `log.md` is recognized but never appended to). A page write
+   does **not** append to the ledger (corrected against reference 3.1.1; see
+   [wiki-files-layer.md](wiki-files-layer.md) §5.2 and §9).
 3. **Session end.** On a true SessionEnd event, the server writes a rule-based
    session summary page (no LLM) under `sessions/` and opens a handoff for the
    next agent. The automatic handoff, the session's ended stamp, and the
@@ -418,7 +422,7 @@ Hints are the server's tool annotations (a confirmar for each tool).
 | `memory_read_page` | read-only | Fetches the full body of one page, by path or by the top full-text hit for a query. Optional workspace and project target a named sibling. `include_related=true` walks the link graph outward from the page: a bounded breadth-first walk, default 1 hop (a confirmar), hard cap 3 hops, a visited set against cycles, and at most 50 nodes in total, across projects. Each related page carries its depth and direction (`link` or `backlink`). With the default, the response has no `related` field. |
 | `memory_read_session_observations` | read-only | Pages through one session's raw observations, with the full sanitized body capped per row by `body_max_chars`. Restricted to rows in the resolved scope and to sessions the caller may see. Reports `total` and `elided_other_scope`. If no session id is given, the latest completed visible session is read. |
 | `memory_status` | read-only | Counts, paths, version, and the `scope` that answered: workspace, project, and `resolved_by` (`explicit`, `session`, `shared_slot`, `startup_seed`, `default`, `default_after_mismatch`; the value list is a confirmar). Unscoped reads resolved by `startup_seed` or `default_after_mismatch` also log a server warning. |
-| `memory_briefing` | read-only | Structured counts, activity, rules, slots, and recent pages. Project snapshots include up to 10 pinned latest pages as standing context. This list is separate from slots. It is empty and omitted from the output when the project has no pins. Opt-in `settled_first: true` leads with up to 8 of the project's highest-standing rule and decision pages, ordered by evidence count and then recency (a confirmar: the limit of 8). |
+| `memory_briefing` | read-only | Structured counts, activity, rules, slots, and recent pages. Project snapshots include up to 10 pinned latest pages as standing context. This list is separate from slots. It is empty and omitted from the output when the project has no pins. Opt-in `settled_first: true` leads with up to 8 of the project's highest-standing rule and decision pages, ordered by evidence count and then recency (the limit of 8 is confirmed). |
 | `memory_handoff_begin` | destructive | Opens an owner-scoped handoff for the next agent. `shared=true` publishes it to the whole project. Optional workspace and project target a named sibling. |
 | `memory_handoff_list` | read-only | Lists open handoffs visible to the caller, own and shared, with inspectable body and identity fields. It does not claim or expire anything. Root-only `any_owner=true` lists across operators. |
 | `memory_handoff_accept` | destructive | Fetches and acknowledges an open handoff. Passing `handoff_id` claims that exact row. Without it, the latest eligible open handoff is claimed. Automatic handoffs are matched on the working directory. Root-only `any_owner=true` recovers across operators. |

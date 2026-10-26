@@ -56,7 +56,13 @@ Os nomes da coluna de instalação são os aceitos pelos comandos `install-hooks
 | OpenClaw | Suportado | `openclaw`. Instala um plugin nativo com `--apply`. | `openclaw`, em `~/.openclaw/config.json`. | Sem. |
 | Hermes Agent | Comunidade | `hermes` (`hermes-agent`). Imprime o bloco para `~/.hermes/config.yaml`, sem gravar o arquivo. O Hermes exige aceitação própria antes de rodar hooks. | Sem cliente. A confirmar. | `hermes`, em `.hermes/skills` (projeto) ou `~/.hermes/skills` (global). |
 | Swival CLI | Só MCP | Sem. | `swival`, com `--apply`. Grava `.swival/mcp.json` na raiz do projeto, preservando outros servidores. | Sem. |
-| Muse Code | Só MCP | Sem. | `muse`, com `--apply`. Grava em `~/.config/muse/settings.json`, na chave `mcp_servers`. | Sem destino próprio. O instalador indica `~/.agents/skills` (`agents`), que o Muse lê. |
+| Muse Code | Suportado | `muse` (`muse-code`, `musecode`). Faz merge na chave `hooks` de `${XDG_CONFIG_HOME:-~/.config}/muse/settings.json`, mantendo `schema_version` (criado como 1 em arquivo novo, nunca reescrito) e todas as outras chaves; o Muse roda hooks com ambiente limpo, então servidor, diretório de dados e agente vão embutidos em cada comando (reexecute o comando ao trocá-los). | `muse` (`muse-code`, `musecode`), com `--apply`. Entrada stdio da ponte `mcp-bridge --agent muse` (ver `mcp-install.md`), no mapa `mcpServers` (ou no legado `mcp_servers`, se o arquivo já o tiver). | Sem destino próprio. O instalador indica `~/.agents/skills` (`agents`), que o Muse lê. |
+| Factory Droid CLI | Suportado | `droid` (`factory-droid`). Faz merge em `~/.factory/hooks.json` (o próprio mapa de eventos, sem chave envoltória). `--apply` **recusa** criar `hooks.json` por cima de hooks que o Droid ainda guarda na chave `hooks` de `~/.factory/settings.json` (o Droid só lê esses enquanto `hooks.json` não existe; o arquivo é lido como JSONC, e um que não possa ser lido é recusado). | `droid` (`factory-droid`), em `~/.factory/mcp.json`, mapa raiz `mcpServers` com `type: "http"` e `url`. O Droid expande `${VAR}` só em `headers`, nunca em `url`: a URL vai literal e o bearer é referenciado como `${AI_MEMORY_AUTH_TOKEN}` (a variável precisa estar exportada onde o droid roda). | Sem. |
+| CodeBuddy Code (Tencent) | Só hooks | `codebuddy` (`code-buddy`). Faz merge na chave `hooks` de `~/.codebuddy/settings.json`, no formato aninhado do Claude Code. | Sem cliente. | Sem. |
+| IBM Bob (IDE e Bob Shell) | Suportado | `ibm-bob` (`bob`). Faz merge na chave `hooks` de `~/.bob/settings/settings.json`, compartilhado pelo IDE e pelo Bob Shell. | `ibm-bob` (`bob`), em `~/.bob/settings/mcp.json`, HTTP em streaming nativo. | Sem. |
+| Prime Agent | Só MCP | Sem (a versão 0.10 não tem hooks). | `prime-agent`. Mapa `mcpServers` de `$PRIME_AGENT_CODING_AGENT_DIR/settings.json` (padrão `~/.prime/agent/settings.json`; um `.prime/agent/settings.json` de projeto passa-se com `--config-file`), `type: "http"` e `url`. O token nunca é literal: usa `bearerTokenEnvVar: "AI_MEMORY_AUTH_TOKEN"`, a única credencial não OAuth que o agente conta como conectada. | Sem. |
+| DeepSeek Harness (DSH) | Só MCP (somente impressão) | Sem. | `dsh` (`deepseek-harness`, `deepseek_harness`). Só imprime: `--apply` é recusado. O cliente é uma entrada de plugin Cordis (`@deepseek-ai/dsh-mcp-client`) dentro do `cordis.patch.yml` de um perfil; a lista de inserção impressa é mesclada à mão. O nome da entrada precisa casar `[A-Za-z0-9_-]{1,32}`. Nenhuma captura de ciclo de vida. | Sem. |
+| GrizzyBot | Externo | Sem instalador: app nativo de macOS que posta os próprios eventos de ciclo de vida (agente `grizzybot`, alias `grizzy-bot`). | Sem. | Sem. |
 | Claude Desktop | Só MCP | Sem. | `claude-desktop`. Usa uma ponte stdio de terceiros, porque o aplicativo não aceita transporte HTTP direto. | Sem. |
 | VS Code Copilot | Só MCP | Sem. | `vscode-copilot` (`copilot`, `github-copilot`). Grava `.vscode/mcp.json` no workspace. | Sem. |
 | Zed | Só MCP | Sem. | `zed`, com `--apply`. Grava a chave `context_servers` do `settings.json` do usuário. | Sem. |
@@ -67,6 +73,7 @@ Regras comuns a `install-mcp`:
 - Com `--apply`, o comando grava o arquivo de forma idempotente. Ao atualizar um arquivo existente, cria um backup ao lado dele.
 - O cliente Kiro exige HTTPS para servidores MCP remotos. HTTP simples só é aceito em loopback.
 - Para o Muse, o arquivo precisa ter `schema_version` igual a 1. O comando adiciona esse campo quando falta e não reescreve um valor existente. A entrada usa `mode` igual a `optional`, para que o Muse não aborte a execução quando o servidor estiver fora do ar.
+- Quando o token do servidor vive em arquivo (`[auth].bearer_token_file`), o instalador nunca o grava na configuração do cliente; ver `users.md` § "Local root bearer token file" para o que cada cliente recebe.
 
 ## Agentes e harnesses: captura e ciclo de vida
 
@@ -95,8 +102,14 @@ Os eventos canônicos são: início de sessão, prompt do usuário, antes e depo
 | Copilot CLI | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `Stop`, `SessionEnd`, `SubagentStart`, `SubagentStop`. Os nomes são em PascalCase, como o formato compatível com o Claude Code. | Sim, pelo `SessionStart`, em `additionalContext` no nível superior da saída. | `SessionEnd`. |
 | OpenClaw | Plugin nativo: início e fim de sessão, início de turno (prompt), antes e depois de tool, pré-compactação e fim de agente. | Sim, pelo início da sessão. | `session_end`. |
 | Hermes Agent | `pre_tool_call` e `post_tool_call`. O fim de sessão só existe em plugin externo (`on_session_end`), que o projeto não instala. | Não. Recupere pelo MCP. | Sem evento instalado pelo projeto. |
+| Factory Droid CLI | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SessionEnd`. Sem eventos de subagente. | Sim, em `hookSpecificOutput.additionalContext` do `SessionStart`. | `SessionEnd` do próprio Droid. |
+| Muse Code | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure` (disparado no lugar do `PostToolUse` quando a ferramenta falha; o servidor o trata como pós-ferramenta), `PreCompact`, `Stop`, `SessionEnd`. Espera de 30 s por hook. | Sim, em `hookSpecificOutput.additionalContext`, entregue como contexto de desenvolvedor. | `SessionEnd`. |
+| CodeBuddy Code | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SessionEnd`. | Sim, em `hookSpecificOutput.additionalContext`. | `SessionEnd`. |
+| IBM Bob | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`. Os eventos extras de compactação do Bob Shell são omitidos de propósito, para o mesmo arquivo valer nos dois produtos. | Sim, com a saída em **texto simples** do `SessionStart` injetada no contexto do modelo. | Sem evento (`Stop` é fronteira de turno). Use `finalize-session --agent ibm-bob`. |
 | Crush | Sem hooks. | Não. O contexto portátil entra pela execução gerenciada. | A confirmar. |
-| Swival, Muse, Claude Desktop, VS Code Copilot, Zed | Sem hooks. | Não. | Não há. |
+| Swival, Claude Desktop, VS Code Copilot, Zed, Prime Agent, DSH | Sem hooks. | Não. | Não há. |
+
+Quais agentes recebem o handoff pela saída do `SessionStart` é uma regra fixa do original: **não** recebem Crush, Grok, Zero, Kimi Code, Hermes, Pool e qualquer agente desconhecido (`other`), porque a busca do handoff **consome** o bastão e o resultado seria descartado. Para esses, o bastão fica disponível sob demanda pelo MCP (`memory_handoff_accept`). O Kimi Code recebe pelo primeiro `UserPromptSubmit` (saída crua, nunca envelope JSON) e o Grok pela saída do primeiro `PostToolUse`. Só Claude Code e Codex têm o `additionalContext` do `UserPromptSubmit` acrescentado ao turno (canal usado pelo resumo pós-compactação).
 
 Itens de captura comuns a todos os agentes com hooks:
 
@@ -119,14 +132,15 @@ Itens de captura comuns a todos os agentes com hooks:
 | OpenCode | `opencode` (`open-code`) | Banco SQLite. | Não. |
 | OpenCode 2 (beta) | `opencode2` | Banco SQLite. | Não. |
 | Pi | `pi` | Arquivo JSONL da família Pi. | Não. |
-| Crush | `crush` | Banco SQLite do projeto. Contexto entregue por um arquivo global temporário, apontado pela variável `CRUSH_GLOBAL_CONFIG`. | A confirmar. |
+| Crush | `crush` | Banco SQLite do projeto. Contexto entregue por um arquivo global temporário, apontado pela variável `CRUSH_GLOBAL_CONFIG`. | Não (o Crush não tem hooks, então o lançador não abre nem finaliza sessão de hook). |
 | Oh My Pi | `omp` (`oh-my-pi`) | Arquivo JSONL da família Pi. | Não. |
 | Kimi Code | `kimi` (`kimi-code`, `kimi-cli`) | Arquivo JSONL. | Não. |
 | Command Code | `command-code` (`commandcode`, `cmdc`, `cmd`) | Registro de sessão v3, com árvore de mensagens. Raciocínio oculto e metadados de provedor não são importados. | Sim. |
 | Kiro CLI | `kiro` (`kiro-cli`). Motor v2 por padrão. | Arquivo JSONL do motor v2. | Sim. |
-| Kiro CLI, motor v3 | `kiro` com `--v3`, `--mode`, ou `--agent-engine` com valor diferente de `v2`. | Arquivo JSONL do motor v3. | Sim. |
+| Kiro CLI, motor v3 | `kiro` com `--v3`, `--mode`, ou `--agent-engine v3`. (Um `--agent-engine` com qualquer outro valor que não seja `v2` não é atribuído a nenhum motor: a invocação passa direto, sem vínculo de sessão.) | Arquivo JSONL do motor v3. | Sim. |
 | Grok Build CLI | `grok` (`grok-build`) | Arquivo JSONL. Contexto entregue pela opção `--rules`. | Não. |
-| Antigravity CLI | `antigravity` (`antigravity-cli`, `agy`). Retomada com `--conversation`. | Só os prompts digitados, lidos do histórico. Passos do assistente e de tools não são decodificados. O ledger vem da captura por hooks. | Sim. |
+| Antigravity CLI | `antigravity` (`antigravity-cli`, `agy`). Retomada com `--conversation`. | Só os prompts digitados, lidos do histórico (usados pelo backfill; o `run` não exporta transcript do Antigravity). Passos do assistente e de tools não são decodificados. O ledger vem da captura por hooks. | Sim. |
+| GitHub Copilot CLI | `copilot` (`copilot-cli`). Sessão nova com `--session-id <UUID>`; retomada com `--resume=<id>`. | Arquivo JSONL `events.jsonl` por sessão (reescrevível). | Não. |
 
 Regras da execução gerenciada:
 

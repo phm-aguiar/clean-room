@@ -89,8 +89,7 @@ applied silently, so scripts, hooks, and CI keep working unchanged.
 Harness without a verified flag: for the Kiro harness on its v2 engine the flag is
 the trust-all-tools option. On its v3 engine, and on any engine selected by a
 non-default argument, no equivalent is documented. In that case the launch
-continues without a flag and prints a notice that `--yolo` maps to no verified
-flag there.
+continues without a flag and prints (stderr) `ai-memory: --yolo maps to no verified flag on the selected Kiro engine (v3 replaced --trust-all-tools with permissions.yaml); launching without it`.
 
 ## 2. ai-jail detection and offer
 
@@ -101,15 +100,20 @@ all of these hold:
 
 - **Operating system**: Linux or macOS. On Windows ai-jail is unsupported, so
   there is never an offer, even when a file with that name is on the search path.
-- **Sandbox backend**: on Linux, the backend tool must be on the search path, or
-  its override variable must be set (the override is used without an existence
-  check). On macOS, the system sandbox tool must be on the search path.
+- **Sandbox backend**: on Linux, the backend tool (`bwrap`) must be on the search path, or
+  its override variable (`BWRAP_BIN`, a path) must be set (the override is used without an existence
+  check). On macOS, the system sandbox tool (`sandbox-exec`) must be on the search path.
 - **ai-jail binary**: `ai-jail` on the search path. When it is not on the search
   path, `~/.local/bin/ai-jail` is used as a fallback, if it is an executable file.
 - **Preflight**: ai-jail is run once in dry-run mode against the current
   executable. Dry-run does not execute the agent and does not write
   configuration, but it applies ai-jail's own backend trust and local
   configuration checks. The launch is usable only if that run exits successfully.
+  The exact invocation is `<ai-jail> --dry-run -- <current executable>` with
+  stdin, stdout and stderr discarded; failing to start it, or a non-zero
+  status, means "not usable". The `~/.local/bin/ai-jail` fallback is computed from
+  the `HOME` variable and only when it is set. The search-path lookup requires
+  a regular file; on Unix it must also have an execute bit.
 
 The exact path that passes these checks is the path that is later executed. It is
 never looked up again through the search path, so the re-exec cannot pick a
@@ -142,8 +146,11 @@ declines.
 
 ### 2.3 The re-exec
 
-The re-exec is a replacement of the current process, not a nested spawn. It runs
-ai-jail with this argument list:
+The re-exec is a replacement of the current process, not a nested spawn (Unix).
+On a platform without process replacement the launcher instead spawns ai-jail,
+waits for it and exits with its status (1 when the status carries no code); that
+branch is unreachable in the Windows MVP because ai-jail is never usable there.
+It runs ai-jail with this argument list:
 
 ```text
 ai-jail --network --agent-state [--no-save-config] \
@@ -184,13 +191,37 @@ Why each part exists:
   re-adds only what is named. ai-memory therefore forwards the names below, and
   only those that are set:
 
-  `AI_MEMORY_SERVER_URL`, `AI_MEMORY_HOOK_URL`, `AI_MEMORY_DATA_DIR`,
-  `AI_MEMORY_AUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY`,
-  `ANTHROPIC_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `COPILOT_GITHUB_TOKEN`,
-  `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`.
+  `AI_MEMORY_SERVER_URL`, `AI_MEMORY_BASE_PATH`, `AI_MEMORY_HOOK_URL`,
+  `AI_MEMORY_DATA_DIR`, `AI_MEMORY_AUTH_TOKEN`, `CLAUDE_CONFIG_DIR`,
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
+  `COPILOT_GITHUB_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+  `OPENAI_API_KEY`, `OPENROUTER_API_KEY` (14 names; the earlier text of this
+  document listed 13 and omitted `AI_MEMORY_BASE_PATH`).
 
-  The list is fixed. A name that is not set is not forwarded, and no value is
-  logged or written by the re-exec.
+  The list is fixed. A name is forwarded when it is set in the environment that
+  the configuration loader captured at startup (never re-read from the live
+  process environment), or when the launcher itself sets it on the ai-jail
+  process (next paragraph). A name that is not set is not forwarded, and no
+  value is logged or written by the re-exec.
+
+  **Values resolved from configuration.** ai-jail's private home hides the
+  data directory, so the jailed run cannot read `config.toml`. The launcher
+  therefore sets, on the ai-jail process, `AI_MEMORY_SERVER_URL` (with the
+  resolved server URL) when the URL came from explicit configuration or was
+  derived from a custom `bind`, and `AI_MEMORY_BASE_PATH` (with the resolved
+  base path) when it is not empty. Both are then forwarded by name.
+
+  **A bearer loaded from configuration is never exported.** If the server
+  bearer token came from `config.toml` (or the file it references) and
+  `AI_MEMORY_AUTH_TOKEN` is not set in the operator's environment, the re-exec
+  is refused before ai-jail starts, for an explicit `--jail` and for an
+  accepted offer alike, with the single-line message (exact text, no wrapping)
+  "--jail cannot forward the server bearer loaded from config into the managed harness; use a least-privilege AI_MEMORY_AUTH_TOKEN for this launch, or run without --jail". Reason: a
+  config-file token is server authority (possibly root) that the harness did
+  not hold before, and forwarding it would let an unsupervised agent exfiltrate
+  it. A token the operator put in `AI_MEMORY_AUTH_TOKEN` already belongs to the
+  child's boundary and is forwarded unchanged. (This rule was missing from the
+  earlier text of this document.)
 - **`--no-save-config`.** On ordinary runs ai-jail merges its command-line flags
   into the project's `.ai-jail` file and writes it back. Without this flag the
   first jailed run would persist ai-memory's transient flags (network, agent
@@ -245,7 +276,10 @@ Effects:
   harmless. For every harness other than Claude, true yolo is the same as `--yolo`.
 - **Claude only.** For the Claude harness, the launch adds a settings argument
   after the harness arguments. The argument is a JSON value that sets the
-  permission default mode to `bypassPermissions`. Command-line settings take
+  permission default mode to `bypassPermissions`. Exact text appended as the last two
+  arguments of the harness invocation, after the harness's own arguments and after
+  the dangerous-mode flag: `--settings` and
+  `{"permissions":{"defaultMode":"bypassPermissions"}}` (no `ask` key). Command-line settings take
   precedence over the user's and project's settings, so a default mode there
   (for example `auto` or `acceptEdits`) cannot narrow the run (a confirmar, see
   the last section).
@@ -299,7 +333,7 @@ Notes:
 - `--jail` works with or without `--yolo`, and in non-interactive runs too. That
   is how a script gets a jailed run.
 - When ai-jail is not usable on the host, an explicit `--jail` fails with an error
-  instead of silently running unjailed.
+  instead of silently running unjailed. Exact message (single line): "--jail: ai-jail is not usable on this host (it needs `ai-jail` plus its sandbox backend, bwrap on Linux or sandbox-exec on macOS, and does not run on Windows); refusing to run unjailed — drop --jail to run without it". The check runs after the `--jail`/`--no-jail` conflict check and after the harness executable is verified, and before any server contact.
 - An explicit `--jail` re-execs before the managed run is prepared, so no lease is
   opened and then cancelled outside the jail.
 - Inside ai-jail both flags are ignored (§3).
@@ -326,6 +360,40 @@ arguments, so a native flag would be silently taken away. The single namespaced
 | `gpu`, `display` | capability | Linux only | off |
 | `pictures`, `tailscale` | capability | always | off |
 | `audio`, `x11`, `host-shm`, `terminal-passthrough`, `update-check`, `mise`, `toolchains` | capability | never; `--jail=` only | not passed |
+
+#### 5.2.1 Exact labels, notes and order (checklist rows)
+
+Rows appear in this fixed order (numbers are assigned after hiding the invisible
+ones). The label and the note are printed verbatim; the label column is padded to
+the longest visible label and followed by three spaces and the note. Row layout:
+`  [x] <n>) <label padded>   <note>` (`[ ]` when unchecked).
+
+| # | Stem | Label | Note | Kind | Needs ai-jail |
+|---|---|---|---|---|---|
+| 1 | `github` | GitHub CLI credentials | `~/.config/gh, read-only` | credential | 2.5.0 |
+| 2 | `aws` | AWS credentials | `~/.aws, read-only` | credential | 2.5.0 |
+| 3 | `kube` | Kubernetes credentials | `~/.kube, read-only` | credential | 2.5.0 |
+| 4 | `gcloud` | Google Cloud credentials | `~/.config/gcloud, read-only` | credential | 2.5.0 |
+| 5 | `docker-config` | Docker registry credentials | `~/.docker/config.json, read-only` | credential | 2.5.0 |
+| 6 | `ssh` | SSH keys + agent | `~/.ssh read-only + SSH_AUTH_SOCK; needed for git over SSH` | credential | 2.4.1 |
+| 7 | `worktree` | Linked worktree metadata | `writable, so the agent can commit here` | capability | 2.4.1 |
+| 8 | `docker` | Docker socket | `⚠ grants host root` | capability | 2.4.1 |
+| 9 | `gpu` | GPU devices | `/dev/dri, /dev/nvidia*` | capability | 2.4.1 |
+| 10 | `display` | X11/Wayland display | `GUI apps and the clipboard` | capability | 2.4.1 |
+| 11 | `pictures` | Pictures folder | `~/Pictures, read-only` | capability | 2.4.1 |
+| 12 | `tailscale` | Tailscale socket | `reach your tailnet` | capability | 2.4.1 |
+| – | `audio`, `x11`, `host-shm`, `terminal-passthrough`, `update-check`, `mise` | Host audio, X11 socket, Host shared memory, Terminal passthrough, Update check, mise integration | (empty) | capability | 2.4.1 |
+| – | `toolchains` | Toolchain caches | (empty) | capability | 2.5.0 |
+
+The last two lines are accepted only through `--jail=`; they never appear in the
+checklist. "Visible" additionally requires the installed ai-jail to advertise the
+flag (§5.9). The credential rows test the existence of the path under the `HOME`
+variable (the environment variables that relocate a tool's configuration, such as
+`GH_CONFIG_DIR` or `XDG_CONFIG_HOME`, are never consulted by ai-memory). A
+credential row is pre-checked exactly when it is visible. `ssh` is visible when
+`~/.ssh` exists or `SSH_AUTH_SOCK` is set and non-empty; `worktree` is visible
+(and pre-checked) only in a linked worktree; `gpu` and `display` are visible only
+on Linux. A project `.ai-jail` makes every pre-check false.
 
 The `ssh` default reads the URL that `git push` to `origin` uses, not the fetch
 URL. This includes an HTTPS fetch URL whose push URL is rewritten to SSH. An SSH
@@ -417,7 +485,7 @@ Input rules:
   is shown again. A line with any unknown number changes nothing.
 - `all` or `none` set every row.
 - An unrecognized answer changes nothing and asks again. The third unrecognized
-  answer aborts the launch, rather than guessing what to mount.
+  answer aborts the launch, rather than guessing what to mount. Each unrecognized answer prints (stderr) "`<token>` is not a row number between 1 and <N>; press Enter to accept, or type numbers, `all`, or `none`", where `<token>` is the first offending token; the abort error is "too many unrecognized answers to the ai-jail checklist" and the already prepared managed run is then cancelled like any failure. Input is read line by line from standard input; the prompt is `> ` and the whole list is redrawn after every change. Case is ignored (`ALL`, `None`). A repeated number in one line flips twice (no net change). End of input prints an empty line and accepts the marks as shown. Row numbers follow the display order of §5.2 (only visible rows are numbered, from 1).
 - When no row is visible, the checklist is skipped.
 
 After the checklist, one summary line is printed (§5.7).
@@ -429,7 +497,7 @@ groups the enabled toggles into credentials and capabilities, then lists the
 user's explicit `no-X` entries as "forced off", then says "everything else in the
 checklist off" when an explicit selection left rows out, and "plus the project
 `.ai-jail`" when that file takes over. With nothing enabled it says the re-run
-has no extra mounts.
+has no extra mounts. Exact shapes (stderr, one line): `ai-memory: re-running inside ai-jail (<part>; <part>; …)` with the parts, in this order and only the non-empty ones, `credentials: <label>, <label>`, `capabilities: <label>, …` (labels from the table in §5.2.1; "credentials" are the toggles of kind credential that are on, including SSH), `forced off: --no-<X> --no-<Y>` (only the `no-X` entries the user typed, with the flag spelling, separated by spaces), `everything else in the checklist off`, `plus the project .ai-jail`; and, with no parts, `ai-memory: re-running inside ai-jail with no extra mounts`.
 
 ### 5.8 Decision table
 
@@ -459,17 +527,16 @@ no ai-jail question is asked, because the re-exec is already decided.
 
 ### 5.10 Switches that are never offered
 
-`--jail=` refuses the following with the message "not available through ai-memory;
-run ai-jail directly":
+`--jail=` refuses the following with the single-line message "--jail: `<name as typed>` is not available through ai-memory; run ai-jail directly" (the check lowercases the entry, strips a `no-` prefix, and runs **before** the unknown-name check, so `no-network` is also refused):
 
 - switches that weaken or reconfigure the sandbox itself: `private-home`, `lockdown`,
   `landlock`, `seccomp`, `rlimits`, `systemd-user`, `inherit-env`,
-  `macos-host-ipc`, `browser`, and the audit-log flags;
+  `macos-host-ipc`, `browser`, and the audit flags (`audit-log`, `audit-show`, `audit-verify`);
 - switches that ai-memory sets itself: `network`, `agent-state`, and `save-config`.
 
 Anyone who needs one of these runs ai-jail directly. An unknown name is refused
 with the list of valid toggles and the note that `all`, `none`, and a `no-` prefix
-are also accepted.
+are also accepted: "--jail: unknown toggle `<name as typed>`; valid toggles: github, aws, kube, gcloud, docker-config, ssh, worktree, docker, gpu, display, pictures, tailscale, audio, x11, host-shm, terminal-passthrough, update-check, mise, toolchains, plus `all`, `none`, and a `no-` prefix to force one off". A known toggle the installed ai-jail does not advertise: "--jail: the installed ai-jail does not support --<toggle>; it needs ai-jail <release> or newer" (`<release>` = 2.5.0 for the credential toggles and `toolchains`, 2.4.1 for the others). Entries are comma-separated, trimmed, empty entries ignored; an empty list is a bare `--jail`.
 
 ### 5.11 Security notes
 
@@ -552,6 +619,26 @@ source, so they are not verified here (a confirmar):
   every permission mode; permission arrays from different scopes are merged.
 - Claude Code: the external documentation lists the actions no permission mode
   auto-approves.
+
+### 9.1 Resolution of the "a confirmar" items against the reference implementation
+
+Each item below was checked against the reference implementation's own source and
+tests (the original is read-only evidence). "External" means the answer lives in a
+tool that the reference repository does not contain; the original only relies on it,
+so the item stays a documented assumption and is **not** resolved here.
+
+| Item (section) | Status | Evidence |
+|---|---|---|
+| `--no-save-config` exists in ai-jail 2.4.1 and 2.5.0 (§5.9) | **Resolved** | The original's end-to-end test with a real ai-jail asserts that "every ai-jail since 2.4.1 advertises `--ssh`, `--gpu` and `--no-save-config`". The help text of 2.4.1 kept as a fixture lists `--save-config / --no-save-config`. |
+| `--network` only disables isolation when set; default off (§2.3, §9) | **Resolved textually** | The 2.4.1 help fixture reads `--network / --no-network  Enable/disable unrestricted network access (default: off)`. |
+| Docker socket, SSH, Tailscale and pictures are off by default (§5.2, §5.3) | **Resolved textually** | Same fixture: each line says "(default: off)"; the Docker line adds "grants host root". |
+| The GitHub CLI credentials are mounted from the fixed path (§5.2, §9) | **Resolved for ai-memory's side** | The 2.5.0 fixture reads `--github / --no-github  Enable/disable read-only ~/.config/gh mount`. ai-memory never reads `GH_CONFIG_DIR` or `XDG_CONFIG_HOME` (its end-to-end tests clear them from the environment precisely so they cannot influence the checklist). What ai-jail does if those variables are set stays external. |
+| The `--` separator and the release in which each toggle appears (§2.3, §5.9) | **Resolved for the toggle table** | The table in §5.2.1 (2.5.0 for credentials and `toolchains`, 2.4.1 for the rest) is the one the original compares against. The changelog statement about 2.4.2 and flag collisions is not in the original's source (external). |
+| Claude Code `--settings` precedence; `ask`/`deny` rules and command-safety checks enforced in every permission mode; permission arrays merged (§1, §4) | **External** | The original asserts these in comments citing Claude Code's documentation ("Actions no mode auto-approves"); the only code consequence is the exact settings value of §4 and the absence of an `ask` key, both now documented. |
+| The Linux hostname is `ai-sandbox`; the macOS prompt starts with `(jail) `; no marker variable (§3) | **External** | The original's detection reads exactly those two signals (§3) and treats anything else as "not jailed". |
+| A project `.ai-jail` can disable but never enable credentials, the Docker socket or agent state (§5.5) | **External** | The original relies on it (comment in the toggle-defaults code) and never reads the file's contents. |
+| `--network` reaches the host loopback server on macOS (§6) | **External** | Nothing in the original tests the macOS network profile. |
+| Dry-run neither executes the child nor writes configuration but applies backend trust checks (§2.1) | **External** | The original only invokes `<ai-jail> --dry-run -- <current executable>` and checks the exit status. |
 
 For the related support and platform matrix, see
 [support-matrix.md](support-matrix.md). For the sandbox boundaries of the whole

@@ -3,9 +3,11 @@
 > **Escopo:** este documento contém partes que dependem de LLM ou de embeddings. Essas partes são opcionais e não fazem parte do escopo inicial, que funciona sem LLM. Podem ser removidas ou adiadas junto com as funções correspondentes.
 
 > Referência do **esquema de dados** para quem vai reimplementar o armazenamento. Apresenta o
-> resultado consolidado de todas as migrações (versões 1 a 76, aplicadas em ordem), sem repetir
+> resultado consolidado de todas as migrações (versões 1 a 83, aplicadas em ordem, versão 3.1.1 da referência), sem repetir
 > reconstruções de tabela nem reparos de dados. Nomes de tabela e de coluna são contrato.
-> Para a lógica que usa essas tabelas, ver [storage-and-retrieval.md](storage-and-retrieval.md).
+> Para a lógica que usa essas tabelas, ver [storage-and-retrieval.md](storage-and-retrieval.md). Os diagramas de
+> entidade e relacionamento (chaves, cardinalidade, regras de exclusão, ligações sem chave estrangeira e ordem de
+> inserção) estão em [data-model.md](data-model.md).
 
 > **Estado:** o banco é um **índice derivado** da wiki em markdown (fonte da verdade), exceto o que
 > só existe no banco: sessões, observações, handoffs, mensagens, usuários e credenciais, auditoria,
@@ -23,7 +25,7 @@
 | Listas/objetos | `TEXT` com JSON (padrões `'[]'` e `'{}'`) |
 | Texto de dono | `owner_user`, `actor_user`, `accepted_by_user` e similares são `TEXT`: a chave de armazenamento da identidade do operador. **Não** são chave estrangeira para `users` |
 | Pragmas na abertura | `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` (ms), `foreign_keys=ON` em execução e **OFF durante as migrações** (que reconstroem tabelas) |
-| Migrações | Aplicadas em ordem numérica, cada uma em uma transação. O histórico fica na tabela de controle `refinery_schema_history` (colunas: `version`, `name`, `applied_on`, `checksum`). Uma migração aplicada que o binário não conhece faz a abertura ser **recusada** com erro de schema mais novo que o binário. Checksum divergente de migração já aplicada é **tolerado** (a versão 62 foi reduzida a DDL; o preenchimento de janelas roda na abertura, ver [temporal.md](temporal.md)) |
+| Migrações | Aplicadas em ordem numérica, cada uma em uma transação. O histórico fica na tabela de controle `refinery_schema_history` (colunas: `version` inteiro, chave; `name` texto; `applied_on` texto em RFC 3339; `checksum` texto com um inteiro de 64 bits sem sinal em decimal; a leitura do histórico interpreta as duas últimas de forma estrita, então uma linha mal formada impede a abertura). Uma migração aplicada que o binário não conhece faz a abertura ser **recusada** com erro de schema mais novo que o binário. Checksum divergente de migração já aplicada é **tolerado** (a versão 62 foi reduzida a DDL; o preenchimento de janelas roda na abertura, ver [temporal.md](temporal.md)) |
 | Backfills na abertura | Após as migrações, rodam backfills idempotentes e de execução única antes de aceitar tráfego: índice de entidades a partir do frontmatter, janelas de ingestão das páginas (em lotes, com checkpoint de WAL) e chaves de coordenada dos projetos. Em um banco já preenchido são no-ops |
 | Escritor | **Uma** thread/conexão de escrita, alimentada por fila de comandos com capacidade de 1024 mensagens; pool de conexões somente leitura com limite flexível de 4 |
 
@@ -47,12 +49,30 @@ Aplicado a: `pages`, `sessions`, `observations`, `handoffs`, `auto_improve_runs`
 `auto_improve_proposals`, `auto_improve_rejections`, `auto_improve_scheduler_state`,
 `auto_improve_scheduler_claims` e `workstreams`.
 
-Variantes:
-- `entities` usa a variante com `NOT EXISTS`: o workspace informado precisa ser o do projeto.
-- `entity_page_links` usa a mesma variante: a entidade e a página precisam ter o mesmo workspace e o
-  mesmo projeto.
-- Tabelas filhas de sessão (`auto_improve_scheduler_claims` e `session_consolidation_jobs`) têm um
-  segundo trigger que exige que `workspace_id` e `project_id` coincidam com os da **sessão**.
+Variantes (nome do trigger, condição e mensagem exata):
+
+```sql
+CREATE TRIGGER entities_ws_proj_pairing_ai BEFORE INSERT ON entities
+WHEN NOT EXISTS (SELECT 1 FROM projects p
+                 WHERE p.id = NEW.project_id AND p.workspace_id = NEW.workspace_id)
+BEGIN SELECT RAISE(ABORT, 'entities workspace/project mismatch'); END;
+
+CREATE TRIGGER entity_page_links_scope_pairing_ai BEFORE INSERT ON entity_page_links
+WHEN NOT EXISTS (SELECT 1 FROM entities e JOIN pages p ON p.id = NEW.page_id
+                 WHERE e.id = NEW.entity_id
+                   AND e.workspace_id = p.workspace_id AND e.project_id = p.project_id)
+BEGIN SELECT RAISE(ABORT, 'entity/page scope mismatch'); END;
+
+-- tabelas filhas de sessão: <tabela> = auto_improve_scheduler_claims e session_consolidation_jobs
+-- (esta segunda regra é adicional ao trigger de pareamento comum, que auto_improve_scheduler_claims também tem)
+CREATE TRIGGER <tabela>_session_pairing_ai BEFORE INSERT ON <tabela>
+FOR EACH ROW
+WHEN NEW.workspace_id IS NOT (SELECT workspace_id FROM sessions WHERE id = NEW.session_id)
+  OR NEW.project_id   IS NOT (SELECT project_id   FROM sessions WHERE id = NEW.session_id)
+BEGIN SELECT RAISE(ABORT, '<tabela> scope does not match the session scope'); END;
+```
+
+`session_consolidation_jobs` tem só a regra de sessão, sem o trigger comum.
 
 ---
 
@@ -221,7 +241,8 @@ CREATE TABLE sessions (
   agent_kind TEXT NOT NULL CHECK (agent_kind IN (
     'claude-code','codex','open-code','cursor','gemini-cli','claude-desktop','openclaw',
     'antigravity-cli','omp','pi','crush','grok','zero','devin','kimi-code','kiro-cli',
-    'command-code','hermes','pool','zcode','grizzybot','copilot-cli','other')),
+    'command-code','hermes','pool','zcode','grizzybot','copilot-cli','droid','muse',
+    'codebuddy','ibm-bob','other')),
   cwd TEXT,
   started_at INTEGER NOT NULL,
   ended_at INTEGER,
@@ -237,10 +258,9 @@ CREATE INDEX idx_sessions_open_owner ON sessions(workspace_id, project_id, agent
 ```
 
 > **O `CHECK` de `agent_kind` é fechado.** Cada novo tipo de agente exige uma migração que reconstrói a
-> tabela (versões 9, 11, 20, 25, 26, 28, 30, 32, 44, 45, 47, 50, 51, 72 e 73). A aplicação mapeia
-> qualquer tipo desconhecido para `'other'` (fronteira tolerante). Em uma reimplementação, prefira
-> **não** colocar o `CHECK` (use a validação na aplicação) ou aceite que adicionar um tipo de agente é
-> uma migração de reconstrução.
+> tabela (versões 9, 11, 20, 25, 26, 28, 30, 32, 44, 45, 47, 50, 51, 72, 73, 78, 80, 81 e 83). A aplicação mapeia
+> qualquer tipo desconhecido para `'other'` (fronteira tolerante). Comportamento do original, reproduzir
+> tal como está: o `CHECK` existe, e adicionar um tipo de agente é uma migração de reconstrução.
 
 `ended_observation_count` registra quantas observações da sessão estavam cobertas pelo último encerramento.
 Na atualização para a versão 35, as sessões já encerradas receberam como linha de base a contagem atual de
@@ -271,8 +291,18 @@ CREATE INDEX idx_observations_extension_event
 CREATE VIRTUAL TABLE observations_fts USING fts5(
   title, body, content='observations', content_rowid='rowid',
   tokenize="unicode61 remove_diacritics 2 tokenchars '/_-'");
--- triggers observations_fts_ai/ad/au: mesma forma dos de pages_fts, sobre título e corpo.
--- O trigger de atualização de observations_fts dispara em qualquer coluna da linha.
+CREATE TRIGGER observations_fts_ai AFTER INSERT ON observations BEGIN
+  INSERT INTO observations_fts(rowid,title,body) VALUES (new.rowid,new.title,new.body);
+END;
+CREATE TRIGGER observations_fts_ad AFTER DELETE ON observations BEGIN
+  INSERT INTO observations_fts(observations_fts,rowid,title,body)
+  VALUES ('delete',old.rowid,old.title,old.body);
+END;
+CREATE TRIGGER observations_fts_au AFTER UPDATE ON observations BEGIN   -- qualquer coluna
+  INSERT INTO observations_fts(observations_fts,rowid,title,body)
+  VALUES ('delete',old.rowid,old.title,old.body);
+  INSERT INTO observations_fts(rowid,title,body) VALUES (new.rowid,new.title,new.body);
+END;
 ```
 
 ```sql
@@ -281,9 +311,16 @@ CREATE TABLE ingest_keys (                 -- idempotência de ingestão (reten�
   key TEXT NOT NULL,
   seen_at INTEGER NOT NULL,
   completed_at INTEGER,                    -- NULL = reivindicada, com efeitos a jusante pendentes
+  -- recuperação (versão 77)
+  session_id BLOB REFERENCES sessions(id) ON DELETE CASCADE,
+  agent_kind TEXT,
+  observation_kind TEXT,
+  event_identity TEXT,
+  recovery_retained INTEGER NOT NULL DEFAULT 0 CHECK (recovery_retained IN (0,1)),
   PRIMARY KEY (project_id, key)
 ) WITHOUT ROWID;
 CREATE INDEX idx_ingest_keys_seen_at ON ingest_keys(seen_at);
+CREATE INDEX idx_ingest_keys_session ON ingest_keys(session_id);
 
 CREATE TABLE session_consolidation_jobs (  -- fila durável de consolidação do encerramento de sessão
   session_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -495,19 +532,17 @@ CREATE TABLE users (
   username TEXT NOT NULL UNIQUE,
   name TEXT,
   email TEXT UNIQUE COLLATE NOCASE,
-  token_hash BLOB UNIQUE,                  -- legado; SHA-256(token || ":" || pepper), 32 bytes
   created_at INTEGER NOT NULL,
   last_seen_at INTEGER,
-  token_expired_at INTEGER,
   role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('root','user')),
   password_hash TEXT,                      -- Argon2id (formato PHC)
   must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0,1)),
   disabled_at INTEGER
 );
--- triggers users_token_hash_length_ai/au: token_hash, se não nulo, tem exatamente 32 bytes
--- triggers users_token_hash_mirror_ai/au: espelham o token_hash legado em api_credentials
---   (id = id do usuário, label 'legacy-user-token'; se a linha já existe, atualiza o hash e a
---   revogação com a data de expiração do token)
+-- versão 79: as colunas legadas token_hash e token_expired_at e os quatro triggers que as
+--   validavam e espelhavam em api_credentials foram removidos. Os tokens de usuário vivem só em
+--   api_credentials. A migração confere que nenhuma referência a usuários se perdeu na reconstrução
+--   (contagem antes e depois) e aborta se a contagem mudar.
 
 CREATE TABLE human_auth_state (            -- singleton
   id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
@@ -550,8 +585,8 @@ CREATE TABLE project_grants (              -- acesso por projeto restrito
 **Regras de credenciais:**
 - Armazene **somente hashes** de token, sessão e CSRF. Nunca grave o segredo em claro.
 - Token de API: prefixo `aim_` seguido de 43 caracteres URL-safe gerados por CSPRNG. Armazena-se
-  `SHA-256(token || ":" || pepper)`, com o pepper do servidor. A autenticação por chave de API não
-  consulta o `token_hash` legado do usuário.
+  `SHA-256(token || ":" || pepper)`, com o pepper do servidor. Desde a versão 79 não existe mais
+  hash de token na tabela de usuários.
 - Sessão web: o segredo tem a forma de prefixo `ams_` mais valor aleatório e é guardado como SHA-256 puro
   (sem pepper); o CSRF também é guardado como hash. A validade é **absoluta**: `expires_at = created_at +
   7 dias`. Uma sessão só é aceita se não estiver revogada e `expires_at` for maior que o instante atual.
@@ -673,8 +708,13 @@ CREATE TABLE auto_improve_rejections (     -- memória de rejeições (evita rep
   source_run_id BLOB REFERENCES auto_improve_runs(id) ON DELETE SET NULL,
   source_proposal_id BLOB REFERENCES auto_improve_proposals(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL);
--- índices: (workspace, projeto, created_at DESC); (workspace, projeto, normalized_fingerprint, created_at DESC);
---          (workspace, projeto, target_path, created_at DESC) WHERE target_path IS NOT NULL
+CREATE INDEX idx_auto_improve_rejections_scope_recent
+  ON auto_improve_rejections(workspace_id, project_id, created_at DESC);
+CREATE INDEX idx_auto_improve_rejections_scope_fingerprint
+  ON auto_improve_rejections(workspace_id, project_id, normalized_fingerprint, created_at DESC);
+CREATE INDEX idx_auto_improve_rejections_scope_path_recent
+  ON auto_improve_rejections(workspace_id, project_id, target_path, created_at DESC)
+  WHERE target_path IS NOT NULL;
 
 CREATE TABLE auto_improve_scheduler_state (
   workspace_id BLOB NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -736,7 +776,8 @@ CREATE TABLE managed_runs (
   lease_expires_at INTEGER NOT NULL, started_at INTEGER NOT NULL,
   ended_at INTEGER, exit_code INTEGER,
   native_session_linked_at INTEGER,
-  owner_user TEXT);
+  owner_user TEXT,
+  previous_agent_kind TEXT, previous_native_session_id TEXT);   -- versão 82
 CREATE UNIQUE INDEX idx_managed_runs_one_active ON managed_runs(workstream_id) WHERE state = 'active';
 CREATE INDEX idx_managed_runs_lease ON managed_runs(state, lease_expires_at);
 CREATE INDEX idx_managed_runs_adoption ON managed_runs(state, agent_kind, owner_user, context_delivered, native_session_linked_at, lease_expires_at);
@@ -756,7 +797,8 @@ CREATE INDEX idx_workstream_events_recent ON workstream_events(workstream_id, se
 CREATE VIRTUAL TABLE workstream_events_fts USING fts5(
   content, role UNINDEXED, agent_kind UNINDEXED,
   content='workstream_events', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2');
--- triggers workstream_events_fts_ai/ad/au espelham o padrão de pages_fts (tokenizer sem as classes de caractere extras)
+-- triggers workstream_events_fts_ai/ad/au: mesma forma dos de observations_fts, sobre as colunas
+-- (content, role, agent_kind); o de atualização dispara em qualquer coluna da linha
 ```
 
 Só pode existir **uma** `managed_run` ativa por workstream (índice único parcial) e uma sessão nativa
@@ -817,7 +859,9 @@ e para entender a origem de cada coluna.
 | `profile_candidates, profile_entry_ledger, profile_harvest_marks` | 75 | colhedor de perfil |
 
 A reconstrução de `sessions` para ampliar o tipo de agente acontece nas versões 9, 11, 20, 25, 26, 28, 30,
-32, 44, 45, 47, 50, 51, 72 e 73. A reconstrução de `links` está na versão 13 e a de `users` na versão 54.
+32, 44, 45, 47, 50, 51, 72, 73, 78, 80, 81 e 83. A reconstrução de `links` está na versão 13 e a de `users`
+nas versões 54 e 79. Também alteram tabelas do mapa acima: 77 (`ingest_keys`, colunas de recuperação), 79
+(`users`, remoção das colunas legadas de token) e 82 (`managed_runs`, sessão nativa anterior).
 
 **Migrações sem tabela nova (só dados ou índice):**
 
@@ -829,8 +873,8 @@ A reconstrução de `sessions` para ampliar o tipo de agente acontece nas versõ
 
 **Notas de estado final:**
 
-- `users.token_hash` era obrigatório na versão 14 e passou a anulável na versão 54. Os triggers
-  `users_token_hash_*` (versão 55) validam 32 bytes e espelham o hash em `api_credentials`.
+- `users.token_hash` era obrigatório na versão 14, passou a anulável na versão 54 e ganhou triggers de
+  validação e espelho na versão 55. A versão 79 removeu a coluna, `token_expired_at` e os triggers.
 - `idx_auto_improve_one_pending_target` (versão 42) inclui `COALESCE(staged_by_actor_user,'')`: uma
   pendente por (projeto, alvo, autor).
 - Versão 56 preenche `entity_page_links.valid_from` com o `created_at` da página e `superseded_at` com o

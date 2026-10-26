@@ -40,6 +40,8 @@ min_delta = 0.0
 
 `command` roda sem shell: não há expansão de `~` nem de variáveis, e os argumentos são separados por espaço. Use caminho absoluto, sem espaços.
 
+Nota para Windows (decisão de implementação, não comportamento original): como não há shell, o programa precisa ser um executável nativo (ou um wrapper `.exe`); os exemplos `python3 ...` e `sh ...` só funcionam se esses programas estiverem no `PATH`. O nome do executável registrado em `eval_results` é o último componente do caminho, separando por `/` **e** `\`. O motivo de falha ao iniciar é `failed to start eval command: <erro do sistema>`; saída acima de 64 KiB é `eval stdout exceeded 65536 bytes`; o tempo único cobre escrita, leitura e espera, e o processo é encerrado no estouro.
+
 ## Execução
 
 1. Para cada proposta-alvo, o gate lê o corpo atual da página (`before_body`; vazio se a página não existe). Essa leitura é feita antes de qualquer avaliação.

@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 022
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 021 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 020 (projeção de observações, sanitização de caminho, retentativa), 021 (filtro de entropia), 016 (provedor), 014 (navegador web), 008 (admissão), 007 (atores e slots por usuário), 004 (curador)
@@ -57,7 +57,7 @@ Com um provedor, o servidor revisa sessões concluídas e propõe pequenas ediç
 - [ ] Cada motivo de rejeição da tabela do doc com teste
 - [ ] Os 7 testes de aceitação do portão de avaliação
 - [ ] Teste multi-sessão da reivindicação do agendador
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Validação e materialização de patch como funções puras em `internal/domain/autoimprove`; revisão, experiência e aplicação na `wiki` (recebendo o `Provider`); registro, eventos, buffer e agendador no `storage`; portão no `cli` (processo externo); superfícies no `cli`, `mcp` e no navegador da 014.
@@ -73,3 +73,19 @@ Validação e materialização de patch como funções puras em `internal/domain
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria (2026-10-20, contra o original)
+
+Docs corrigidos: `auto-improvement-loop.md` (nova seção "Formatos exatos"), `consolidation-llm.md` §5, `prompts-schemas-and-sanitizer.md` (§5, §6, §12.6, §12.7), `experience.md`, `wiki-browser.md` (§2.11 `/pending`), `api-reference.md` §3.4, `mcp-server.md`, `storage-and-retrieval.md` §16, `design-memory-aging.md`.
+
+- **Motivo novo:** `confidence_out_of_range` (fora de [0,1], NaN, percentual) — não estava na lista. `max_proposals_exceeded` é avaliado **antes** da normalização.
+- **Unidades:** todos os limites de "caracteres" da validação contam **bytes**.
+- **Âncoras:** busca por igualdade **exata**; só a detecção de duplicata normaliza caixa/espaços. `add_section` e `append` inserem no **fim da seção** (depois das subseções). Páginas editáveis saem das 100 recentes (sem `sessions/`): uma regra fora dessas 100 não é editável.
+- **Resumo do relatório** é gerado pelo servidor (`review completed; …`); o do modelo só gera o aviso de vazio.
+- **Conflito:** razão de página fixada é `target page is pinned; pinned pages are never rewritten by auto-improvement`. Página aprovada: tier `semantic`, fixada se `_slots/`, frontmatter `{kind,title,auto_improve_proposal_id,auto_improve_run_id}`, sem commit git.
+- **Agendador:** dorme antes do 1º ciclo; marca d'água semeada no primeiro contato (projeto criado depois do boot pode perder uma sessão já encerrada); candidatas por `ended_at ≤ agora − min_session_age`; experiência roda antes das sessões; execução manual não carrega `trigger`.
+- **Staging:** alvos repetidos na mesma execução abortam tudo; `create`/`update` incompatíveis e pendência existente do mesmo operador são *puladas* com mensagens literais.
+- **Experiência:** sem orçamento de entrada, sem filtro de `sessions/` na lista de recentes, piso = `experience_every_sessions`, âncora só avança com execução concluída.
+- **Superfícies:** diff do `pending-writes` não é diff unificado (formato literal documentado); `/admin/auto-improve` rejeita `eval` com 422; relatório de telemetria e curador com caminhos `notes/auto-improve-report-<µs>.md` e `notes/curator-<data>.md`; `/pending` agora especificado.
+
+**Status: Fiel** após as correções. Pendências: itens de compatibilidade de `auto-improvement-loop.md` (#5 skills gerenciadas e #7 `_pending/` na migração OKF) seguem "a confirmar"; formato do relatório do curador pertence à 004.

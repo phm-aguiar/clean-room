@@ -62,7 +62,7 @@ tick has per-session candidates.
    through the shared proposal path (see [Staging and approval](#staging-and-approval)).
 4. **Anchor update.** After a completed run, the anchor is set to the current
    time. This happens even when no proposal survives validation.
-5. **Failure.** If the LLM call or a store read fails, the anchor does not move
+5. **Failure.** If the LLM call, the staging or a store read fails, the anchor does not move
    and the run is retried on a later tick. Errors are logged in a redacted form
    that carries the error class and status, never the provider's response body.
 
@@ -77,14 +77,18 @@ anchor.
   have ended and have a summary page. It stops once it has `experience_sessions`
   pages. If the window holds fewer summary pages, the run reads fewer pages.
   Sessions without a summary page (lifecycle-only or purged) are skipped.
-- **Page size cap.** Each summary page is capped at 6,000 characters in the
+- **Page size cap.** Each summary page is capped at 6,000 **bytes** in the
   prompt. The cut falls on a character boundary and is followed by a
   `[truncated]` marker. The cap is fixed and is not exposed in configuration.
 - **Existing knowledge.** The prompt also includes up to 100 recent wiki pages
   from the project briefing, the patchable pages (rule and procedure pages that
   may be edited in place), and the rejection context described below.
 - **Order.** Session summaries appear newest first, each with its start time and
-  path.
+  path. Unlike the per-session review, the list of recent wiki pages is **not** filtered of
+  `sessions/` pages, there is no input-token budget (only the per-page caps), the patchable-page
+  budget is `max_patchable_body_chars x max_patchable_pages`, the rejection context always uses the
+  fixed 12,000-byte cap, and the call carries no operation id of its own. Literal prompt text:
+  [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md) section 12.7.
 
 ## Entropy pre-filter (opt-in)
 
@@ -151,8 +155,9 @@ one warning with the number of skipped pages.
   sessions show a de-facto decision that no page records, or when new sessions
   contradict a recorded one, and the proposal must say so plainly.
 - Rule paths must start with the rules prefix. The prompt also tells the model
-  not to target the sessions folder or the pending folder. Whether the validator
-  enforces the last rule is a confirmar.
+  not to target the sessions folder or the pending folder. The validator enforces
+  this only indirectly: `sessions/` and `_pending/` are outside the accepted destinations, so such a
+  proposal is rejected as `unsupported_path_prefix` (confirmed).
 - The prompt rejects narratives, timelines, and status reports.
 
 The validator checks that a proposal has evidence present. It does not count the

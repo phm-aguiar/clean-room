@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 019
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 018 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (provedor), 017 (fluxo vetorial na mesma consulta), 005 (`explain`), 002 (`memory_query`, `memory_briefing`)
@@ -49,13 +49,13 @@ Com um provedor configurado, a leitura pode melhorar em três pontos opcionais: 
 ## Critérios de Sucesso
 - [ ] Todas as regras de rerank do §3.1 passo 4 cobertas por teste com provedor falso
 - [ ] Tabela de baldes e de multiplicadores coberta por teste
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 `internal/llm/rerank.go` (reranqueador por LLM sobre o `Provider` da 016) e a orquestração no `mcp` (`memory_query` e `memory_explore`), com semáforo de 4 vagas e `context.WithTimeout` de 20 s.
 
 ## Decisões tomadas
-- **Prompt do `answer`:** `prompts-schemas-and-sanitizer.md` não traz o prompt da resposta (só os do reranqueador e do digest). O prompt é **decisão nossa**, com as regras comuns do §0 (dado não confiável, fidelidade, só JSON) e "usar somente o conteúdo recuperado". O nome dos campos da resposta segue `docs/mcp-server.md` (`answer` com texto e `citations`), que o próprio doc marca como "a confirmar".
+- **Prompt do `answer`:** (corrigido na auditoria) o prompt **existe no original** e agora está literal em `prompts-schemas-and-sanitizer.md` §8.3; não é decisão nossa. Os nomes dos campos (`answer: {text, citations}`) foram confirmados.
 
 ## Dependências
 - 016, 017, 005, 002; `docs/llm-client.md` §9, `prompts-schemas-and-sanitizer.md` §0, §8 e §10; `docs/mcp-server.md` §3.1 e §3.2.
@@ -68,3 +68,14 @@ Com um provedor configurado, a leitura pode melhorar em três pontos opcionais: 
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria (2026-10-20, contra o original)
+
+Docs corrigidos: `prompts-schemas-and-sanitizer.md` (§8.1 a §8.3 e §12), `mcp-server.md` §3.1 e §3.2, `architecture-llm.md`, `install.md`, `llm-providers.md` §6.4. Mudanças que afetam a implementação:
+
+- **Reranqueador.** O prompt de sistema é literal (a primeira frase fixa é `You are a retrieval reranker for a software project's memory wiki.`). O campo `text` de cada candidato é o **trecho de FTS** do resultado (com `<mark>` e `…`, sem remoção), não o corpo; corte em bytes UTF-8 com `…` incluído no orçamento (consulta 1000, título 200, texto 600). Completude é **tudo ou nada**: qualquer candidato sem nota válida, nota repetida ou id desconhecido mantém a ordem original inteira. Empate de nota segue a posição original; candidatos além do 30º vão ao fim; `rerank_score` só existe com `explain`. A busca da interface web usa o mesmo estágio e **o mesmo limite de 4 chamadas**. Chamada sem id de operação próprio.
+- **`answer`.** Roda por último (depois de reordenar, `pin_first` e união `_global`/perfil), sobre os `hits` finais + `global_scope_hits` (nunca `raw_hits`), com o trecho sem `<mark>`. Temperatura **0,1**; esquema `{answer, citations}`; o servidor **não** confere as citações. Quatro mensagens de `answer_unavailable` literais (global, `as_of`, sem provedor, falha com `class=… status=…`). Orçamento 2000/3000/4000/6000/8000 para `minimal/low/medium/high/max` (`low` = base + base/2).
+- **`memory_explore`.** Chamada de texto livre (sem esquema), temperatura 0,2, 16000 × nível (16000/24000/32000/48000/64000). Baldes por horas fracionárias (`<1`, `<24`, `<168`, `<720`, senão `stale`), com a descrição literal enviada ao modelo; resposta `{prose, gap:{hours_since_last, bucket, description}, briefing}`; sem provedor ou falha: `prose: null`, `reason` literal e `briefing`. O incremento de acesso das páginas expostas ocorre antes e independe do LLM. Prompt de sistema e mensagem literais no §8.2.
+- Config: `AI_MEMORY_RERANKER` aceita `llm` sem diferença de caixa; outro valor ou ausência de provedor derruba a inicialização.
+
+**Status: Fiel** (após as correções; a única dependência aberta é o comportamento da saída estruturada do cliente de LLM, da 016).

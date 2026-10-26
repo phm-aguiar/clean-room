@@ -100,7 +100,7 @@ autorização, que resulta em `403`.
 
 | Modo | Comportamento |
 |---|---|
-| `claim_on_session_start = true` | Consulta a cadeia de admissão para a operação `HandoffAccept` com prazo de **750 ms**. Recusa, falha da cadeia ou estouro de prazo: o handoff **permanece aberto**, e o restante (brief, inbox, managed) continua sendo entregue. Aprovação: o handoff segue para a reivindicação do passo 8. |
+| `claim_on_session_start = true` | Consulta a cadeia de admissão para a operação `handoff_accept` com prazo de **750 ms**. Recusa, falha da cadeia ou estouro de prazo: o handoff **permanece aberto**, e o restante (brief, inbox, managed) continua sendo entregue. Aprovação: o handoff segue para a reivindicação do passo 8. |
 | `claim_on_session_start = false` | **Não** consulta a cadeia de admissão e **não** reivindica. Gera a nota de oferta (seção 6). |
 
 8. **Reivindicação atômica.** Uma única transação reivindica o handoff (se havia) e o
@@ -111,7 +111,10 @@ autorização, que resulta em `403`.
      de estado atômica: só um racer consegue);
    - a regra de sessão viva é reavaliada dentro da transação;
    - uma sessão receptora que já reivindicou um handoff não reivindica outro (idempotência
-     de retry);
+     de retry: a segunda chamada devolve "não reivindicado" sem erro);
+   - a sessão receptora (a do `session_id` do hook) é registrada na **mesma** transação, **antes** da reivindicação, e precisa pertencer ao mesmo workspace, projeto e agente do hook; sessão inexistente ou de outro escopo/agente aborta a transação com erro de estado inválido (`handoff receiver session does not exist` / `… does not match the accepting scope and agent`); uma sessão receptora **já encerrada** é recusada (`an ended session cannot accept a handoff`), com uma única exceção: o Grok reutiliza o identificador de sessão depois de um fim de sessão, e para ele a sessão é reaberta (`ended_at` limpo) se ainda não tiver reivindicado nada;
+   - o filtro de dono é conferido na própria atualização de estado (uma única comparação-e-troca `open` → `accepted`); ator identificado só reivindica handoff seu ou sem dono, ator não identificado só reivindica handoff sem dono; combinação incoerente entre filtro de dono e operador receptor aborta com erro de estado inválido;
+   - só uma transição real `open` → `accepted` é auditada (`accept_handoff`), e a varredura que expira handoffs automáticos antigos é auditada à parte (`expire_superseded_handoffs`);
    - **se um run gerenciado foi pedido mas não é mais reivindicável**, a transação inteira
      é descartada: o handoff **continua aberto e não é entregue** nesta requisição. Só o
      run gerenciado seria entregue normalmente.
@@ -140,8 +143,8 @@ Texto exato (uma linha de contexto):
 - `<idade>`: `just now` (menos de 60 s) ou `N minute(s)|hour(s)|day(s)|month(s)`, com cortes em
   60 s, 3 600 s, 86 400 s e 2 592 000 s (30 dias). O template acrescenta ainda ` ago`
   literal, então a saída real é, por exemplo, "left 3 minutes ago ago" ou
-  "left just now ago". Essa redundância é comportamento observável atual; uma nova
-  implementação pode normalizá-la (decisão a confirmar).
+  "left just now ago". Essa redundância é comportamento observável do original;
+  reproduzir o texto tal como está, sem normalizar.
 - **Somente metadados** (identificador, agente de origem, idade). Nunca resumo, perguntas
   abertas ou próximos passos: o texto do handoff é escrito pelo agente ou operador anterior,
   e uma nota injetada não pode ser descartada pelo receptor da mesma forma que ele pode
@@ -157,19 +160,15 @@ Texto exato (uma linha de contexto):
 `memory_handoff_accept`:
 
 - Sem `handoff_id`: pega o mais recente elegível para o `cwd` informado (seção 3).
-- Com `handoff_id`: busca esse identificador no escopo, só se estiver aberto.
-- Só entrega o corpo se **esta** chamada venceu a reivindicação. Quem perde a corrida
-  recebe `handoff: null`.
-- Antes da reivindicação, consulta a cadeia de admissão `HandoffAccept` (sem prazo
-  de 750 ms). Observadores só são notificados em caso de reivindicação efetiva.
-- Filtro de dono: por padrão, o operador da chamada. Ver todos os donos exige privilégio
-  administrativo.
-- *(a confirmar: se a reivindicação por identificador aplica a regra de sessão viva da
-  seção 3 e a varredura pós-reivindicação. Isso não foi confirmado no código.)*
+- Com `handoff_id`: busca esse identificador no escopo. Se já estiver aceito pelo mesmo `session_id` (ou `accepted` quando `session_id` não foi informado), retorna `{ "handoff": null, "status": "consumed_by_hook" }`; se não estiver aberto, retorna `{ "handoff": null, "status": "none_pending" }`.
+- Só entrega o objeto `handoff` (`status: "claimed"`) se **esta** chamada venceu a reivindicação. Quem perde a corrida recebe `handoff: null`.
+- Antes da reivindicação, consulta a cadeia de admissão `handoff_accept` (sem prazo de 750 ms). Observadores só são notificados em caso de reivindicação efetiva.
+- Filtro de dono: por padrão, o operador da chamada. Ver todos os donos (argumento `any_owner: true`, **não** `all_owners`: esse nome só existe nas rotas `/admin/open-sessions` e `/admin/sessions/by-agent`) exige a capacidade administrativa (root em servidor multiusuário) e consome o bastão de outro operador. A ferramenta registra o agente receptor como `other` e não informa sessão receptora (`accepted_by_session` fica vazio). Se o argumento `handoff_id` não é um identificador válido: erro de parâmetros `invalid handoff_id: <erro>`. A consulta de admissão `handoff_accept` só ocorre depois de achar um handoff aberto (a resposta rotineira `handoff: null` não anuncia uma aceitação).
+- **Sessão viva e varredura pós-reivindicação:** a ferramenta `memory_handoff_accept` **não** aplica o filtro de sessão viva (`busy_since` é omitido, permitindo aceitar um handoff cuja sessão de origem ainda está aberta), mas **executa** a varredura pós-reivindicação (expirando handoffs automáticos abertos do mesmo dono, compatíveis com o `cwd` e de chave de preferência menor que a do reivindicado, **exceto** os de qualquer sessão de origem ainda aberta: sem `busy_since` não há janela de tempo e toda sessão aberta é poupada; o doc anterior dizia "últimos 5 minutos", o que não existe no original) sempre que um handoff automático é reivindicado, inclusive quando `handoff_id` foi informado.
 
 `memory_handoff_begin` cria handoff manual. `shared: true` o torna visível a todo o
-projeto; por padrão, pertence ao operador que o criou. O argumento `cwd` é registrado,
-mas não restringe quem recebe handoff manual. `memory_handoff_list` lista handoffs abertos
+projeto; por padrão, pertence ao operador que o criou. Os argumentos `from_agent`, `to_agent`, `cwd` e `session_id` são aceitos e registrados,
+mas `cwd` e `to_agent` não restringem quem recebe handoff manual. `memory_handoff_list` lista handoffs (filtrados por `state`: `"open"` [padrão], `"accepted"`, `"expired"` ou `"all"`, e `limit` 1..100, padrão 20)
 sem reivindicá-los, e `memory_handoff_cancel` os marca como `expired`.
 
 ## 8. Não implementado (propostas)
@@ -196,7 +195,7 @@ sem reivindicá-los, e `memory_handoff_cancel` os marca como `expired`.
    (cenário 1 continua válido).
 5. **Operador X** não recebe handoff de operador Y em servidor multiusuário. Handoffs sem
    dono continuam visíveis a todos.
-6. **Cadeia de admissão recusando `HandoffAccept`** (modo reivindicar): o handoff continua
+6. **Cadeia de admissão recusando `handoff_accept`** (modo reivindicar): o handoff continua
    aberto, e brief e inbox continuam sendo servidos.
 7. **`create_on_session_end = false`:** o fim de sessão grava a página de resumo e não cria
    handoff automático nem bastão de checkpoint de turno.

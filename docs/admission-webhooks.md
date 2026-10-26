@@ -36,15 +36,26 @@ A page write runs the following steps, in this order:
 5. The hook output is scrubbed again: the body and every string value in the
    frontmatter. A hook cannot reintroduce a secret that the caller's body did
    not contain.
-6. The frontmatter is normalised for the on-disk format. The title and links
-   are derived again from the final content. An explicit title from the caller
-   still overrides the derived title.
-7. The Markdown file is replaced, and the store row is written. If the store
-   write fails, the file is restored to its previous content. If that restore
-   also fails, the error reports an inconsistent state (a confirmar: exact
-   wording of that error).
+6. The frontmatter is normalised for the on-disk format, in this order:
+   `tier` is forced to the write's tier and `pinned: true` is written when the
+   page is pinned (a hook that sets `pinned: true` pins the page; slot paths are
+   always pinned); then OKF conformance is applied and `generated.at` set or
+   inherited (see [okf.md](okf.md)). The title and links are then derived again
+   from the final content; an explicit title from the caller (scrubbed) still
+   overrides the derived title. The final frontmatter is then validated: an
+   `expires_at` that is neither RFC 3339 nor `YYYY-MM-DD` aborts the write with
+   `invalid expires_at in frontmatter for <path> (want RFC3339 or YYYY-MM-DD): <value>`,
+   and an `entities` value that is neither absent, null nor a list aborts it with
+   `invalid non-array entities in frontmatter for <path>`. These errors can come
+   from a hook's output, and nothing has been written at that point.
+7. Under the per-path write lock, the Markdown file is replaced (keeping a
+   rollback snapshot) and the store row is written. If the store write fails,
+   or an optional precondition on the current latest id no longer holds, the
+   file is restored to its previous content. If that restore also fails, the
+   error is `INCONSISTENT STATE: wiki files changed but store write failed
+   (<cause>) and rollback failed (<rollback error>)`.
 8. The page is embedded when an embedder is configured. An embedding failure
-   is logged and does not fail the write.
+   is logged, recorded against the page, and does not fail the write.
 9. Non-blocking hooks are dispatched, fire-and-forget, with the final page.
    They never mutate or refuse it.
 
@@ -54,13 +65,14 @@ step. The detailed write invariants are in [architecture.md](architecture.md).
 ### 2.2 Operation types
 
 Every hook call carries an `op` value. A hook receives only the operations it
-subscribes to (see section 8). There are 14 values:
+subscribes to (see section 8). There are 15 values (the table lists them in the order of the original enumeration; configuration accepts exactly these snake_case names, and an unknown name makes the configuration fail to load):
 
 | `op` | Raised by | Page path | Gate | Notes |
 |---|---|---|---|---|
 | `write_page` | Direct page writes: the MCP write tool, the administrative write route, approval of a pending write, and the automatic improvement write. The default when no operation type is given. | Yes | Blocking hooks run first and may mutate the page. | Non-blocking hooks run after the commit with the final page. |
 | `consolidate` | LLM consolidation writes and the lint report. A rule-based fallback write, used after the LLM provider fails, also uses this op. Lint report writes and deletes use this op too. | Yes | See "Consolidation preflight" below. | Fires up to twice per consolidation (see below). |
 | `delete` | Single-page delete (MCP delete tool), decay eviction, frontmatter TTL expiry, and the optional reconcile path that tombstones a page whose file has disappeared. | Yes, no body | Blocking hooks run before the file is removed. | The delete hook is called before the file is removed, so a mirror can remove the same path. |
+| `delete_event_ledger` | Deletion of a rotated hook event ledger file (`log-YYYY-MM.md`) by the opt-in ledger retention of the forget sweep. | Yes: the ledger **file name** (no directory), no body | Blocking hooks run before the file is removed (`notify` gate); a `reject` failure leaves the file and counts as `ledgers_undeleted`. | Non-blocking hooks are dispatched after the file is gone, with a null frontmatter and an empty body. No store row is touched. |
 | `purge_project` | Whole-project purge, and the source teardown of a copy-purge project move. | No | Blocking hooks run before the purge. | See `partial_failure` in section 3. |
 | `purge_session` | Single-session purge. | No | Blocking hooks run before any row is deleted. | The session is identified by its id, not by a path. |
 | `purge_workspace` | Whole-workspace purge. | No | Blocking hooks run before any SQL or file destruction. | `ctx.project` is empty. |
@@ -216,7 +228,7 @@ Content-Type: application/json
 X-Memory-Op: <op>
 ```
 
-`<op>` is one of the 14 values in section 2.2. The header always matches
+`<op>` is one of the 15 values in section 2.2. The header always matches
 `ctx.op`.
 
 Body:
@@ -243,7 +255,7 @@ Body:
       "sub": "8f3a-...",
       "client": "72836f52-..."
     },
-    "op": "write_page",                    // always present; one of the 14 values
+    "op": "write_page",                    // always present; one of the 15 values
     "partial_failure": true                // purge ops only; omitted when false
   }
 }
@@ -311,6 +323,19 @@ Exceptions, where `reject` does not abort:
 On the automatic handoff paths, a refusal degrades the lifecycle event instead
 of failing it (section 2.4).
 
+Exact details of the original, for a faithful reimplementation:
+
+- **Error texts** (the refusal reaches the caller as an I/O-class error with this message): `admission webhook <name> status <status>: <body>` for a non-2xx (`<status>` is the numeric code followed by its reason phrase, for example `403 Forbidden`; `<body>` is the response text read up to 1 MiB, invalid UTF-8 replaced, or `<response body exceeds 1048576 bytes>` / `<failed to read response body: …>`), and `admission webhook <name> request failed: <transport error>` for an unreachable host or timeout. On the page-write path (`run`) the same two texts are used; the notification path uses the same texts.
+- **"Unavailable" classification** (used by the automatic improvement write, which must not record an outage as a verdict on the proposal): a refusal is *unavailable* when it came from a transport error, a timeout, any 5xx, 408 or 429; any other non-2xx (for example 403) is a real refusal. The classification exists **only on the page-write path**. Refusals on the notification and decide paths (delete, purge, move, consolidation preflight, handoff and message ops) carry the same texts but are not classified: every failure of a `reject` hook there is simply a refusal.
+- **How a decide-path refusal reaches the caller (audited 2026-10-25):** over MCP (handoff and message tools) it is an *invalid-request* class error whose message is the text above; on the administrative message-send route it is `403` with `{"error": "message send refused by admission: <text>"}`, also when the cause was a timeout or a 5xx (no 503 is used). When no chain is configured, the decide step is skipped and no observer is dispatched.
+- **No signing, no authentication, no retries (audited 2026-10-25).** The engine sends no signature header (no HMAC or any other), no authentication header and no idempotency key; the only headers it sets are `Content-Type: application/json` and `X-Memory-Op` (plus the HTTP client's defaults). Each subscribed hook gets **exactly one attempt** per operation: a failure is never retried, on any path, and a dropped fire-and-forget request is never re-queued. The engine offers no mechanism for a hook to authenticate its caller; that has to come from outside the contract (for example, network placement).
+- **Configuration errors (audited 2026-10-25):** `events` has no default, so a hook entry without it makes the configuration fail to load (an explicitly empty list loads and never fires). A parse error in the environment override fails with `parsing AI_MEMORY_ADMISSION_WEBHOOKS_JSON (must be a JSON array of {name,url,timeout_ms?,failure_policy?,events})`; `blocking` is accepted there even though the message does not list it.
+- **Statuses on the page-write path:** 204 means no change. Any other 2xx has its body read (up to 1 MiB) and parsed as the envelope; `page` absent means no change; an unreadable, non-JSON or oversized body means no change with a warning. A JSON `null` for `frontmatter` or `body` means unchanged. 1xx and 3xx that the HTTP client does not follow count as errors under the failure policy. The default HTTP client of the original follows up to 10 redirects and honors the system proxy environment variables; the reimplementation does the same (original behavior, reproduce as is).
+- **Notification and handoff paths:** any 2xx is success and the body is ignored; the body is never parsed.
+- **Timeouts** are clamped when the request is made (not when the configuration is loaded): below 1 ms becomes 1, above 30 000 becomes 30 000. A zero in configuration therefore means 1 ms.
+- **Chain construction:** more than 16 hooks fails with `admission chain capped at 16 webhooks, got <N>`; an empty list builds no chain. Hook names are not required to be unique (the skip list matches by name and so skips every hook with that name).
+- **Order inside one chain walk:** hooks are visited in configured order; for each hook the skip list is checked first, then the op subscription, then (page-write path) whether it is non-blocking.
+
 ## 5. Workspace and project names
 
 The engine resolves the workspace and project identifiers into the names used by
@@ -321,7 +346,8 @@ without looking up identifiers themselves.
   the server attaches. If no reader is attached, both fields are empty strings.
 - Hooks should treat names as opaque strings. The names follow the same
   validation as the workspace and project options of the command-line
-  interface (a confirmar: that validation is not re-checked here).
+  interface (confirmed: the chain does not re-check them; it copies whatever the store
+  returns).
 - Names are stable for the lifetime of the workspace or project. The engine
   does not rename them silently. A manual rename is a separate operation.
 - Destination names are supplied by the move operation itself.
@@ -341,7 +367,9 @@ X-Memory-Skip-Admission-Chain: <name>[,<name>...]
 - The engine skips the named hooks for that request only. Blocking calls,
   notifications, and non-blocking dispatch all honour the list.
 - The header is honoured only for trusted callers: auth-disabled requests
-  (anonymous level) and root requests. A database user who sends it has the
+  (anonymous level), root requests, and calls that carry no authentication
+  context at all (for example a local stdio MCP session), which are treated as
+  anonymous. A database user who sends it has the
   header ignored. The request is not rejected, and the named hooks still run.
 - Without the header on a trusted re-entrant write, the chain can recurse:
   engine, then hook, then engine, then hook, and so on.

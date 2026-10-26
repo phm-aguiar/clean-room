@@ -23,7 +23,7 @@ to schedule it.
 ```text
 data/
 ├── wiki/    # markdown source of truth; a git repository
-├── raw/     # created at initialization; its role is a confirmar
+├── raw/     # created at initialization; immutable managed-workstream event segments
 ├── db/      # memory.sqlite: search index plus database-only state
 ├── logs/    # daily rolling log files
 └── models/  # local embedding model files
@@ -38,12 +38,12 @@ Back up by durability:
 | Item | Back up? | Why |
 |---|---|---|
 | `wiki/` | **Yes, always.** | Markdown source of truth. Nothing else can recreate it. It is a git repository with its own history. |
-| `raw/` | Optional. | Created at initialization. What it holds, and whether the system needs it to run, is a confirmar. The `backup` command does not include it. |
+| `raw/` | **Yes, if you use managed workstreams** (otherwise empty). | Created at initialization (with `wiki/`, `db/`, `models/`). Resolved from the reference code: it holds the immutable event segments of managed workstream runs, `raw/workstreams/<workstream id>/segments/<run id>-<first 16 hex of the segment SHA-256>.jsonl` (one JSON event per line, written to a temp file, synced and renamed, never rewritten). The database row of a finished run keeps the relative `segment_path`, so the segment is the source of that history; the server runs without `raw/`, but the history it points to is lost. The `backup` command does **not** include it, and neither does the example mirror unless you copy the data directory (the example script does copy it). `reset`, `purge-project` and workspace deletion remove the segments of the workstreams they delete. |
 | `db/` | **Yes, if you want anything that is not in the markdown.** | Holds the search index, which `ai-memory reindex` rebuilds from `wiki/`. It also holds database-only state: sessions, observations, handoffs, users, audit rows, embeddings, and decay counters. Rebuilding from markdown does not restore that state. The database uses write-ahead logging, so copy it only with the server stopped or through the `backup` command. See [`lifecycle-ops.md#reindex`](lifecycle-ops.md#reindex). |
 | `logs/` | No. | Daily rolling log output. Nothing durable. |
 | `models/` | No. | Local embedding model, about 87 MB. Files are checked against pinned checksums. They are downloaded again when missing at server startup. See [`local-embeddings.md`](local-embeddings.md). |
 | `.serve.lock` | No. | Lock file of the running server. |
-| `config.toml` | Yes, after checking it. | Useful to reproduce an install. Check it for inline secrets before pushing it anywhere; whether it can hold them is a confirmar. |
+| `config.toml` | Yes, after checking it. | Useful to reproduce an install. Check it for inline secrets before pushing it anywhere: it **can** hold them. The `[auth]` section accepts `bearer_token`, `initial_root_password`, `recovery_token`, `token_pepper` and `actor_proxy_bearer_token` inline (prefer `bearer_token_file`, a relative path under the data directory, e.g. `auth-tokens/default`, which is also not part of a mirror you should publish). Provider API keys are read from the process environment only and are not config-file fields (profiles name the variable with `api_key_env`). |
 | Credential files | **Never.** | Env files that hold provider keys, the OAuth token file `auth.json`, and certificate or private key files (`*.pem`, `*.key`, `*.crt`). |
 
 If you need the database for quick recovery without running `reindex`, pair the

@@ -2,34 +2,35 @@
 
 ## Metadados
 - **ID:** 001
-- **Status:** concluída (2026-10-13), com as correções contra os docs abertas como tasks na 002 (ver "Revisão contra os docs")
+- **Status:** spec auditada contra o original (relatório `reports/009-auditoria-001.md`); sem plano nem tasks; não há código de reimplementação no workspace
 - **Autor:** phm-aguiar
-- **Data:** 2026-10-12
+- **Data:** 2026-10-12 (revisada em 2026-10-25)
 - **Feature Anterior:** — (primeira feature)
-- **Discovery Report:** `reports/001-ai-memory-go-clean-room-discovery.md` (F001)
+- **Discovery Report:** — (o relatório de discovery não está mais em `reports/`)
 - **Aprovado:** true
 
 ## Propósito
 > Para quem, o quê e por quê.
 
-O ai-memory-go é uma reimplementação clean-room, em Go, do ai-memory: um servidor único que dá memória de
+O ai-memory-go é uma reimplementação clean-room, em Go 1.26, do ai-memory: um servidor único que dá memória de
 longo prazo a agentes de código. Antes de capturar sessões ou expor MCP, é preciso o alicerce que todo o
 resto consome: um domínio tipado sem I/O, um índice SQLite com escritor único e busca híbrida, e uma wiki
-em markdown versionada em git, que é a fonte da verdade. O público é o autor (dev solo, Windows e Linux).
+em markdown versionada em git, que é a fonte da verdade. O público é o autor (dev solo; Windows é o primeiro MVP).
 
-Importa agora porque as invariantes (sanitização como fronteira de tipo, índice na mesma transação dos
-dados, escrita atômica, isolamento por `(workspace_id, project_id, path)`) são caras de retrofitar. Esta
-feature é **zero-LLM** e entrega o núcleo testável por contratos, sem hooks nem MCP.
+Regra geral: em toda dúvida, o comportamento é o mais parecido possível com o original, inclusive nos
+defeitos conhecidos descritos em `docs/`.
+
+Esta feature é **zero-LLM** e entrega o núcleo testável por contratos, sem hooks nem MCP.
 
 ## Escopo
 
 ### Dentro do escopo
-- **Domínio** (`internal/domain`, sem I/O): UUIDv7, identidade `(workspace_id, project_id, path)`, caminho de página portável, tiers, tipos de observação, tipo sanitizado e sanitizador.
-- **Configuração** (carregada uma vez): TOML + `AI_MEMORY_*` com `__`, diretório de dados absoluto e canônico registrado no log, logger `slog` com filtro do próprio módulo.
-- **Armazenamento** (`internal/storage`): SQLite pure-Go (WAL, FTS5), migrações `V<nn>__nome.sql` com snapshot antes de migrar, escritor único (goroutine + canal de 1024), pool de leitura, resolução central de escopo que falha fechado.
-- **Busca**: FTS5 + casamento de entidades + vizinhos de link, fundidos por RRF (k = 60), multiplicador de autoridade `[0,55; 1,50]`, fallback para observações cruas e reforço de acesso throttled (1/min por página e operador).
-- **Wiki** (`internal/wiki`): escrita atômica com frontmatter, upsert na mesma transação com rollback do arquivo, supersessão, `log.md`, commit git por evento, watcher (debounce 300 ms) e reconciliação de 30 s.
-- **Reindex** a partir do markdown (o SQLite é derivado) e backup online do SQLite.
+- **Domínio** (pacote sem I/O): UUIDv7, identidade `(workspace_id, project_id, path)`, caminho de página portável, tiers, tipos de observação, tipo sanitizado (barreira de tipo só para observações) e sanitizador.
+- **Configuração** (carregada uma vez): TOML + `AI_MEMORY_*` com `__`, diretório de dados canonicalizado como no original (canonicaliza o caminho, ou o pai e reanexa o nome; se nenhum existe, fica como foi dado) e registrado no log, logger `log/slog` com filtro do próprio módulo.
+- **Armazenamento**: SQLite pure-Go (WAL, FTS5, `journal_size_limit` 64 MiB), migrações `V<nn>__nome.sql` controladas pela tabela `refinery_schema_history` (`docs/database-schema.md` §0), **sem** cópia do banco antes de migrar, escritor único (goroutine + canal de 1024), pool de leitura de 4, resolução central de escopo. Escopo explícito inexistente falha fechado; leitura sem escopo usa o ponteiro ou o padrão e informa a origem.
+- **Busca**: FTS5 + casamento de entidades + vizinhos de link do mesmo projeto (+ fluxo de observações, ligado por padrão, entregue junto das páginas de sessão na 002), fundidos por RRF (k = 60), multiplicador de autoridade `[0,55; 1,50]`, fallback para observações cruas e reforço de acesso throttled (1/min por página e operador, anônimo incluso e incrementando o contador). Lista das 57 palavras de parada do doc, configurável. Contrato: `docs/storage-and-retrieval.md` §11.
+- **Wiki**: leitura e emissão de frontmatter pelo contrato de YAML do doc (`docs/wiki-files-layer.md` §3), escrita atômica, upsert na mesma transação com rollback do arquivo, supersessão, remoção com quarentena `.ai-memory-delete.*` (§5.4), watcher (debounce 300 ms) e reconciliação de 30 s. A escrita de página **não** faz commit git nem acrescenta linha a `log.md`: o caminho fica registrado para o próximo commit automático (002).
+- **Reindex** a partir do markdown (o SQLite é derivado), sem higienizar o conteúdo lido do disco, e o primitivo de cópia online do SQLite (o backup completo é tarball, 002).
 
 ### Fora do escopo (explicitamente)
 - Hooks, `/hook`, spool, sessões e handoffs (**feature 002**).
@@ -37,83 +38,86 @@ feature é **zero-LLM** e entrega o núcleo testável por contratos, sem hooks n
 - LLM, embeddings, reranker, consolidação, lint por LLM (features 016 a 022, ver `roadmap.md`).
 - Multiusuário, SSO, autorização por projeto, webhooks de admissão, perfil entre projetos (features 007, 008, 009 e 012, ver `roadmap.md`).
 - Navegador web, workstreams, macOS e demais agentes.
+- Penalidade de sessão e peso de crença (opt-in no doc; feature 005).
 
 ## Comportamento Esperado
 
 ### Cenário Principal (Happy Path)
-1. O chamador pede a escrita da página `decisions/db.md` no projeto `demo`; o escopo é resolvido pelo resolvedor central.
-2. O corpo e o frontmatter passam por validação do caminho e pela sanitização.
-3. O arquivo é instalado de forma atômica (temporário, `fsync`, `rename`, `fsync` do diretório) e a página e os índices FTS, entidades e links commitam em **uma** transação do escritor único.
-4. Um commit git é criado, uma linha é anexada ao `log.md` e a resposta traz identificador, caminho e checkpoint.
+1. O chamador pede a escrita da página `decisions/db.md` no projeto `demo`. O escopo já precisa existir: a escrita de página só confere que o projeto existe e pertence ao workspace, sem criar nada (`docs/wiki-files-layer.md` §5.2 passo 7; `docs/storage-and-retrieval.md` §14.1). Quem cria escopo são as operações listadas em `docs/auto-scope.md`.
+2. O caminho passa pelo confinamento e, por ser caminho novo, pela portabilidade (`ensure_portable`, `docs/domain-vocabulary.md` §4.2). Não há lista de nomes de página reservados na validação. O corpo e as strings do frontmatter passam pelo sanitizador configurado (padrões embutidos, extras e allowlist do operador). O frontmatter recebe a forma canônica: `tier` do pedido, `pinned: true` se fixada (sem herança da versão anterior), chaves OKF e `generated.at`.
+3. Sob a guarda compartilhada e a trava da página, garante os `_meta.md`. O arquivo é instalado de forma atômica (temporário, `fsync`, `rename`, `fsync` do diretório em melhor esforço), mesmo quando os bytes são iguais aos atuais (mesmos bytes, nova data de modificação; o evento do watcher é absorvido pelo caso A). A página e os índices FTS, entidades e links commitam em **uma** transação do escritor único. Página nova grava `pages.expires_at` quando houver TTL.
+4. A resposta traz o identificador da versão e o caminho. A escrita **não** faz commit e **não** escreve em `log.md`: os caminhos ficam registrados para o próximo commit automático (`docs/wiki-files-layer.md` §5.2 e §7).
 5. Uma consulta posterior retorna a página, ranqueada por RRF entre FTS, entidades e vizinhos de link, com autoridade aplicada.
 
 ### Cenários Alternativos
-- **Falha no banco após instalar o arquivo:** o arquivo é revertido, o erro é propagado de forma não ambígua, nenhum commit é criado e o índice permanece inalterado.
-- **Leitura sem escopo resolvível:** falha fechada com erro de escopo; nenhum workspace ou projeto é criado.
+- **Falha no banco após instalar o arquivo:** o arquivo é revertido (ordem inversa), o erro é propagado de forma não ambígua e o índice permanece inalterado. Se a reversão também falhar, o erro é de estado inconsistente, com o texto literal de `docs/wiki-files-layer.md` §5.2 passo 9.
+- **Escrita em projeto inexistente ou de outro workspace:** erro de não encontrado antes de tocar o disco; nada é criado.
+- **Leitura com escopo explícito inexistente:** falha fechada com erro de não encontrado; nenhum workspace ou projeto é criado. Só workspace, sem projeto: erro de entrada (`docs/auto-scope.md`). Só projeto é aceito (procurado no workspace ativo e depois no padrão).
+- **Leitura sem escopo:** nunca falha por falta de escopo; usa o ponteiro de leitura ou o projeto padrão e informa a origem (`resolved_by`, `docs/storage-and-retrieval.md` §14.1).
 - **Nenhuma página compilada casa:** a consulta devolve `raw_hits` por FTS nas observações do escopo.
+- **Remoção por caminho:** remove fisicamente todas as versões do caminho, com quarentena do arquivo e guarda compartilhada; com versão esperada diferente, não faz nada e informa que não removeu (`docs/storage-and-retrieval.md` §5.2; `docs/wiki-files-layer.md` §5.4).
 
 ## Edge Cases
 - **Escrita concorrente no mesmo caminho:** uma versão é escrita e a outra supersede a anterior numa cadeia; a perdedora continua alcançável; a leitura não é filtrada por autoria (INV-16).
-- **Edição manual da wiki no disco:** o watcher (300 ms) ou a reconciliação (30 s) reindexa; escritas do próprio servidor são ignoradas pelo prefixo do temporário.
-- **Segredo no texto de entrada:** o segredo é removido **antes** de limitar tamanho (título ≤ 80 chars, corpo ≤ 16 KiB); o tipo sanitizado só nasce da função de sanitização.
-- **Banco corrompido ou ausente:** `reindex` reconstrói o SQLite a partir do markdown, com guarda de processo vivo.
+- **Edição manual da wiki no disco:** o watcher (300 ms) ou a reconciliação (30 s) reindexa. Arquivos temporários são ignorados pelo prefixo `.ai-memory-tmp.`; a escrita já instalada pelo próprio servidor é absorvida porque reindexar conteúdo idêntico não cria versão (`docs/wiki-files-layer.md` §8.1). O identificador do arquivo (inode ou índice NTFS) não participa disso. A reindexação lê o arquivo como está, sem higienizar, com `tier` padrão `semantic`. Diretório de projeto sem linha no banco é pulado inteiro. `index.md` é página comum.
+- **Frontmatter escrito à mão:** é lido pelo contrato de YAML do doc (`docs/wiki-files-layer.md` §3.1 e §3.2): `pinned: true` é booleano, `yes` é texto, `007` é texto, inteiro fora de 64 bits é erro, fechamento `---` no fim do arquivo sem quebra é aceito e CRLF é aceito quando abertura e fechamento usam a mesma quebra. Frontmatter inválido impede a indexação daquela página e gera aviso, sem parar a reconciliação. Relação desconhecida em `relations` é ignorada com aviso.
+- **Windows:** extensão `.md` só em minúsculas, nomes de dispositivo e caracteres proibidos recusados na escrita (`ensure_portable`), repetição da troca atômica só nos códigos 32 e 33 (acesso negado, 5, propaga na hora), diretório de dados padrão `%LOCALAPPDATA%\ai-memory` com a forma canônica `\\?\` que o original produz (`docs/cli.md` §2.5).
+- **Segredo no texto de entrada:** o segredo é removido **antes** de limitar tamanho, numa passada única (título de observação ≤ 80 caracteres; corpo de observação ≤ 16 KiB; abaixo de 64 bytes, só cabeça com reticências). Página não tem teto de corpo nem de título. As classes `\s`, `\d` e `\b` dos padrões são Unicode (um `Bearer` com espaço não separável precisa ser redigido). Allowlist com entrada vazia e padrão extra que casa vazio são aceitos como no original, com as consequências descritas em `docs/prompts-schemas-and-sanitizer.md` §11.3.
+- **Banco corrompido ou ausente:** `reindex` reconstrói o SQLite a partir do markdown, com guarda de processo vivo; recusa se as tabelas reconstruídas já têm linhas; manifesto ausente é erro com o caminho exato.
+- **Arquivo de página:** permissão 0600 no Unix (`docs/wiki-files-layer.md` §4).
 
 ## Constraints
-- **Performance:** consulta com 5 mil páginas < 100 ms (baseline registrado em benchmark); leitura nunca bloqueia no escritor.
-- **Tecnologia:** Go, `modernc.org/sqlite`, `git` do sistema, `slog`, `regexp` RE2; `CGO_ENABLED=0`; módulo único; grafo de imports da constituição.
+- **Performance:** consulta com 5 mil páginas < 100 ms; leitura nunca bloqueia no escritor.
+- **Tecnologia:** Go 1.26, `modernc.org/sqlite`, `log/slog`, `CGO_ENABLED=0`, módulo único; grafo de imports da constituição. Git, igual ao original: biblioteca Git embutida como caminho normal (em Go, `github.com/go-git/go-git/v5`, registrada em `tech.md`), seguindo `docs/wiki-files-layer.md` §7 (autor fixo, ledgers fora do índice, nenhum commit sem mudança, sem herdar hooks, assinatura nem identidade do usuário). O programa `git` é só fallback, **apenas no Windows** (`docs/windows-native-extras.md` §6.2), com as regras de `notes/wiki-layout-contract.md` (d). O `regexp` (RE2) tem `\s`, `\d` e `\b` só ASCII, e os padrões de segredo exigem a semântica Unicode do original (`docs/prompts-schemas-and-sanitizer.md` §11.2).
 - **Prazo:** não especificado.
-- **Segurança/Compliance:** segredos nunca persistidos crus; comparação de token em tempo constante; escuta padrão `127.0.0.1`; diretório de dados absoluto e canônico.
+- **Segurança/Compliance:** segredos nunca persistidos crus em observações; comparação de token em tempo constante; escuta padrão `127.0.0.1`.
 
 ## Critérios de Sucesso
-- [x] `CGO_ENABLED=0 go build ./...` e `go vet ./...` passam para `windows/amd64` e `linux/amd64`
-- [x] `go test -race ./...` passa, incluindo testes multi-sessão (supersessão e escritor)
-- [x] Escrever uma página produz arquivo, linhas no SQLite e commit git consistentes; reverter quando o banco falha
-- [x] Busca RRF retorna os resultados esperados nas fixtures de `docs/assets/fixtures`
-- [x] Nenhum segredo cru persistido nas fixtures de sanitização
-- [x] Invariantes INV-01..06, 09..11, 13, 15 e 16 têm teste de contrato nomeado ou débito registrado
-- [x] Testes automatizados cobrem o happy path e os edge cases identificados
-
-> **Evidência (2026-10-13):** `sh scripts/check.sh` completo e verde (build cruzado, `go vet` nos dois alvos e `go test -race ./...` em todos os pacotes, no container `golang:1.26` com gcc 14.2) e `golangci-lint` v2.14.0 com 0 apontamentos, na última versão do código Go da 001 (depois de 001/T083 a T085). Uma repetição posterior foi interrompida por queda do Docker Desktop, sem mudança de código entre as duas. Testes: `test/acceptance/write_page_test.go` e `rollback_test.go` (critério 3), `search_rrf_test.go` (4), `secret_sanitization_test.go` (5), `test/contract/*_inv_test.go` e `notes/inv-test-matrix.md` (6), `concurrent_supersession_test.go` e `manual_edit_test.go` (multi-sessão e edge cases). CI do GitHub fora do critério, por decisão do autor (001/T090).
+- [ ] `CGO_ENABLED=0 go build ./...` e `go vet ./...` passam para `windows/amd64` e `linux/amd64`
+- [ ] `go test -race ./...` passa, incluindo testes multi-sessão (supersessão e escritor)
+- [ ] Escrever uma página produz arquivo e linhas no SQLite consistentes, sem criar escopo, sem commit git nem linha em `log.md`, e reverte o arquivo quando o banco falha
+- [ ] Um arquivo escrito à mão no formato dos casos dourados de `docs/wiki-files-layer.md` §3.2 e §3.3 é lido com os mesmos valores do original e reemitido com os mesmos bytes
+- [ ] Busca RRF retorna os resultados esperados nas fixtures de `docs/assets/fixtures`
+- [ ] Nenhum segredo cru persistido nas fixtures de sanitização
+- [ ] Invariantes INV-01..06, 09..11, 13, 15 e 16 têm teste de contrato nomeado (`TestINVnn_...`)
+- [ ] Testes automatizados cobrem o happy path e os edge cases identificados
 
 ## Abordagem Escolhida
-Módulo Go único com camadas em `internal/`, sem CGO. O domínio não faz I/O. O armazenamento usa
+Módulo Go único com pacotes em `internal/` (convenção futura), sem CGO. O domínio não faz I/O. O armazenamento usa
 `modernc.org/sqlite` e uma goroutine dona da conexão de escrita (canal de capacidade 1024, o que dá
-backpressure natural). A wiki usa o `git` do sistema e a escrita atômica de arquivo. Decisões em ADR-01,
-02, 03, 04, 07, 08 e 10 do discovery.
-
-Débitos relevantes: `docs-adiados/` ausente na época (hoje em `docs/prompts-schemas-and-sanitizer.md` §11; alinhamento na 002/T093) (os padrões de segredo do sanitizador serão reescritos a
-partir dos docs e de fixtures próprias); pontos "a confirmar" decididos por nós via ADR; desempenho do
-FTS5 do modernc ainda não medido.
+backpressure natural). A wiki usa uma biblioteca Git embutida (`go-git`), com fallback para o programa `git` só no Windows, como o original, e a escrita atômica de arquivo.
 
 ### Alternativas Consideradas
 | Abordagem | Trade-off | Por que não |
 |-----------|-----------|-------------|
 | `mattn/go-sqlite3` (CGO) | Mais rápido e maduro | Exige toolchain C; complica build e cross-compile no Windows |
-| `go-git` | Sem dependência externa de git | Operações lentas ou incompletas; ignora configuração do repositório do usuário |
+| Só o programa `git` (`os/exec`) | Menos código | O original usa biblioteca embutida e só recorre ao `git` como fallback no Windows; exigiria `git` no PATH em todos os casos |
 | `go.work` com módulos por componente | Isolamento forte | Overhead alto neste estágio; o grafo é verificável por teste de imports |
 | Mutex sobre uma conexão | Mais simples | Sem backpressure nem lote de comandos |
 
-## Revisão contra os docs (2026-10-13)
-> Feita antes de executar a 002. Neste projeto o doc vence a spec. A 001 continua implementada como foi aprovada; as divergências abaixo viram tasks de correção na 002 (`specs/features/002-captura-e-acesso/tasks.md`, fase 1b).
+## Correções da auditoria (2026-10-25)
+> Passada "chinese wall" contra a referência 3.1.1, focada nos docs da 001. Os docs foram corrigidos em regras e tabelas, sem código. Relatório: `reports/009-auditoria-001.md`. Neste projeto o doc vence a spec. Todas as decisões que antes estavam em aberto foram **resolvidas: reproduzir o original** (sem criação de escopo na escrita, sem herança de `pinned`, regravar arquivo idêntico, `refinery_schema_history`, reindex sem higienizar, sem nomes reservados na validação de caminho, allowlist/extras vazios aceitos, fluxo de observações ligado por padrão).
 
-| Spec 001 dizia | Doc define | Fonte | Correção |
+| Doc (seção) | Dizia, ou deixava em aberto | Referência 3.1.1, agora no doc | Efeito na 001 |
 |---|---|---|---|
-| Diretório de dados configurável (padrão `data`, relativo ao diretório atual); só `--config` | Padrão no diretório de dados local do usuário, subpasta `ai-memory`; `--data-dir` > `AI_MEMORY_DATA_DIR` > arquivo; `config.toml` no diretório de dados | `docs/design-decisions.md` (diretório de dados padrão), `docs/cli.md` §1, §2.1 e §2.5 | 002/T079 |
-| "commit git por evento" (cada escrita de página faz commit `page-write`) | Escritas rastreadas por caminho; commits automáticos em pontos definidos (fim de sessão com `session <id8>: <título>`, checkpoints, comando de commit, `memory_write_page`) | `docs/wiki-files-layer.md` §7 | 002/T080 |
-| "backup online do SQLite" (`backup --to` grava um arquivo SQLite) | `backup --to` (ou `-o`) pede ao servidor um tarball gzip com `wiki/`, `db/memory.sqlite` e `config.toml` | `docs/lifecycle-ops.md` § backup, `docs/cli.md` §9, `docs/mcp-server.md` §6 | 002/T081 e T082 |
-| Reindex reconstrói o nome do escopo pelo id quando falta `_meta.md` | Manifesto ausente é erro com o caminho exato | `docs/lifecycle-ops.md` § reindex | 002/T083 |
-| Reindex sem checagem do banco | Recusa se as tabelas reconstruídas já têm linhas e nomeia as contagens | `docs/lifecycle-ops.md` § reindex | 002/T084 |
-| (ausente) | Boot do servidor preenche `_meta.md` faltante de forma idempotente | `docs/cli.md` §3.1 (passo 11), `docs/lifecycle-ops.md` § reindex | 002/T085 |
-| Watcher só conta remoções | Remoção registra o caminho no Git para o próximo commit | `docs/wiki-files-layer.md` §8.1 | 002/T086 |
-| Ledger reconhecido pelo nome (`log*.md`) | Nome exato (`log.md` ou `log-AAAA-MM.md`) e conteúdo que abre com entrada, até 8 KiB | `docs/wiki-files-layer.md` §9 | 002/T022 |
-| Guarda de processo vivo por `ai-memory.pid` | `.serve.lock` e enumeração dos processos do sistema | `docs/cli.md` §3.1, `docs/overview.md` item 9 | 002/T040 e T041 |
-| Escrita e exclusão de página acrescentam linha em `log.md`, garantem `index.md` e fazem commit | Escrita de página sem linha de log, sem `index.md` e sem commit; ledger é só de eventos de hook; `log.md` não é adotado; `index.md` só pela migração OKF; páginas de `_slots/` são fixadas | `docs/wiki-files-layer.md` §5.2, `docs/okf.md` (arquivos no diretório da wiki) | 002/T080 e T089 |
-| Frontmatter só aceita texto e lista de texto; mapeamento é recusado (001/T084 manteve a recusa); `generated.by`/`generated.at` gravados como chaves planas; `relations` lido como lista de texto | `generated: {by, at}` é mapeamento; `sources` é lista de mapeamentos; `relations` é mapeamento por relação (`{fixes: [...]}`). Um arquivo escrito à mão no formato do doc era recusado inteiro | `docs/okf.md` § Proveniência, `docs/typed-edges.md` | 002/T090 e T091 |
-| Relação desconhecida no frontmatter vira `references` | Chave desconhecida é ignorada com aviso (conflito com `docs/domain-vocabulary.md` §6.8, resolvido pelo doc específico) | `docs/typed-edges.md`, `docs/wiki-files-layer.md` §3.5 | 005/T009 |
-| Links reapontados só na supersessão | Toda nova versão reaponta todas as linhas cujo alvo casa com o caminho, inclusive as já resolvidas | `docs/typed-edges.md` § Storage | 005/T022 |
-| Exclusão por caminho remove só a versão corrente; versão diferente da esperada é erro | Remove fisicamente todas as versões do caminho; com versão diferente, não faz nada e informa que não removeu | `docs/storage-and-retrieval.md` §5.2 | 002/T087 |
-| Ressurreição mantém o `superseded_at` da lápide e fecha o `valid_to` | Limpa o `superseded_at` da lápide e mantém o `valid_to` original | `docs/storage-and-retrieval.md` §5.1 (caso C) | 002/T088 |
-| Origens de escopo `explicit`, `default`, `repo_path` | `Explicit`, `Session`, `SharedSlot`, `StartupSeed`, `Default`, `DefaultAfterMismatch` | `docs/storage-and-retrieval.md` (resolução de escopo) | 002/T020 |
+| `design-decisions.md` §1 item 6 | a abertura "tira um snapshot dos dados antes de migrar" | sem cópia do banco; só o backup do diretório de dados quando a wiki não é OKF e não há recibo | sem cópia antes de migrar |
+| `design-decisions.md` §1 item 3, §3 | `index.md` e reversão do arquivo "a confirmar" | `index.md` só pela migração OKF; reversão conferida, com texto literal do estado inconsistente | — |
+| `architecture.md` §2 (fluxo) | "cada escrita da wiki acrescenta linha ao log" | só eventos de hook vão ao ledger, sempre no arquivo mensal `log-AAAA-MM.md` (UTC); `log.md` só é reconhecido | sem log na escrita |
+| `wiki-files-layer.md` §9 | sem regra de quem escreve o ledger | arquivo mensal, formato da linha, 12 eventos, título com quebras trocadas por espaço e cortado em 120 caracteres | 002 |
+| `wiki-files-layer.md` §5.1, §5.4 | quarentena só na remoção por decaimento; "remoções usam a guarda exclusiva" | as três remoções usam quarentena `.ai-memory-delete.*`; remoção simples usa guarda **compartilhada**; ordem completa do fluxo | remoção com quarentena |
+| `wiki-files-layer.md` §5.2 passo 9 | só "erro de estado inconsistente" | texto literal, ordem inversa da reversão, leitura prévia do conteúdo | mensagem de erro da 001 |
+| `wiki-files-layer.md` §4 | só códigos 32 e 33 | acesso negado (5) **não** repete; mesmo temporário reaproveitado; código 32 no Unix não repete | escrita atômica |
+| `storage-and-retrieval.md` §11.3 | descritor e tokenização de entidades resumidos | algoritmo do descritor (600 de entrada, 240 de saída, linhas puladas); tokenização exata das entidades | busca |
+| `storage-and-retrieval.md` §12 | `_slots/` e `working` "a confirmar"; TTL sem detalhe | slots só isentos por fixação; `working` sem regra de fim de sessão; TTL remove de vez, sem lápide | — |
+| `storage-and-retrieval.md` §19 | só categorias | textos literais dos erros do núcleo | mensagens da 001 |
+| `database-schema.md` §0, §10 | colunas do histórico sem tipo | tipos de `refinery_schema_history`; reconstruções 78, 80, 81, 83 e `users` em 54 e 79; 77 e 82 | nome e tipos da tabela de migrações |
+| `overview.md` invariantes 4, 6, 11 e sanitizador | "a confirmar" | cobertura do escopo por tabela; barreira de tipo só para observações (os outros textos são higienizados pelo chamador); caminho absoluto só se o caminho ou o pai existe; motor sem retrocesso com classes Unicode | INV-06 e INV-11 da 001 |
+| `data-model.md` §6 | reindexação "reconstrói só" | também grava auditoria e, com embedder, embedding | — |
+| `test-fixtures.md` | fixtures 01 a 05 sem descrição | 01 a 05 descritos (avaliação de LLM); 06 e 07 ausentes | 002 |
+
+Conferidos sem mudança: esquema das tabelas, índices e gatilhos do núcleo (83 migrações), tokenizador e gatilhos FTS, `path_search`, pragmas e `journal_size_limit`, pool de leitura, casos A, B e C do upsert (incluindo carimbo de `generated.at` só com o mapeamento `generated` e escolha da lápide mais recente), janela de candidatos, constantes do fluxo de observações, caminhada relacionada (3 e 50), tipos de observação e grafias aceitas, derivação de `type` OKF, os 27 padrões de segredo e sua ordem, constantes do watcher (300 ms, 30 s, 5 falhas, disjuntor). O original não tem um tipo `PageKind`: o "tipo" da página é o `kind` livre do frontmatter, o tipo de ranking (`storage-and-retrieval.md` §11.5) ou o `type` OKF (`okf.md`), todos derivados (`notes/domain-contract.md`).
+
+Regra "nenhum handler escreve direto na wiki": confirmada, com uma exceção (`design-decisions.md` §3): só `reset`, `uninstall --purge-data` e `restore` apagam ou trocam diretórios inteiros, com o servidor parado e a guarda de processo vivo. O rótulo `ensure_portable` é o **nome da regra** de portabilidade, não um identificador de código.
 
 ## Dependências
 - `docs/overview.md`, `domain-vocabulary.md`, `database-schema.md`, `storage-and-retrieval.md`, `wiki-files-layer.md` (fonte dos contratos).

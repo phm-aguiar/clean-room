@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 018
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando a 017 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (interface de provedor, cadeia, saúde), 017 (interface de embedder), 009 (`auth.json`, comandos `auth`)
@@ -52,13 +52,13 @@ Quem já paga uma assinatura (Claude Pro/Max, ChatGPT Plus/Pro, Codex, GitHub Co
 ## Critérios de Sucesso
 - [ ] Cada provedor testado contra servidor falso (autenticação, renovação, stream, recuperação de 401)
 - [ ] Recuperação do `codex` testada com executável falso que respeita e que estoura os limites
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Arquivos novos em `internal/llm` (um por provedor e um para o stream de Responses compartilhado por `openai-oauth`, `codex` e `copilot`) e o embedder `copilot` em `internal/embed`; comandos `auth login` estendidos no `cli` sobre o `auth.json` da 009.
 
 ## Decisões tomadas
-- **Fluxo do `auth login openai-oauth`:** os docs dão o prazo (600 s), o armazenamento e a renovação, mas não o protocolo de autorização. A T002 procura nos docs; se não houver, a escolha (navegador com PKCE ou dispositivo) é decisão nossa registrada no plano.
+- **Fluxo do `auth login openai-oauth`:** fluxo de dispositivo, como no original (resolvido na auditoria; ver "Correções da auditoria").
 
 ## Dependências
 - 016, 017, 009, 015; `docs/llm-client.md` §4 e §5, `llm-providers.md` §4, §7.5 e §8, `install.md` § Anthropic via Claude subscription, § OpenAI OAuth, § Codex credential reuse, § GitHub Copilot.
@@ -71,3 +71,19 @@ Arquivos novos em `internal/llm` (um por provedor e um para o stream de Response
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria de 2026-10-20/22 contra o comportamento original (o relatório dessa rodada não está mais em `reports/`).
+
+- **Decisão em aberto resolvida:** o `auth login openai-oauth` usa **fluxo de dispositivo** (não navegador/PKCE): URLs `https://auth.openai.com/api/accounts/deviceauth/usercode` e `.../deviceauth/token`, página `https://auth.openai.com/codex/device`, troca em `https://auth.openai.com/oauth/token` com `redirect_uri=https://auth.openai.com/deviceauth/callback`, cliente `app_EMoamEEZ73f0CkXaXp7hrann`, polling `interval + 3 s` com 403/404 = pendente. Texto completo em `llm-client.md` §4.5. Não há decisão nossa a registrar.
+- **`openai-oauth`:** endpoint `https://chatgpt.com/backend-api/codex/responses`; cabeçalhos fixos (`openai-beta: responses=experimental`, `originator: codex_cli_rs`, `session_id` UUID v4); `max_output_tokens` nunca enviado; `temperature` omitida para `gpt-5*`, `gpt-6*` e qualquer modelo iniciado por `o`; extração de `chatgpt-account-id` (3 locais do JWT); parser SSE detalhado; evento terminal = erro 502 sintético (transitório, aciona fallback).
+- **`codex`:** protocolo JSON-RPC da recuperação (`initialize`, `initialized`, `account/read` com `refreshToken: true`), mensagens, trava por instância (chamadas concorrentes **esperam**), `CODEX_HOME` definido para a pasta do arquivo.
+- **`copilot`:** constantes e cabeçalhos transcritos; troca de token em `GET https://api.github.com/copilot_internal/v2/token`; base derivada de `proxy-ep` (`proxy.` -> `api.`); catálogo `/models`: ausente = Chat Completions (guardado), HTTP não-2xx = Chat Completions (não guardado), falha de transporte propaga; Responses sem stream; `auth login copilot` aceita token do ambiente (`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) antes do fluxo de dispositivo (escopo `read:user`); embedder do Copilot tem 300 s e só repete 429.
+- **`anthropic-oauth`:** dica extra do `llm-test` em 429; o "aviso de políticas" está nos docs de instalação, não no `llm-test`.
+- **Novo provedor `cursor`** (CLI `agent`): ambiente em lista permitida, `--mode ask`, diretório temporário privado, limites 1 MiB/64 KiB, status 504 no timeout. Deve entrar no escopo desta feature (login pelo aplicativo do Cursor; sem comando `auth`).
+- **`auth.json`:** chaves `openai`, `copilot`, `oidc` com campos exatos, escrita atômica `auth.json.tmp`, apagado quando vazio; `auth status` / `auth logout` com textos literais.
+- Perfis de `llm_fallbacks` para provedores com credencial própria não usam `api_key_env` como credencial, mas uma variável nomeada e ausente ainda gera pendência.
+
+### Status
+**Precisa de ajustes**: incluir `cursor`, o protocolo de login por dispositivo e os detalhes acima; o item "Decisões tomadas" (protocolo do login) está resolvido pelos docs.

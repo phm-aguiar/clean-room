@@ -65,7 +65,7 @@
   <text class="box-text" x="1075" y="232">embedding vector backfill</text>
 
   <rect class="server" x="60" y="300" width="1280" height="390" />
-  <text class="group-label" x="90" y="335">ai-memory serve - one Rust binary</text>
+  <text class="group-label" x="90" y="335">ai-memory serve - one binary</text>
 
   <rect class="route" x="100" y="365" width="235" height="100" />
   <text class="box-title" x="125" y="397">/hook router</text>
@@ -89,7 +89,7 @@
 
   <rect class="writer" x="150" y="535" width="345" height="110" />
   <text class="box-title" x="175" y="568">Writer actor</text>
-  <text class="box-text" x="175" y="594">single mpsc queue, one rusqlite writer</text>
+  <text class="box-text" x="175" y="594">single queue, one SQLite writer</text>
   <text class="box-text" x="175" y="615">WAL mode, batch transactions</text>
 
   <rect class="reader" x="555" y="535" width="345" height="110" />

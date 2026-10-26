@@ -376,7 +376,16 @@ the measurements in issue #478.
   replaces the running executable, and reruns `install-hooks --apply` for
   every staged agent. Replacement renames the running executable aside
   before moving the new one in. The old copy is removed on a best-effort
-  basis. Windows on ARM has no release archive.
+  basis. Windows on ARM has no release archive. The executable path is
+  replaced by renaming: the running `ai-memory.exe` becomes `ai-memory.old`,
+  the new file `ai-memory.new` becomes `ai-memory.exe`, and a failed last
+  step renames the old one back. A leftover `.old` is normal while the old
+  process still runs. Full step list, limits (120 s per request, 128 MiB per
+  download, 4 096 archive entries, 512 MiB expanded), refusals and messages:
+  [airgapped-install.md](airgapped-install.md), "The `upgrade` command in
+  detail". A running logon-entry server (see
+  [windows-native-extras.md](windows-native-extras.md) section 14) keeps the
+  old image until it is restarted (`ai-memory setup` restarts it).
 - Docker-wrapper installs use the wrapper's `upgrade` command (see
   Scenario B). The status of the in-place upgrade work tracked in issues 801
   and 802 is *(a confirmar)*.
@@ -413,9 +422,11 @@ string for a shell and no `bash -c` wrapper around a script.
 {
   "type": "command",
   "command": "C:\\Users\\you\\bin\\ai-memory.exe",
-  "args": ["hook", "--event", "pre-tool-use", "--agent", "claude-code", "--server-url", "http://host:49374", "--auth-token", "..."]
+  "args": ["--data-dir", "C:\\Users\\you\\AppData\\Local\\ai-memory", "hook", "--event", "pre-tool-use", "--agent", "claude-code", "--server-url", "http://host:49374"]
 }
 ```
+
+For `SessionEnd`, the generated handler entry also sets `"timeout": 15` (seconds). When an auth token is passed at install time, it is stored in `<data_dir>\auth-token` rather than baked into `args`.
 
 This avoids starting a shell and several helper processes on every tool
 call. Process creation is expensive on Windows. A measured speed-up of
@@ -424,8 +435,9 @@ roughly 3 to 5 times per hook (about 735 ms through a shell against about
 not reproduced in the repository.
 
 - The executable path is the one of the `ai-memory` that runs
-  `install-hooks`. Release binaries and locally built binaries both work
-  directly. If you move the executable, rerun `install-hooks`.
+  `install-hooks` (with any `\\?\` extended-length prefix stripped). Release
+  binaries and locally built binaries both work directly. If you move the
+  executable, rerun `install-hooks`.
 - Exec form requires a real executable. It does not run batch or script
   shims through a shell.
 - The script bundles stay in place as a fallback for setup-agent and the
@@ -479,31 +491,46 @@ status.
 
 ### Enqueue and limits
 
-- Each event is written to a temporary file and renamed into place, so
-  readers never see a partial event. Names combine creation time, process
-  identifier, and a sequence number.
-- Each event carries its own authentication: an inline static token, an OIDC
-  mode resolved from the stored login at drain time, or anonymous.
+- Each event is written to a temporary `.json.tmp` file and renamed into place
+  as `{created_ms:013}-{pid}-{seq:016x}-{recovery_key}.json`, so readers never
+  see a partial event. At the start of a drain pass, stranded `.json.tmp` files
+  older than 5 minutes (300,000 ms) are inspected: valid spool entries up to
+  10 MiB whose internal `created_ms` matches the filename prefix are recovered
+  by renaming to `.json`; malformed or oversized `.json.tmp` files are deleted.
+- Each event carries its own authentication (`auth_mode`): an inline static
+  token (`static_token` with `token`), an OIDC mode (`oidc_at_drain`) resolved
+  from the stored login at drain time, or `anonymous`, plus optional `profile`
+  and `attempts`.
 - An event is dropped after 7 days, or after the configured number of failed
   drain passes (default 8, set by `max_attempts` in the `[hook_spool]`
-  config section; zero disables the attempt-based drop).
-- The spool holds at most 10,000 files. Enqueueing past the cap prunes the
-  oldest files.
-- An unreachable server does not consume attempts. Rate-limited and
-  request-timeout responses keep the event queued without consuming an
-  attempt *(a confirmar)*.
+  config section or `AI_MEMORY_SPOOL_MAX_ATTEMPTS`; zero disables the
+  attempt-based drop).
+- The spool holds at most 10,000 files (coordinated via
+  `<data_dir>\hook-spool.capacity.lock` with a 50 ms wait). When the spool is
+  already at capacity (`>= 10,000` files), the existing backlog is preserved
+  and the **new incoming event is dropped** (its temporary file is removed),
+  writing `ai-memory: hook-spool at capacity (10000); dropping one new UNDELIVERED event`
+  to stderr and exiting with status `0`.
+- An unreachable server does not consume attempts. Rate-limited (`429`) and
+  request-timeout (`408`) responses also keep the event queued without consuming
+  an attempt. Server failures (`5xx`, `401` after token refresh retry, or a
+  batch `failed_index`) increment `attempts`; permanent `4xx` responses (other
+  than `401`, `408`, `429`) drop the event immediately.
 - Batch uploads carry at most 256 events or 8 MiB. A single event over the
   byte limit is still sent alone.
 - Dropped events are reported on stderr and in the drain log.
 
 ### Locking on Windows
 
-- The drain takes one exclusive lock on a file in the spool. The OS releases
-  it when the process exits.
+- The drain takes one exclusive OS-level file lock on `<data_dir>\hook-spool\.drain.lock`
+  (checking first that `<data_dir>` exists so a detached drainer surviving
+  `uninstall --purge-data` does not recreate the directory). The OS releases
+  the lock when the process exits.
 - Windows can report a contended lock with its native lock-violation code
   (error 33) instead of the generic would-block kind. Both count as busy, so
   concurrent drains wait, skip, or expire under the same timing rules.
-- A bounded wait polls every 25 ms until the budget is spent.
+- Incremental `post-tool-use` drains do not wait if the lock is busy; standalone
+  `hook-drain` waits up to 30 seconds, polling every 25 ms.
 
 ### Timing overrides
 
@@ -542,10 +569,13 @@ do not require rerunning `install-hooks`.
 
 ### Detached drain on Windows
 
-- The helper starts with no console window, in its own process group and
-  detached from the agent's console. It first tries to leave the agent's job
-  object. If the system denies that, it starts again without breakaway and
-  logs one line saying so.
+- The helper starts (`<current_exe> --data-dir <data_dir> hook-drain`, passing
+  the live static token in `AI_MEMORY_AUTH_TOKEN`) with no console window
+  (`CREATE_NO_WINDOW`), in its own process group (`CREATE_NEW_PROCESS_GROUP`)
+  and detached from the agent's console (`DETACHED_PROCESS`). It first tries
+  to leave the agent's job object (`CREATE_BREAKAWAY_FROM_JOB`). If the system
+  denies that (`ERROR_ACCESS_DENIED`, OS error 5), it retries spawning without
+  breakaway and logs one warning line to `hook-drain.log`.
 - Output goes to `logs\hook-drain.log`. Past 1 MiB the log is renamed to
   `hook-drain.log.old`, replacing any earlier `.old` file.
 
@@ -574,7 +604,9 @@ for the life of the process. The operating system releases it when the
 process exits, so a crashed server never locks you out.
 
 - A second server on the same data directory refuses to start and names
-  the holder recorded in `.serve.lock.holder` (its process identifier).
+  the holder recorded in `.serve.lock.holder` (its process identifier, written
+  as `pid=<pid>\n` in a separate unlocked sidecar file because Windows exclusive
+  locks prevent other handles from reading `.serve.lock` directly).
   The holder file is best-effort and informational. The lock is the real
   guard.
 - `--force` starts anyway. Use it only when you are certain the other
@@ -588,8 +620,12 @@ process exits, so a crashed server never locks you out.
 - The reset, restore, reindex, and `uninstall --purge-data` commands use a
   separate check. They refuse to run while another ai-memory process is
   alive and list the process identifiers. The server does not run that
-  check. The check matches processes by the binary name without the `.exe`
-  extension, so whether it sees a native Windows process is *(a confirmar)*.
+  check. The process check matches the exact name `ai-memory`, excluding the
+  current process ID and thread entries (and honoring test overrides
+  `AI_MEMORY_TEST_NO_PROCESS_GUARD` and `AI_MEMORY_TEST_FORCE_SIBLING_PIDS`).
+  On Windows the image name is `ai-memory.exe`, so the exact match misses live
+  siblings and the check does not refuse. Original behavior, reproduce as is
+  (no `.exe` variant, no case folding).
 
 ### Exposure and authentication
 
@@ -731,9 +767,17 @@ wiki commit fails with an ownership error. A failed wiki commit is not fatal,
 so the server keeps running and capture continues, but no wiki checkpoints
 are committed.
 
-On startup, the server logs this condition at error level and names the
-remedy: run the service as the owning user. Older builds logged it at warning
-level *(a confirmar)*.
+On startup, during the baseline-checkpoint step, the server logs this
+condition at **error** level (confirmed in the reference code) with the
+text: `wiki git commits are failing the repository owner check: the wiki
+repository is not owned by the account running ai-memory. Run the service AS
+THE OWNING USER — capture continues, but no wiki checkpoints will be committed
+until this is fixed.` Other failures of that step are only a warning
+(`wiki upgrade baseline checkpoint failed (non-fatal)`); success logs
+`created wiki upgrade baseline checkpoint`. Whether older builds used warning
+level is not verifiable and is irrelevant to a new implementation. With the
+`git` program in use, the equivalent condition is git's "dubious ownership"
+refusal; classify it the same way (distinct from other git failures).
 
 ### Validation report
 
@@ -786,9 +830,11 @@ maintainer decision. It depends on these items:
 
 ### Known gaps
 
-- ai-memory has no Windows service dispatcher. Persistence comes from a
-  wrapper (Scenario E), the same way it comes from a service manager on
-  Linux.
+- ai-memory has no Windows service dispatcher. Persistence comes either from
+  a wrapper (Scenario E) or from the built-in per-user logon entry that
+  `ai-memory setup` installs (a value under the per-user `Run` registry key
+  that starts a hidden supervisor, `service-host`; no administrator needed,
+  see [windows-native-extras.md](windows-native-extras.md) section 14).
 - Native Claude Code uses the direct executable call by default. The
   `windows-bash` platform value restores the Git Bash path.
 - Other agents (Codex, Command Code, Devin CLI, OpenCode, Cursor, Gemini

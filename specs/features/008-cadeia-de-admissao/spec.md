@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 008
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando as features anteriores terminarem)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 007 (ator identificado e capacidade de pular a cadeia), 002 a 004 (operações admitidas)
@@ -18,8 +18,10 @@ O operador quer estender o comportamento sem mudar o motor: acrescentar campos a
 
 ### Dentro do escopo
 - **Configuração** `[[admission_webhooks]]` (`name`, `url`, `timeout_ms` 2000 com corte em 1..30000, `failure_policy` `ignore`|`reject`, `events`, `blocking` padrão `true`) e `AI_MEMORY_ADMISSION_WEBHOOKS_JSON`, que substitui a lista; mais de 16 ganchos impede a subida; lista vazia não monta a cadeia (`docs/admission-webhooks.md` §7 e §8).
-- **Escrita de página** na ordem do §2.1: higienização, `last_modified_by`, nomes resolvidos, bloqueantes em ordem (cada um vê a página deixada pelo anterior), nova higienização, normalização e derivação de título e links, instalação e índice, não bloqueantes com a página final.
-- **Operações de notificação** (`delete`, `purge_project`, `purge_session`, `purge_workspace`, `move_project`, `move_session`) com bloqueantes antes e `partial_failure` nas purgas (§2.2, §2.8, §3.1).
+- **Escrita de página** na ordem do §2.1 (corrigida): higienização, `last_modified_by`, nomes resolvidos, bloqueantes em ordem (cada um vê a página deixada pelo anterior), nova higienização do corpo e de todo texto do frontmatter, normalização (tier e pinned forçados, conformidade OKF com `generated.at`), derivação de título e links, **validação final de `expires_at` e `entities`** (erro aborta antes de gravar, inclusive vindo da saída de um gancho), instalação do arquivo com instantâneo para reversão sob trava por caminho, linha no índice (falha restaura o arquivo; falha da restauração dá `INCONSISTENT STATE: …`), embedding (falha só registrada), não bloqueantes com a página final.
+- **Erros e classificação** (§4 do doc, textos exatos): `admission webhook <nome> status <código e frase>: <corpo>` e `admission webhook <nome> request failed: <erro>`; "indisponível" = erro de transporte, tempo esgotado, 5xx, 408 ou 429 (usado pela escrita de auto-melhoria, 022).
+- **As 15 operações** do original (o doc dizia 14; a 15ª é `delete_event_ledger`): `write_page`, `consolidate`, `delete`, `delete_event_ledger`, `purge_project`, `purge_session`, `purge_workspace`, `move_project`, `move_session`, `handoff_begin`, `handoff_accept`, `handoff_cancel`, `message_send`, `message_pop`, `message_cancel`. Nome desconhecido em `events` faz a configuração falhar na carga.
+- **Operações de notificação** (`delete`, `delete_event_ledger`, `purge_project`, `purge_session`, `purge_workspace`, `move_project`, `move_session`) com bloqueantes antes e `partial_failure` nas purgas (§2.2, §2.8, §3.1). `delete_event_ledger` é a passagem de retenção de ledgers da 004: o caminho enviado é o **nome do arquivo** do ledger, os bloqueantes rodam antes da remoção (recusa por `reject` mantém o arquivo e conta `ledgers_undeleted`), os não bloqueantes são disparados depois com frontmatter nulo e corpo vazio.
 - **Handoffs: decidir, agir, notificar** (`handoff_begin`, `handoff_accept`, `handoff_cancel`; §2.4): só bloqueantes com `reject` decidem; observadores só depois de a operação acontecer; fim de sessão sem handoff em recusa; aceitação no início de sessão com prazo total de 750 ms, deixando o handoff aberto em recusa ou estouro.
 - **Pré-voo de consolidação** (`consolidate`, §2.5) para as escritas que já existem com esse op: relatório de lint (004). A consolidação por LLM chega com a 016.
 - **Contrato** de requisição e resposta (§3): cabeçalho `X-Memory-Op`, corpo `page` e `ctx` (`actor` com campos omitidos quando desconhecidos), resposta 200 com `page.frontmatter`/`page.body`, 204, 2xx ilegível ou acima de 1 MiB como "sem mudança", 4xx/5xx pela política.
@@ -59,14 +61,14 @@ O operador quer estender o comportamento sem mudar o motor: acrescentar campos a
 
 ## Constraints
 - **Performance:** a latência de uma escrita é a soma dos `timeout_ms` dos ganchos bloqueantes inscritos no op; não bloqueantes não somam.
-- **Tecnologia:** `net/http` da stdlib.
+- **Tecnologia:** cliente HTTP padrão da plataforma, sem dependência nova.
 - **Segurança:** a resposta do gancho passa pela higienização antes de gravar (INV-06); a lista de pulo nunca vai no fio.
 
 ## Critérios de Sucesso
 - [ ] Os casos de cobertura de `docs/admission-webhooks.md` §10 passam como teste
 - [ ] Tabela de combinações `blocking` × `failure_policy` do §8.1 coberta para escrita, notificação e handoff
 - [ ] Prazo de 750 ms da aceitação no início de sessão testado com decisores lentos
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Um componente de cadeia no `wiki` (para a escrita de página, que é dele) chamado pelos pontos de operação, mais funções de "decidir, agir, notificar" para handoffs usadas pelo `ingest` e pelo `mcp` através do `storage`/`wiki`, sem `mcp` importar `ingest`. O cliente HTTP dos ganchos é único, com o limite de 256 envios em voo.
@@ -84,3 +86,14 @@ Um componente de cadeia no `wiki` (para a escrita de página, que é dele) chama
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria "Chinese Wall" de 2026-10-25 contra o original (relatório: `reports/013-auditoria-008-011-restantes.md`). O `docs/admission-webhooks.md` foi confirmado linha a linha e completado; o escopo acima continua válido, com estes acréscimos:
+
+- **Sem assinatura, sem autenticação, sem retentativa.** Nenhum cabeçalho HMAC ou de autenticação é enviado; os únicos cabeçalhos do motor são `Content-Type: application/json` e `X-Memory-Op`. Cada gancho inscrito recebe exatamente uma tentativa por operação; envio fire-and-forget descartado não é reenfileirado.
+- **Classificação "indisponível" só no caminho de escrita de página.** Nas operações de notificação e de decisão (exclusão, purga, movimento, pré-voo, handoff, mensagem) a recusa tem os mesmos textos mas não é classificada.
+- **Recusa no caminho de decisão:** no MCP é erro da classe *invalid-request* com o texto do gancho; na rota administrativa de envio de mensagem é 403 mesmo quando a causa é tempo esgotado ou 5xx. Sem cadeia configurada, não há decisão nem observadores.
+- **Cabeçalho de pulo** também honrado em chamadas sem contexto de autenticação (sessão MCP local por stdio), tratadas como anônimas.
+- **Configuração:** entrada sem `events` faz a carga falhar (lista vazia explícita carrega e nunca dispara); texto exato do erro da variável de ambiente registrado no doc §4.
+- O item "Tecnologia" foi reescrito sem citar biblioteca de linguagem específica.

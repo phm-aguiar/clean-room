@@ -147,7 +147,7 @@ O formato do arquivo de spool, a drenagem e a regra de entrega estão no contrat
 
 - A operação usa primeiro a biblioteca de Git embutida. No Windows, se ela falha com erro de resolução de caminho do sistema (texto "failed to resolve path") ou com repositório não encontrado, tenta o programa `git` instalado, que precisa estar no PATH.
 - Erro de dono do repositório (verificação de propriedade feita pela biblioteca) não faz fallback, porque o programa `git` recusaria do mesmo jeito. Esse erro é tratado como erro específico de dono e registrado em nível de erro na inicialização do serviço, com a instrução de rodar como o usuário dono do diretório.
-- Fallback de commit: adiciona todos os arquivos; se o índice não tem mudanças, não cria commit; caso contrário, cria o commit com a identidade fixa `ai-memory <ai-memory@local>` e devolve o hash.
+- Fallback de commit: adiciona todos os arquivos **exceto os ledgers de eventos de hook** (antes, os ledgers que uma versão antiga commitou saem do índice com `rm --cached`; os caminhos vão pela entrada padrão por causa do limite de linha de comando do Windows; ver [wiki-files-layer.md](wiki-files-layer.md) seção 7); se o índice não tem mudanças, não cria commit; caso contrário, cria o commit com a identidade fixa `ai-memory <ai-memory@local>` e devolve o hash.
 - Fallback de contagem: conta os commits de HEAD com o programa `git`.
 - Causa do fallback: resolução de caminho da biblioteca de Git no Windows. Qual padrão de caminho dispara o erro: a confirmar.
 - Fora do Windows, não há fallback. O erro original é devolvido.
@@ -227,7 +227,7 @@ Estas regras não são exclusivas do Windows, mas existem por causa dele.
 
 ## 11. O que não é exclusivo do Windows
 
-- Keepalive TCP do servidor: o intervalo vem de `tcp_keepalive_secs` (0 desliga). Vale em todas as plataformas.
+- Keepalive TCP do servidor: o intervalo vem de `tcp_keepalive_secs` (padrão 60; 0 desliga; variável `AI_MEMORY_TCP_KEEPALIVE_SECS`). Vale em todas as plataformas. Em cada conexão aceita, o servidor ativa `SO_KEEPALIVE` com **o mesmo valor** para o tempo ocioso antes da primeira sonda e para o intervalo entre sondas (as contagens de sondas ficam no padrão do sistema; no Windows o tempo e o intervalo são configuráveis por socket). Se o ajuste de um socket falhar, registra o aviso `failed to set TCP keepalive on accepted connection` e a conexão segue sem keepalive; nunca derruba a conexão. O objetivo é recuperar descritores de pares que morreram sem FIN (suspensão do notebook, VPN que cai). O endereço do par que o limitador de login usa continua vindo da conexão aceita.
 - Regras de caminho da seção 8.
 - Só Unix: modos 0700 e 0600, nova sessão do dreno com `setsid`.
 
@@ -245,3 +245,35 @@ Estas regras não são exclusivas do Windows, mas existem por causa dele.
 3. Handlers administrativos e leitores de transcrição por harness: ver [harness-adapters.md](harness-adapters.md).
 4. Textos integrais dos prompts: estão resumidos em [consolidation.md](consolidation.md).
 5. Testes de integração: são a melhor especificação executável. Os limites de segurança estão em [security-boundaries.md](security-boundaries.md).
+
+## 14. Servidor em segundo plano no logon (`setup` e `service-host`)
+
+Existe no produto de referência, e não estava descrito nos docs, um caminho que mantém o servidor ativo no Windows **sem serviço do Windows e sem administrador**. Ele complementa (não substitui) o cenário do wrapper de serviço de [windows.md](windows.md).
+
+Motivo do desenho: o Windows não tem um gerenciador de serviços por usuário (como `systemd --user`); um serviço real exige administrador e a senha da conta (o diretório de dados fica no perfil); uma tarefa agendada roda a ação dentro de um objeto de job que mata a árvore de processos quando a ação termina e ainda mostra janela de console. Por isso o `setup` grava um valor de registro de **logon** que inicia um supervisor oculto.
+
+### 14.1 O valor do registro
+
+- Chave: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; nome do valor: `ai-memory`; tipo texto simples (`REG_SZ`). Não precisa de elevação.
+- Dados (uma linha de comando): `"<exe>" --data-dir "<dados>" --config "<config>" service-host`, em que cada caminho vai entre aspas duplas, absoluto, **sem o prefixo `\?\`** (um prefixo de caminho longo num valor de `Run` é um dos sinais que antivírus comportamentais pesam) e sem aspas dentro do caminho (caminho com `"` é recusado). Barras invertidas no fim de um caminho são dobradas antes da aspa de fechamento (regra de leitura de linha de comando do Windows). Caminho relativo, não UTF-8 ou com caractere de controle é recusado.
+- A escrita e a leitura usam a API do registro, não o programa `reg.exe`: um binário sem assinatura que executa `reg add …\Run` é um sinal clássico de persistência e já foi posto em quarentena por antivírus por isso.
+- Reconhecimento ("é nosso?"): o valor começa com um programa entre aspas cujo nome de arquivo é `ai-memory.exe` (sem diferenciar caixa), os argumentos terminam em ` service-host` e não contêm `&` nem `|`; e o `--data-dir` (primeiro argumento depois do executável) aponta para o mesmo diretório de dados (comparação sem diferenciar caixa, ignorando `\?\`, barras finais e `/` vs `\`; caminho não absoluto nunca casa). Qualquer outro valor com esse nome é de terceiros e é deixado intacto.
+
+### 14.2 O comando oculto `service-host`
+
+- Sem `--supervise`: inicia a si mesmo com `--supervise` desanexado de qualquer console (flags `DETACHED_PROCESS`, `CREATE_NEW_PROCESS_GROUP`, `CREATE_NO_WINDOW`; tenta antes com `CREATE_BREAKAWAY_FROM_JOB` e, se o sistema negar com acesso negado, código 5, repete sem ele; entrada/saída/erro nulos) e termina logo, para o console do logon fechar. Fora do Windows falha com uma mensagem apontando o `setup` (unidade de usuário do systemd ou LaunchAgent).
+- Com `--supervise`: se já existe um supervisor vivo de outro pid (segundo logon, ou `setup` concorrendo com a entrada), sai sem fazer nada (**um** host por diretório de dados). Senão: apaga um pedido de parada deixado por uma parada que não terminou, grava o estado e executa `serve --transport http --enable-web` com os mesmos `--data-dir`/`--config`, com console oculto próprio (`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`), de modo que nem o servidor nem processos filhos (git, CLI de provedor) abram janelas.
+- Estado: `<dados>\service-host.json` com `{"supervisor_pid": N, "server_pid": N|null}` (escrita atômica), atualizado a cada (re)início do servidor. Um pid só conta como vivo se o processo existe **e** o nome do executável começa por `ai-memory` (sem diferenciar caixa); o instante de início do processo distingue um pid reutilizado.
+- Reinício: sobre saída com falha, espera **5 s** e reinicia. Uma saída com sucesso encerra o host. Uma falha antes de **10 s** de execução conta como "rápida"; **5 falhas rápidas seguidas** encerram o host (porta ocupada por outro servidor, configuração quebrada) com o erro `service-host: the server failed 5 times within 10s of starting; not restarting it. Run `ai-memory serve --transport http` in a terminal to see why.`; uma execução de 10 s ou mais reinicia a contagem em 1. O estado é apagado ao sair.
+- Parada cooperativa: `stop` grava o arquivo `<dados>\service-host.stop`; o supervisor o verifica a cada 250 ms, mata o servidor pelo handle que possui (nunca por pid, que pode ter sido reutilizado) e sai como saída limpa (sem reiniciar). `stop` espera até **10 s**; se um processo registrado continuar o mesmo (mesmo instante de início), recorre a `taskkill /PID <pid> /T /F`, primeiro na árvore do supervisor; falha de `taskkill` com o processo ainda vivo é erro. Ao fim apaga o pedido e o arquivo de estado. Parar um host que não roda não é erro. Um pedido de parada durante a espera do reinício interrompe a espera.
+
+### 14.3 O comando `setup`
+
+`ai-memory setup` é a instalação nativa em um comando e compõe, nesta ordem: (1) `init` (em diretório novo também cria o token raiz em `<dados>\auth-tokens\default` e registra `[auth] bearer_token_file`); (2) o serviço de usuário (no Windows, o valor de registro da seção 14.1 e o início imediato do host); (3) para cada agente (`--agent`, repetível, ou os detectados pela existência do armazenamento de sessões, da configuração MCP ou do diretório do agente sob o perfil): `install-mcp --apply`, `install-hooks --apply` e `install-skills` global; (4) autoverificação que não escreve nada: `/healthz`, uma chamada `memory_status` por MCP com a credencial da instalação e o `doctor`. O token nunca é impresso nem passado em linha de comando. Cada passo é idempotente (um segundo `setup` não muda nada). Opções: `--yes/-y` aplica sem perguntar; sem `--yes` mostra o plano e confirma em terminal, e sem terminal **não muda nada e sai com código diferente de zero**; `--plan` imprime o plano (com `--json`, documento versionado, formato 1) e não muda nada; `--web` mostra o plano numa página local em `127.0.0.1` atrás de um endereço de uso único e aplica os agentes escolhidos via `setup --yes`; `--no-open`, `--no-service`. Espera até **30 s** o serviço recém-iniciado responder. Frase sugerida ao operador depois: `What do you remember about this project?`.
+
+Idempotência do serviço no Windows: se o valor já é idêntico e o host roda, nada muda; se o valor difere, é regravado; em qualquer caso diferente de "igual e rodando", o host antigo é parado (14.2) e um novo é iniciado pelo executável, com saída descartada; a falha do inicializador é erro com o texto do comando. Resultado: `Installed` (valor não existia), `Updated` (existia e mudou) ou `Started` (igual, mas não rodava) ou `Unchanged`.
+
+### 14.4 Desinstalação e diagnóstico
+
+- `uninstall` remove o valor **só** se for reconhecido como nosso para este diretório de dados (14.1); antes, para o host (14.2) e então apaga o valor. Um valor de terceiros é reportado como "não é nosso" e mantido. `uninstall --purge-data` exclui os pids do host da checagem de processo vivo, pois vai pará-los.
+- `doctor` e `status` avisam com a classificação `logon_binary_missing` quando o valor (nosso, deste diretório) aponta para um `ai-memory.exe` que não existe mais (antivírus em quarentena): o servidor não sobe no logon e todo hook chama um caminho que sumiu. Texto: `⚠ logon_binary_missing: the Windows logon entry for this data dir runs <exe>, which no longer exists (likely quarantined by antivirus), so the server does not start at logon` e a correção `restore ai-memory.exe (or allow it in your antivirus) and re-run `ai-memory setup`; or remove the logon entry with `ai-memory uninstall --apply` … or `Remove-ItemProperty -Path HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name ai-memory``.

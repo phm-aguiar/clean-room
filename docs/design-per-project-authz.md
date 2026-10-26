@@ -15,7 +15,7 @@
 | Management commands and root-only admin routes | Implemented |
 | Server setting that makes new projects restricted by default | Implemented; off by default |
 | Per-project admin delegation, row-level access control, time-limited grants, groups and roles | Proposal (non-goals for this version) |
-| Structural enforcement that makes unguarded lookups private to the module | A confirmar |
+| Structural enforcement that makes unguarded lookups private to the module | Not applied (unscoped by-id lookups stay public; see Known gaps) |
 
 ## Problem
 
@@ -103,7 +103,7 @@ The shared global scope is readable by every user, in every mode. Its pages are 
 Two resolution paths exist.
 
 - **Standard path** (all scoped reads and writes): if the project row cannot be read, or the project is unknown, the decision degrades to `open` with no creator and a logged warning. If the grant for a restricted project cannot be read, the decision degrades to `open` with a logged warning. For the global scope, an unreadable grant keeps reads open and refuses writes. An access mode value this build does not recognize reads as `open`. This follows the rule that an unresolved reference degrades instead of locking users out.
-- **Strict path** (managed-run mutations that release or replace another operator's state: finish, cancel, heartbeat, link, context acceptance): an unknown or unreadable project, an unknown access mode, an unreadable grant, or a user who no longer exists is an error. The deployment counts as distinguishing operators whenever users exist, even when the caller's level does not say so. The decision itself is the same as the standard path.
+- **Strict path** (managed-run mutations that release or replace another operator's state: finish, cancel, heartbeat, link, context acceptance): an unknown or unreadable project, an unknown access mode, an unreadable grant, or a user who no longer exists is an error (`authenticated user no longer exists`, a 403 forbidden). The deployment counts as distinguishing operators whenever users exist, even when the caller's level does not say so. The decision itself is the same as the standard path.
 
 The degrade is made per decision, when the data is read. No startup-time check is described here. See [Known gaps](#known-gaps-a-confirmar).
 
@@ -153,7 +153,7 @@ A sent message therefore cannot be used to put text into a restricted project's 
 
 ### Managed-run mutations: owner and legacy policy (Implemented)
 
-A managed run belongs to the operator who opened it. A mutation on a run owned by a different operator is refused as forbidden, whatever grants that operator holds. How the root token is treated by this rule is **a confirmar**.
+A managed run belongs to the operator who opened it. A mutation on a run owned by a different operator is refused as forbidden (`managed run belongs to another operator`), whatever grants that operator holds. **Root is not exempt** (confirmed in the original): the owner test uses the caller's own identity key, and the root level only passes the project check. A root caller whose identity differs from the run's owner is refused with 403, and a root caller with no identity at all (no root username configured) is treated as unattributed and may mutate only runs with no owner. A run with no stored owner (single-operator installs, or opened by an unattributed caller) is admitted for everyone. The owner test runs before the project check, and the refusal never changes the run's state.
 
 The project check for these mutations has two policies:
 
@@ -222,11 +222,11 @@ The identity fields added to projects in a later migration are a separate change
 
 ## Known gaps (a confirmar)
 
-1. **Requests without a viewer.** The per-project check runs only when a viewer is present. Anonymous requests are rejected on servers where the bearer gate is enabled. On a server where that gate is disabled, anonymous requests reach routes with no viewer. Whether a server can have database users in that configuration is **a confirmar**.
-2. **Page evidence counts.** A bare-identifier operation named "page evidence counts" was described in the original design. No operation with that name exists in the current build. Whether an equivalent operation exists is **a confirmar**.
-3. **Consolidation of a session with no resolvable target.** When the session does not resolve to a target, no write check runs before consolidation. Where the write then lands is **a confirmar**.
-4. **Structural enforcement.** Making unguarded lookups private to the module, so that new call sites must go through the guarded resolver, is recommended. Whether it is fully applied is **a confirmar**.
-5. **Global scope grants.** Whether a grant can be created on the global scope is **a confirmar**. Writes to it are gated in any case.
+1. **Requests without a viewer.** The per-project check runs only when a viewer is present. Anonymous requests are rejected on servers where the bearer gate is enabled. On a server where that gate is disabled, anonymous requests reach routes with no viewer. Verified against the reference implementation: the bearer gate is disabled exactly when neither a root token nor human authentication is configured (a stale bearer sent to such a server is treated as anonymous, not rejected); in that state a request carries the anonymous level and no viewer, and the per-project check for id-based routes passes without any lookup. Nothing in the original ties the gate to the existence of database users, so the combination "users exist and the gate is disabled" is not prevented by the bearer layer; Verified against the reference implementation (2026-10-25): user management always refuses an anonymous caller (`user management requires authentication`), even with the gate disabled, so a gate-disabled server cannot create its first user through the API; the combination arises only when users were created while authentication was configured and the root token and human authentication were later removed from the configuration. In that state requests stay anonymous with no viewer (none is added), the per-project check for id-based routes passes without lookup, and the administrative routes refuse the anonymous caller with 401 (`admin operation requires authentication in multi-user mode`), because users exist. Original behavior, reproduce as is.
+2. **Page evidence counts.** A bare-identifier operation named "page evidence counts" was described in the original design. No operation with that name exists in the current build. Verified against the reference implementation: there is no bare-identifier entry point that returns evidence counts. The per-page evidence count (rows citing a page version) is only computed inside scoped retrieval (the explained query ranking, the belief/authority score and the "settled first" briefing order), which already runs after the project check. Gap closed: nothing to gate.
+3. **Consolidation of a session with no resolvable target.** When the session does not resolve to a target, no write check runs before consolidation. Verified against the reference implementation: the check is skipped when the session has no target and the consolidator then runs; what the consolidator does for a session that resolves to no target belongs to the consolidation audit (feature 020) and is **a confirmar** there. Dry runs are authorized like real runs when a target exists.
+4. **Structural enforcement.** Making unguarded lookups private to the module, so that new call sites must go through the guarded resolver, is recommended. Verified against the reference implementation: it is **not** fully applied. The decision itself has a single choke point, and the fail-closed resolver is private to the storage layer, but bare-id lookups without scope or owner predicates remain public operations of the read layer (for example the handoff lookup by id, next to its scoped form, and the session-scope lookup by session id used by hook routing). Their callers are expected to apply the check. Original behavior, reproduce as is (the observable result is the per-call check at each caller).
+5. **Global scope grants.** Confirmed in the original: the grant operation itself has no special case for the global scope. It needs only that the project row exists (otherwise `NotFound`), so a `write` grant on the global scope can be created and then admits writes to it. Only changing the global scope's access **mode** is refused.
 
 ## Non-goals and proposals
 

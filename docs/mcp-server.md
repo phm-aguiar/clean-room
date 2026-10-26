@@ -3,7 +3,7 @@
 > **Escopo:** este documento contém partes que dependem de LLM ou de embeddings. Essas partes são opcionais e não fazem parte do escopo inicial, que funciona sem LLM. Podem ser removidas ou adiadas junto com as funções correspondentes.
 
 > **Papel:** a superfície de entrada de agentes e operadores. Reúne:
-> 1. **Servidor MCP** com as **23 ferramentas** de memória;
+> 1. **Servidor MCP** com as **24 ferramentas** de memória;
 > 2. **Rotas administrativas** sob `/admin/*` (ciclo de vida, manutenção, usuários, perfil entre projetos);
 > 3. **Autenticação HTTP**: token portador (administrador, usuário do banco ou proxy de identidade confiável)
 >    e **autenticação humana** (senha, sessão web, proteção CSRF e recuperação).
@@ -60,20 +60,24 @@ O relógio de atividade compartilhado é exposto para o ciclo de sonho.
   transporte, do cabeçalho `x-memory-actor-session-id`, do identificador de sessão nativo e do
   cabeçalho `mcp-session-id`. O roteador de hooks precisa usar a mesma regra; caso contrário,
   leituras e escritas do mesmo operador caem em slots diferentes do projeto ativo.
-- **Leitura:** retorna o escopo e a origem da escolha. A precedência é:
-  1. `project` explícito no workspace ativo do ator;
-  2. `project` explícito no workspace padrão do servidor;
-  3. ponteiro de projeto ativo do ator (publicado pelos hooks);
-  4. projeto padrão passado na inicialização (`--project`).
+- **Leitura:** retorna o escopo e a origem da escolha (`resolved_by`). Os valores no fio de `resolved_by` são:
+  - `"explicit"` (`workspace`/`project` explícito);
+  - `"active_project"` (ponteiro de projeto ativo com chave de ator correspondente);
+  - `"active_project_shared"` (slot único compartilhado do processo);
+  - `"active_project_fallback"` (semente de inicialização `startup_seed`);
+  - `"default"` (escopo padrão porque o ponteiro estava `Unset`);
+  - `"default_fallback"` (escopo padrão após `Mismatch` do ponteiro em leitura).
 
-  Quando a origem é uma **substituição de fallback** (`startup_seed` ou `default_after_mismatch`),
+  Quando a origem é uma **substituição de fallback** (`active_project_fallback` ou `default_fallback`),
   o servidor registra um aviso. Isso acontece quando um cliente MCP estático responde por um
   projeto que nunca foi nomeado.
 - **Escrita:** cria workspace e projeto nomeados se não existirem.
-  Sem `project` explícito, usa o ponteiro ativo. Com `project` mas sem `workspace`, usa o workspace
-  **do ponteiro**, e não o padrão do servidor, para não recriar `default/<projeto>` sem querer.
-  Se o ponteiro não corresponder ao que foi pedido, a escrita falha com erro de escrita não
-  ambígua; nunca grava silenciosamente no padrão.
+  Sem `project` explícito, consulta o ponteiro ativo:
+  - se houver correspondência (entrada própria, slot compartilhado ou semente de inicialização), usa o escopo do ponteiro;
+  - se o ponteiro estiver **vazio** (nenhuma entrada com chave foi publicada neste processo e o slot único está vazio, ex.: modo `stdio` ou servidor recém-iniciado), cai para o escopo padrão configurado (`default/scratch`);
+  - se o ponteiro estiver **divergente** (já houve publicação com chave no processo ou o usuário tem entrada somente-identidade, e a coordenada do chamador não casa), a escrita é recusada com erro JSON-RPC `-32602` (`ambiguous unscoped write`); nunca grava silenciosamente no padrão quando há ambiguidade.
+  Com `project` mas sem `workspace`, usa o workspace **do ponteiro** (quando resolvido), e não o padrão do servidor, para não recriar `default/<projeto>` sem querer.
+- **Protocolo de erros das ferramentas MCP:** falhas de validação, escopo ausente/ambíguo ou página/sessão/handoff não encontrado retornam **erro JSON-RPC** (`-32602` para parâmetros/escopo inválidos, `-32600` com `data: {reason: "precondition_failed", path, expected_page_id, current_page_id}` para conflito de versão esperada, e `-32603` para entidade não encontrada, permissão negada ou falha de armazenamento), e não resultado de ferramenta com `isError: true`.
 - **Múltiplos escopos** (`scopes`: lista de pares `{workspace, project}`, no máximo **25**).
   Resolve cada par como existente, sem criar.
 - **Aliases** nos parâmetros: `query` aceita também `q` e `search`; limites aceitam `n` ou `top_k`
@@ -97,7 +101,10 @@ provedor não resolve `$ref` em nenhuma profundidade e rejeita a requisição.
 
 ---
 
-## 3. As 23 ferramentas
+## 3. As 24 ferramentas
+
+(A auditoria 002 contou 24 ferramentas registradas no código original: as 23 anteriores mais
+`memory_restore_page`, descrita no §3.3.)
 
 Os detalhes de propósito e de flags estão em [architecture.md](architecture.md). Aqui está o
 comportamento.
@@ -155,16 +162,22 @@ Fluxo:
    fixadas do projeto (limitadas ao `limit`). Remove duplicatas por identificador e trunca
    novamente no `limit`.
 9. **`answer=true`** (opt-in; desligado por padrão). Só com esse argumento o LLM é acionado.
-   - Pede ao LLM uma resposta estruturada (`answer` e `citations`) sobre os resultados do projeto e
-     os de `_global`, com instrução de usar **somente** o conteúdo recuperado.
+   - Roda por último, depois de reordenação, `pin_first` e união de `_global`/perfil. Pede ao LLM uma
+     resposta estruturada (`answer` e `citations`) sobre os resultados do projeto e os de `_global`
+     (não sobre `raw_hits`), com instrução de usar **somente** o conteúdo recuperado. Prompt,
+     mensagem, esquema e temperatura (0,1) literais em `prompts-schemas-and-sanitizer.md` §8.3.
+     A resposta traz `answer: {text, citations}`; as citações são as que o modelo informou (o
+     servidor não as confere).
    - Sem provedor configurado: retorna os resultados com a nota `answer_unavailable` (nunca erro).
    - Falha do provedor: retorna os resultados com nota de falha contendo a classe do erro e o
-     status HTTP (ou `none`).
+     status HTTP (ou `none`): `answer synthesis failed: class=<classe> status=<status|none>`.
+   - `global=true` e `as_of` não chamam o LLM e trazem `answer_unavailable` com texto próprio
+     (todos os textos no §8.3 do doc de prompts). Esses retornos vêm antes da reordenação.
    - `reasoning` (`minimal` padrão, `low`, `medium`, `high`, `max`) escala o orçamento de tokens da
      síntese sobre a base de **2000** tokens: `minimal` 1×, `low` 1,5×, `medium` 2×, `high` 3×,
      `max` 4×. Valor desconhecido é rejeitado. Não há campo de raciocínio por requisição fora desse.
 10. **Resposta:** `hits`, `answer` (opcional), `answer_unavailable`
-    (opcional), `raw_hits`, `global_hits`, `global_scope_hits` e `streams_active`.
+    (opcional), `raw_hits` (opcional), `global_hits` (opcional), `global_scope_hits` (opcional) e `streams_active` (opcional).
     - `streams_active` só aparece com `explain`. Em consulta normal lista `fts`, `entity`, `vector`
       (somente se houve vetor), `abstract` (somente se houve vetor e a configuração de vetores de
       resumo está ativa) e `graph`.
@@ -174,39 +187,42 @@ Fluxo:
 ### 3.2 Demais ferramentas de leitura
 
 - **`memory_recent`:** páginas mais recentes por `updated_at` decrescente. Limite padrão do servidor
-  (10), limitado a 1..100.
+  (10), limitado a 1..100 (aceita alias `n`). Retorna `{ recent: [...] }`.
 - **`memory_read_page`:** lê uma página por `path` ou por `query`.
-  - Se os dois forem dados, `path` tem precedência.
+  - Se os dois forem dados, `path` tem precedência. Se nenhum for dado, retorna erro `-32602`.
   - Com `query`, faz busca FTS e devolve o corpo completo do primeiro resultado.
-  - Retorna `path`, `title`, `body` e `frontmatter`. Quando o arquivo Markdown falta e a página é
-    servida do banco, inclui `served_from`.
-  - Erro se a página não existe no escopo resolvido.
-  - `include_related` (opt-in) percorre o grafo de links em volta da página e devolve `related`.
-    Cada item traz `path`, `title`, `kind`, `workspace`, `project`, `depth` e `direction` (`link` ou
-    `backlink`). A profundidade vem de `related_depth` (padrão 1, máximo **3**) e o resultado tem no
-    máximo **50** nós. O percurso considera projetos cruzados. Sem a opção, `related` não aparece.
+  - Retorna `page_id`, `path`, `title`, `body` e `frontmatter` (mais `expired: true` quando a página está expirada). Quando o arquivo Markdown falta no disco e a página é
+    servida do banco, inclui `served_from: "db-fallback"`.
+  - Erro `-32603` se a página não existe no escopo resolvido.
+  - `related` (booleano opt-in, padrão `false`) percorre o grafo de links em volta da página e devolve `related`.
+    Com `related_depth = 1` (padrão), `related` tem `{ links, backlinks }`. Com `related_depth` em `2..3`, `related` tem `{ depth, nodes }` (onde cada nó traz `path`, `title`, `kind`, `workspace`, `project`, `depth` e `direction` `link` ou `backlink`, limitado a **50** nós, incluindo projetos cruzados). Sem `related: true`, o campo `related` é omitido.
   - Em caso de sucesso, reforça a página lida e os vizinhos percorridos (mesmo incremento de acesso
     descrito em 3.1, com a mesma janela por operador). Leitura com erro não reforça nada.
 - **`memory_read_session_observations`:** observações brutas de uma sessão, com paginação.
-  - `session_id` é opcional. Sem ele, usa a sessão concluída mais recente visível no projeto.
-  - `limit` padrão **50**, máximo **200**.
+  - `session_id` é obrigatório (UUID da sessão). Aceita filtros opcionais `kinds` (lista de tipos de observação) e `query` (busca FTS nas observações da sessão).
+  - `offset` padrão **0**; `limit` padrão **50**, limitado a **1..200**.
   - `body_max_chars` padrão **4000**, limitado a **200..16 384**. Corpo acima do limite é cortado com
-    marcador.
-  - `order` padrão crescente.
-  - A resposta traz `total` e `elided_other_scope` (contagem de itens de outro escopo que foram
-    omitidos).
-- **`memory_status`:** contagens e `scope` com `resolved_by`, que informa a origem da escolha
-  (ver 2.1).
-- **`memory_briefing`:** snapshot estruturado.
-  - `pinned`: até **10** páginas fixadas.
-  - `settled` (somente com `settled_first=true`): até **8** páginas, ordenadas por evidência e depois
-    por recência.
+    marcador `\n… [truncated <N> chars]`.
+  - `order`: `"asc"` (padrão) ou `"desc"`.
+  - A resposta traz `{ session, observations, total, offset, limit, order, elided_other_scope, body_max_chars }`.
+- **`memory_status`:** retorna `{ counts: { pages_latest, pages_all, sessions, observations, evidence_rows }, scope: { workspace, project, resolved_by } }` (ver 2.1).
+- **`memory_briefing`:** snapshot estruturado com parâmetros `recent_pages_limit` (padrão 10, limitado a 1..100) e `settled_first` (padrão `false`).
+  - Retorna `counts`, `activity_7d`, `activity_30d`, `last_observation_at`, `pending_handoff_count`, `pending_message_count`, `rules`, `slots`, `recent_pages`, `cross_project_dependents`, `cross_project_dependencies`, `scope`, mais `pinned` (até **10** páginas fixadas, omitido se vazio) e `settled` (somente com `settled_first=true`: até **8** páginas atuais e não expiradas cujo tipo derivado é `rule` ou `decision` — fixadas ou não —, cada uma com `path`, `title`, `kind` e `evidence_count`, ordenadas por contagem de registros de evidência decrescente e depois por `updated_at` decrescente).
 - **`memory_explore`:** digest em prosa feito pelo LLM, com o prompt de sistema do digest (ver
-  [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md)). Orçamento base de
-  **16 000** tokens, escalado por `reasoning` da mesma forma que em 3.1.
-  - Sem provedor de LLM: responde com `prose: null`, um motivo e o snapshot do briefing em JSON.
+  [prompts-schemas-and-sanitizer.md](prompts-schemas-and-sanitizer.md) §8.2). Parâmetros
+  `focus` (texto livre opcional), `recent_pages_limit` (padrão 10), `workspace`/`project` e
+  `reasoning`. Orçamento base de **16 000** tokens, escalado por `reasoning` da mesma forma que em
+  3.1; temperatura 0,2; chamada de texto livre (sem esquema).
+  - Sucesso: `{ prose: <texto do modelo>, gap: {hours_since_last, bucket, description}, briefing: <snapshot> }`.
+  - Sem provedor de LLM: responde com `prose: null`, `reason` =
+    `no LLM provider configured; returning structured briefing instead` e o snapshot do briefing
+    em JSON (`briefing`).
+  - Falha do provedor: mesma forma, `reason` = `LLM call failed: class=<classe> status=<status|none>`
+    (nunca erro; log só com classe e status).
   - Registra incremento de acesso nas páginas que expôs (regras, slots, recentes, fixadas e
-    assentadas), resolvidas em lote.
+    assentadas), resolvidas por caminho em uma única leitura em lote, **antes** de saber se o LLM
+    está configurado e mesmo se ele falhar (as páginas foram lidas de qualquer modo); mesma
+    janela de 60 s por operador do §3.1.
 - **`memory_handoff_list`** e **`memory_message_list`:** listagens somente leitura (ver 3.3).
 - **`memory_install_self_routing`:** devolve o bloco marcado de roteamento, a lista de skills
   gerenciadas e dicas de destino por harness.
@@ -214,34 +230,51 @@ Fluxo:
 ### 3.3 Ferramentas de escrita
 
 - **`memory_write_page`:**
-  - `tier` padrão: **`semantic`**, exceto quando o caminho da página é a página da sessão
-    (`sessions/<id>.md`). Nesse caso o padrão é **`episodic`**, para que a escrita direta e a
-    consolidação concordem.
+  - `tier` padrão: **`episodic`** quando omitido (`working`, `episodic`, `semantic` ou `procedural`).
   - Valida o caminho e exige que ele seja portável.
   - `scope` aceita:
-    - `"global"`: escreve no escopo reservado `_global`. Não combina com `workspace` nem `project`;
+    - `"global"`: escreve no escopo reservado `default/_global`. Não combina com `workspace` nem `project`;
     - `"profile"`: escreve no perfil entre projetos. Não combina com `workspace` nem `project`;
-    - qualquer outro valor: erro com os valores aceitos.
+    - qualquer outro valor: erro `-32602` com os valores aceitos.
   - `session_id` e `scope` não podem ser usados juntos: uma sessão pertence a um projeto.
-  - Frontmatter aceita `title`, `tags`, `pinned` e `expires_at` (formato RFC 3339 ou `AAAA-MM-DD`).
+  - Aceita controle de concorrência otimista: `expected_page_id` (UUID da versão atual esperada) e `create_only` (booleano; falha se a página já existir). Em caso de divergência, retorna erro JSON-RPC `-32600` com `data: { reason: "precondition_failed", path, expected_page_id, current_page_id }`.
+  - Frontmatter aceita `title`, `tags`, `pinned` (padrão `false`; páginas sob `_slots/` são sempre fixadas), `expires_at` (formato RFC 3339 ou `AAAA-MM-DD`) e metadados OKF (`kind`, `entities`, `abstract`, `relations`, `applies_to`, `enforced_by`).
     Validação completa é feita pela wiki.
   - Identidade do ator e do autor vem da camada de autenticação. A cadeia de admissão só é
     acionada se houver ator identificado ou lista de pulo.
-  - Depois da escrita, tenta um checkpoint (commit). Falha no checkpoint gera aviso, não erro.
-  - Resposta: identificador da página, caminho e checkpoint.
-- **`memory_delete_page`:** operação de exclusão. A resposta informa `deleted: true`, junto com os
-  checkpoints anterior e posterior. Comportamento para página inexistente a confirmar.
-  `scope: "profile"` é aceito e não combina com `workspace` nem `project`.
+  - Antes da escrita tenta um checkpoint prévio (`pre-checkpoint before mcp write-page <path>`) e depois da escrita tenta um checkpoint (`mcp write-page <path>`). Falha no checkpoint gera aviso, não erro.
+  - Resposta: `{ page_id, path, checkpoint }` (e `manifest_warning` opcional).
+- **`memory_delete_page`:** operação de exclusão física de todas as versões do caminho no banco e do arquivo em disco (com limpeza de entidades órfãs e registro em `audit_log` se alguma linha foi apagada). Aceita `expected_page_id` opcional (retornando `-32600` `precondition_failed` se a versão atual divergir ou se a página não existir). Sem `expected_page_id`, a operação é idempotente e retorna sempre `{ path, deleted: true, pre_checkpoint?, checkpoint? }`.
+  `scope: "profile"` é aceito e não combina com `workspace` nem `project` (`scope: "global"` não é aceito na exclusão).
+- **`memory_restore_page`:** lista os checkpoints de uma página ou restaura uma versão anterior
+  (inclusive de página excluída). **Somente administrador** (mesma autoridade de
+  `/admin/restore-page`; implícita em servidor de operador único), porque um checkpoint pode conter
+  texto apagado, expurgado ou expirado. Argumentos: `path` (obrigatório, validado e portável; senão
+  `-32602` `invalid path: <motivo>`), `rev` (opcional), `limit` (padrão **20**, limitado a
+  **1..100**), `workspace`/`project` (resolvidos uma vez, sem criar, para escrita).
+  - Sem `rev` (ou vazio): `{ path, checkpoints: [{ rev, summary, time }] }`, do mais novo ao mais
+    antigo, só checkpoints que alteraram o caminho.
+  - Com `rev`: lê a versão nesse checkpoint (falha: `-32602` `cannot read <path> at <rev>: <erro>`)
+    e a regrava, com o frontmatter (`title`, `tier`, `tags`, `pinned`, `expires_at` e metadados
+    OKF), como **nova versão atual** pelo mesmo caminho de `memory_write_page` (sanitização,
+    admissão, autoria e substituição valem; a versão substituída continua alcançável). Resposta: a
+    de `memory_write_page` acrescida de `restored_from: <rev>`.
+  - Só páginas de projeto: páginas de `scope: "profile"` não são restauráveis por aqui.
+  - Servidor sem wiki: `-32603` `memory_restore_page requires the server to be built with a wiki handle`.
 - **`memory_feedback`:** tipos `helpful`, `not_helpful`, `stale` ou `wrong`. O motivo é opcional:
   é higienizado (removem-se segredos, depois colapsam-se espaços) e cortado em **500** caracteres.
 - **`memory_consolidate`:** consolida uma sessão em uma página ou em várias (`multi_page=true`).
-  Sem `session_id`, usa a sessão concluída mais recente visível no projeto. Aceita `dry_run` (plano
+  Sem `session_id`, usa a sessão concluída mais recente visível no projeto (nenhuma: erro `-32602`
+  `no completed session in <escopo>; pass session_id to consolidate a specific session`). Aceita `dry_run` (plano
   sem chamar o LLM) e `instructions` por chamada, tratadas como preferências consultivas e não
   confiáveis.
 - **`memory_auto_improve`:** executa a auto-melhoria de uma sessão. Os argumentos `dry_run`,
   `stage` e `mode` foram removidos e são rejeitados. A revisão manual é configurada em
   `[auto_improve].require_approval`. Sem `session_id`, usa a sessão concluída mais recente sem
-  execução de auto-melhoria.
+  execução de auto-melhoria. Aceita ainda `workspace`, `project`, `min_observations`,
+  `min_session_duration_secs`, `min_confidence`, `max_input_tokens`, `max_proposals` e
+  `include_raw_fallback` (sobrescrevem a configuração só nesta chamada). Mensagens e formato da
+  resposta: `auto-improvement-loop.md`, seção "Formatos exatos".
 - **`memory_forget_sweep`:** varredura de esquecimento. `dry_run` mostra o que faria sem alterar nada.
   Exige autorização de administrador.
 - **`memory_lint`:** verificação de qualidade da wiki. Sem `dry_run`, grava o relatório na área
@@ -251,19 +284,15 @@ Fluxo:
 
 - `begin`:
   - honra o `workspace` informado na resolução de escopo de **escrita**;
-  - o resumo e os itens passam por sanitização e são limitados: resumo **3000** caracteres; cada
-    item **1500**; cada caminho de arquivo **512**; listas de texto **6000** caracteres no total e
-    listas de arquivos **4096**; no máximo **20** itens por lista;
+  - aceita `summary` (obrigatório), `next_steps`, `open_questions`, `files_touched`, `from_agent` (padrão `"mcp"`), `to_agent`, `cwd`, `session_id` e `shared` (padrão `false`);
+  - o resumo e os itens passam por sanitização e são truncados com sufixo explícito (nunca rejeitados por tamanho): resumo **3000** caracteres (`\n… [handoff summary truncated at 3000 chars]`); cada item **1500** (`\n[<label> truncated; <omitted> chars omitted]`); cada caminho de arquivo **512**; listas de texto **6000** caracteres no total e listas de arquivos **4096**; no máximo **20** itens por lista (`[<list_label> truncated; <N> additional item(s) omitted]`);
   - o dono é o criador. Com `shared=true`, o dono fica vazio e qualquer operador pode pegar o
     bastão;
   - a autorização de criação ocorre **antes** da inserção; os observadores são notificados depois;
-  - o retorno traz o identificador do bastão.
-- `list`: não reivindica nada. Limite padrão **50**, máximo **200**. Só o administrador pode usar
-  `any_owner=true`.
-- `accept`: reivindica um bastão pelo identificador exato, com comparação atômica (só uma sessão
-  concorrente vence). `any_owner=true` só para administrador.
-- `cancel`: marca como expirado o bastão com o identificador exato, para que a próxima sessão não o
-  consuma.
+  - o retorno traz `{ handoff_id, created_at }`.
+- `list`: não reivindica nada. Aceita `state` (`"open"` [padrão], `"accepted"`, `"expired"` ou `"all"`), `limit` (padrão **20**, limitado a **1..100**) e `any_owner` (booleano; só o administrador pode usar `any_owner=true`). Retorna `{ handoffs: [...] }`.
+- `accept`: reivindica um bastão pelo identificador exato (`handoff_id`) ou o melhor candidato para `cwd`, com comparação atômica (só uma sessão concorrente vence). Não aplica o filtro de 10 minutos de sessão viva, mas executa a varredura pós-reivindicação quando reivindica um handoff automático. `any_owner=true` só para administrador. Retorna `{ handoff: <objeto|null>, status: "claimed" | "consumed_by_hook" | "none_pending" }`.
+- `cancel`: marca como expirado o bastão com o identificador exato (`handoff_id`). `any_owner=true` só para administrador. Se não encontrado ou invisível ao operador, retorna erro JSON-RPC `-32603`; se cancelado agora, retorna `{ handoff_id, cancelled: true, state: "expired" }`; se já estava fechado, retorna `{ handoff_id, cancelled: false, state: "accepted" | "expired" }`.
 
 **Mensagens entre projetos:**
 
@@ -275,11 +304,23 @@ Fluxo:
   máximo **200**. Se a caixa de entrada foi resolvida por escopo **inferido** (e não nomeado), e a
   lista vem vazia, a resposta inclui uma dica explicando que a caixa pode não ser a esperada e
   sugerindo informar `workspace` e `project`.
-- `pop`: retira a próxima mensagem. O corpo sai delimitado como **entrada não confiável**, com a
-  proveniência do remetente fora do delimitador, para que possa ser avaliada primeiro. A garantia
-  exata de atomicidade da retirada a confirmar no armazenamento.
-- `cancel`: retira uma mensagem enviada pelo próprio remetente, pelo identificador. Mensagens já
-  retiradas não são afetadas.
+- `pop`: retira uma mensagem: a mais antiga pendente (por `created_at`) ou a de `message_id`
+  (identificador inválido: `-32602` `invalid message_id: <erro>`). **Atomicidade (confirmada no
+  código):** numa única transação, confere que a mensagem está `pending` e endereçada a este
+  projeto e faz uma troca condicional `pending → claimed` (grava `claimed_at`, agente, sessão e
+  usuário que reivindicou e uma linha de auditoria `pop_message`); quem perde a corrida altera zero
+  linhas e recebe `{ "message": null }`. Caixa vazia também devolve `{ "message": null }`. Sucesso:
+  `{ message, security_notice }`, com `security_notice` = aviso fixo de entrada entre projetos não
+  confiável e a proveniência do remetente fora do delimitador.
+- `cancel`: retrai mensagens **pendentes enviadas por este projeto**: com `message_id`, só essa;
+  **sem `message_id`, todas as pendentes que o projeto enviou**. Mensagens já retiradas ou
+  canceladas não são afetadas. Resposta `{ "cancelled": N }`.
+- `send`, `pop` e `cancel` **recusam escopo inferido** (projeto resolvido por ponteiro/padrão, sem
+  nome explícito nem sessão de hook vinculada), antes de tocar em qualquer coisa, com
+  `-32602` `refusing to <ação> <rótulo do projeto>: it was resolved by <origem>, not named, so it may not be the project you are working in. <remédio>`;
+  ações/remédios: `send as` / `Pass from_workspace and from_project to name the sending project.`;
+  `pop from` / `Pass workspace and project (the SessionStart inbox notice and memory_briefing name them).`;
+  `cancel the outbox of` / `Pass workspace and project to name the sending project.`
 
 Todas as operações de mensagem passam pela admissão com operação própria de mensagem.
 
@@ -307,14 +348,18 @@ um token vazio como autenticação de administrador.
 Ordem de avaliação:
 
 1. Token vazio: **rejeitado**.
-2. **Administrador:** comparação em tempo constante com o token raiz. Se bate, injeta o ator do
+2. **Administrador:** comparação em tempo constante com o token raiz (comparando os digests SHA-256 de 32 bytes do token fornecido e do esperado para não vazar o comprimento do token). Se bate, injeta o ator do
    administrador e o nível de administrador.
 3. **Proxy de identidade confiável.** Só vale com token portador explícito. Nunca vale com Basic
    nem com cookie. A comparação com o token do proxy é em tempo constante. Depois lê os cabeçalhos
    `X-Memory-Actor-*`:
    - cabeçalho **repetido**, ou com vírgula, gera erro de **ambiguidade** (suspeita de falsificação).
-     O proxy deve **substituir** esses cabeçalhos, nunca anexar. Resposta HTTP **400**;
-   - é obrigatório informar `user`, **ou** o par completo `issuer` + `sub`. Par parcial gera **400**;
+     O proxy deve **substituir** esses cabeçalhos, nunca anexar. Resposta HTTP **400** (texto simples)
+     `ambiguous X-Memory-Actor-* header: the proxy must replace client-supplied actor headers, not append to them`;
+   - é obrigatório informar `user`, **ou** o par completo `issuer` + `sub`. Sem nenhum: **400**
+     `trusted proxy must assert X-Memory-Actor-User or both X-Memory-Actor-Issuer and X-Memory-Actor-Sub`;
+     par parcial: **400** `trusted proxy must assert X-Memory-Actor-Issuer and X-Memory-Actor-Sub together`
+     (cada corpo termina em quebra de linha; textos conferidos pela auditoria 002);
    - o nível é de administrador **somente** se o par `issuer` + `sub` coincidir exatamente com o do
      administrador configurado. Nome de usuário nunca concede administrador. Caso contrário, nível
      de usuário.
@@ -331,13 +376,14 @@ ignorados. O esquema `Bearer` é comparado sem diferenciar maiúsculas.
 
 ### 4.3 Rotas de máquina
 
-Valem para `/mcp`, `/hook`, `/handoff` e `/workstream/*`:
+Valem para `/mcp`, `/hook`, `/hook/batch`, `/handoff` e `/workstream/*` (todas atrás do filtro externo de cabeçalho `Host`, que responde `400 missing Host header` quando ausente e `403 forbidden host` quando fora de `allowed_hosts`):
 
 - autenticado: segue;
-- sem autoridade configurada: **passagem anônima** (acesso local sem configuração). Um token portador
-  antigo é tratado como anônimo;
-- caso contrário: **401** com `WWW-Authenticate: Bearer realm="ai-memory", error="invalid_token"`.
-  Nunca anuncia Basic.
+- sem autoridade configurada: **passagem anônima** (acesso local sem configuração), sujeita à proteção contra requisições cross-origin de navegador (`Sec-Fetch-Site`, `Origin`, `Sec-Fetch-Dest` e exigência de `X-AI-Memory-Client` em `GET /handoff` quando não-loopback ou com cabeçalhos de encaminhamento). Um token portador antigo é tratado como anônimo;
+- caso contrário: **401** com cabeçalho `WWW-Authenticate: Bearer realm="ai-memory", error="invalid_token"`
+  e corpo em **texto simples** `auth required` seguido de quebra de linha (corrigido pela
+  auditoria 002: o código original não devolve corpo JSON nesta rota). Nunca anuncia Basic.
+  `/recap` também está atrás deste filtro.
 
 Sessões web **nunca** autenticam `/mcp`.
 
@@ -419,7 +465,11 @@ Recuperação de senha:
 - o segredo de recuperação é guardado como **hash SHA-256**; a comparação é em tempo constante;
 - falha no segredo ou na política gera o mesmo tratamento de falha de login (contagem por IP);
 - senhas são guardadas com **Argon2id**, em processamento separado do escritor do armazenamento,
-  com no máximo **2** verificações simultâneas.
+  com no máximo **2** verificações simultâneas e no máximo **32** trabalhos (ativos mais
+  enfileirados); acima disso, `kdf saturated` (**429**) sem esperar. Parâmetros Argon2id: os padrões
+  da biblioteca de referência (versão 19, `m=19456` KiB, `t=2`, `p=1`), sal aleatório de 16 bytes,
+  hash no formato PHC. A verificação fictícia usa um PHC fixo com os mesmos parâmetros, para
+  custar o mesmo tempo (auditoria 002).
 
 ---
 
@@ -436,12 +486,13 @@ operadores gera **500** `admin authorization unavailable`.
 | Bootstrap e aprendizado | `POST /admin/bootstrap` (recebe fontes já coletadas pela CLI), `POST /admin/auto-improve`, `POST /admin/auto-improve/report`, `POST /admin/curator`, `POST /admin/embed` |
 | Escritas pendentes | `GET /admin/pending-writes`, `GET /admin/pending-writes/{id}`, `GET /admin/pending-writes/{id}/diff`, `POST /admin/pending-writes/{id}/approve`, `POST /admin/pending-writes/{id}/reject` |
 | Manutenção | `POST /admin/lint`, `POST /admin/forget-sweep`, `POST /admin/reorg`, `POST /admin/compact`, `POST /admin/commit`, `GET /admin/checkpoints`, `POST /admin/restore-page`, `POST /admin/reclaim-ledger-versions`, `POST /admin/repair-session-times` |
+| Métricas | `GET /admin/metrics` (formato de texto Prometheus; ver abaixo) |
 | Leitura | `GET /admin/status`, `GET /admin/projects`, `GET /admin/project-coordinate`, `GET /admin/open-sessions`, `GET /admin/sessions/by-agent`, `GET /admin/activity/by-client`, `GET /admin/audit-contamination`, `GET /admin/audit-log`, `GET /admin/search`, `GET /admin/read-page`, `GET /admin/handoffs`, `GET /admin/messages` |
 | Acesso a projetos | `GET /admin/projects/grants`, `POST /admin/projects/access` |
 | Bastões e mensagens | `POST /admin/handoffs/expire`, `POST /admin/messages/send`, `POST /admin/messages/pop`, `POST /admin/messages/cancel` |
 | Ciclo de vida | `POST /admin/purge-project`, `POST /admin/purge-session`, `POST /admin/rename-project`, `POST /admin/rename-workspace`, `POST /admin/move-project`, `POST /admin/move-session`, `POST /admin/merge-workspace`, `POST /admin/delete-workspace` |
 | Páginas | `POST /admin/write-page`, `POST /admin/delete-page` |
-| Usuários e credenciais | `GET` e `POST /admin/users`; `POST /admin/human-users`; `PATCH /admin/users/{username}`; `POST` em `/admin/users/{username}/` com `expire`, `revive`, `rotate-token`, `reset-password`, `disable`, `enable`, `grant` e `revoke`; `GET /admin/users/{username}/grants`; `GET` e `POST /admin/api-credentials`; `POST /admin/api-credentials/{id}/rotate`; `POST /admin/api-credentials/{id}/revoke` |
+| Usuários e credenciais | `GET /admin/users`; `POST /admin/human-users`; `PATCH /admin/users/{username}`; `POST` em `/admin/users/{username}/` com `reset-password`, `disable`, `enable`, `grant` e `revoke`; `GET /admin/users/{username}/grants`; `GET` e `POST /admin/api-credentials`; `POST /admin/api-credentials/{id}/rotate`; `POST /admin/api-credentials/{id}/revoke` |
 
 Regras relevantes:
 
@@ -453,6 +504,23 @@ Regras relevantes:
 - **`move-project`** recusa mover o projeto em uso, a menos que seja forçado.
 - **`status`** agrega contagens, caminhos, versão, saúde dos provedores, métricas de ingestão,
   tamanho da fila de escrita, estado dos índices derivados e avisos de busca textual e de embeddings.
+
+**`GET /admin/metrics`** (registrado pela auditoria 002; ausente antes). Tipo de conteúdo
+`text/plain; version=0.0.4; charset=utf-8`. Contadores desde a subida do processo, com rótulos de
+um conjunto fechado: nenhum texto de requisição, escopo, projeto, cliente ou token vira nome,
+rótulo ou valor (um scrape não enumera projetos). Famílias, cada uma com `# HELP` e `# TYPE`:
+
+| Métrica | Tipo | Rótulo e valores |
+|---|---|---|
+| `ai_memory_hook_admissions_total` | counter | `result`: `accepted`, `dropped_by_policy` (política e subagente), `dropped_unauthorized`, `dropped_invalid`, `shed_saturated` (um por item rejeitado, inclusive os restantes de um lote 429), `shed_rate_limited` |
+| `ai_memory_hook_deliveries_total` | counter | `outcome`: `stored`, `replayed`, `resumed`, `ignored_end`, `dropped_collision`, `failed` |
+| `ai_memory_hook_last_persisted_timestamp_seconds` | gauge | sem rótulo; horário Unix (segundos) da última observação ou efeito novo; omitida enquanto não houver |
+| `ai_memory_mcp_tool_calls_total` | counter | `kind`: `read`, `write` |
+| `ai_memory_hook_request_duration_seconds` | histogram | tempo para `POST /hook` responder (não inclui o processamento em segundo plano) |
+| `ai_memory_query_duration_seconds` | histogram | tempo de parede de `memory_query`, erros incluídos |
+
+Histogramas: limites `le` fixos em segundos `0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25,
+0.5, 1, 2.5, 5, 10` e `+Inf` (cumulativos), mais `_sum` e `_count`.
 
 ### 6.1 Perfil entre projetos
 

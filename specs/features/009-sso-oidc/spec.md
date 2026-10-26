@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 009
-- **Status:** draft (revisada contra os docs em 2026-10-13; nova revisão prevista quando as features anteriores terminarem)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 007 (níveis, chaves de identidade, ponto único de autenticação)
@@ -17,12 +17,14 @@ Equipes com um provedor de identidade central (IdP OIDC) precisam que cada desen
 ## Escopo
 
 ### Dentro do escopo
-- **Login** `ai-memory auth login oidc-device --issuer --client-id [--timeout-secs]` (`docs/sso.md` § "Sign-in flow"): descoberta (só os endpoints de dispositivo e de token), autorização de dispositivo com escopo `openid profile offline_access`, impressão da URI de verificação, sondagem com intervalo do servidor (padrão 5 s, mínimo 1 s) mais 3 s, `slow_down` soma 5 s, limite pelo menor entre `--timeout-secs` (600) e `expires_in` (600), desfechos da tabela do doc, refresh token obrigatório, validade por `expires_in` (300 se ausente).
-- **Armazenamento** em `auth.json` no diretório de dados, chave `oidc`, tipo `oauth`, preservando outros provedores; escrita atômica; `0600` em Unix; CLI imprime emissor e caminho, nunca os tokens.
-- **Renovação** (§ Refresh): margem de 60 s, `refresh_token` sem segredo de cliente, tempo máximo de 300 s, novo refresh token substitui o antigo se vier, salvo antes de usar; falha de renovação ou de gravação usa o token antigo sem avisar quem chamou.
-- **Ordem de bearer** (§ "Where the token is used"): hooks nativos (token explícito, token persistido da instalação, token OIDC, nenhum) e comandos da CLI que chamam o servidor (`AI_MEMORY_AUTH_TOKEN` ou `[auth].bearer_token`, token OIDC, nenhum); no spool, o evento grava só o modo, e o token é resolvido (e renovado) uma vez por envio.
-- **`auth status`** e **`auth logout oidc-device`** (remove só a chave `oidc`, sem contatar o IdP).
-- **Proxy de identidade confiável no servidor** (§ "Trusted proxy identity", `docs/mcp-server.md` §4.2, `docs/users.md`): `[auth].actor_proxy_bearer_token`, comparação em tempo constante, só com bearer explícito (nunca Basic nem cookie); cabeçalhos `X-Memory-Actor-User`, `-Issuer`, `-Sub`, `-Agent`, `-Client`, `-Session-Id`; cabeçalho repetido ou com vírgula dá 400; precisa de usuário ou do par completo emissor/assunto, senão 400; vazios contam como ausentes; nível usuário, root só com `[auth].root_issuer` e `[auth].root_subject` exatos; chave de identidade com o par vencendo o username.
+- **Regras de transporte** (`docs/sso.md` § "Transport rules"): toda URL com credencial (emissor, descoberta, dispositivo, token — inclusive o endpoint gravado no arquivo, revalidado a cada renovação) exige `https`; `http` só para `localhost` ou endereço de loopback; falha antes de enviar, com a mensagem do doc. Cliente sem redirecionamentos (3xx é status de falha), 60 s por requisição no login (300 s na renovação), `User-Agent: ai-memory/<versão>`; corpos de sucesso até 16 MiB; corpos de erro lidos até 1 MiB, higienizados e cortados em 1 024 bytes com reticências.
+- **Login** `ai-memory auth login oidc-device --issuer --client-id [--timeout-secs]` (`docs/sso.md` § "Sign-in flow"): `--issuer` e `--client-id` obrigatórios (mensagens do doc), `--github-token` recusado; descoberta (barras finais do emissor removidas; só os endpoints de dispositivo e de token); autorização de dispositivo com escopo `openid profile offline_access`; impressão `Open this URL: …` (e `Enter code: …` quando não há URI completa) e `Waiting for authorization...`; sondagem com primeira consulta imediata, espera = `interval` do servidor (padrão 5 s, mínimo 1 s) + 3 s, fixada no início, `slow_down` soma 5 s de forma permanente; ordem de cada iteração: checar limite, consultar, agir, dormir (a espera não é encurtada, então a falha por tempo pode chegar até uma espera depois); limite pelo menor entre `--timeout-secs` (600) e `expires_in` (600 se ausente, mínimo 1 s); desfechos e mensagens da tabela do doc (corpo de erro sem código reconhecível vira `oidc-device authorization failed: <corpo>`); erro de transporte durante a sondagem aborta; refresh token obrigatório; validade por `expires_in` (300 se ausente); o emissor gravado é o texto digitado.
+- **Armazenamento** em `<dados>/auth.json`, chave `oidc`, tipo `oauth`, chaves planas (`access`, `refresh`, `expires` em ms, `issuer`, `client_id`, `token_endpoint`), JSON indentado, preservando outros provedores; escrita atômica por `auth.json.tmp` + fsync + renomeação; `0600` em Unix (no Windows vale a permissão da pasta de dados); arquivo ausente = sem token; JSON inválido ou não objeto = erro e nada é gravado; entrada com `type` diferente de `oauth` é ignorada; entrada `oauth` incompleta = erro; remover a última chave apaga o arquivo; CLI imprime `oidc-device: logged in`, `issuer:` e `token file:`, nunca os tokens.
+- **Renovação** (§ Refresh): margem de 60 s, `refresh_token` sem segredo de cliente, tempo máximo de 300 s, sem redirecionamentos, novo refresh token substitui o antigo se vier, salvo antes de usar; falha de renovação (`OIDC refresh failed (<status>): …`) ou de gravação usa o token antigo sem avisar quem chamou; sem trava entre processos (a perdedora de uma corrida usa o token que já tinha).
+- **Ordem de bearer** (§ "Where the token is used"): hooks nativos (token explícito, token persistido da instalação, token OIDC, nenhum) e comandos da CLI que chamam o servidor (`AI_MEMORY_AUTH_TOKEN` ou `[auth].bearer_token`, token OIDC, nenhum); token estático vazio conta como ausente; **o resolvedor engole erros de carga** (arquivo ausente, ilegível ou malformado = sem bearer, sem aviso); no spool, o evento grava só o modo, e o token é resolvido (e renovado) uma vez por envio; 401 em entrada `oidc` não é repetido com outra credencial, entradas de token estático repetem uma vez com o `AI_MEMORY_AUTH_TOKEN` atual se diferir.
+- **`auth status`** (linhas `oidc-device: logged in`, `issuer:`, `expires in:` ou `expired`, `token file:`; ou `not logged in` + `token file:`; arquivo danificado faz o comando falhar) e **`auth logout oidc-device`** (remove só a chave `oidc`, imprime `oidc-device: logged out` e `token file:`, tem sucesso mesmo sem login, sem contatar o IdP).
+- **Proxy de identidade confiável no servidor** (§ "Trusted proxy identity", `docs/mcp-server.md` §4.2, `docs/users.md`): `[auth].actor_proxy_bearer_token`, comparação em tempo constante, ordem raiz → proxy → credencial de banco (o primeiro segredo igual decide), só com bearer explícito (nunca Basic nem cookie); cabeçalhos `X-Memory-Actor-User`, `-Issuer`, `-Sub`, `-Agent`, `-Client`, `-Session-Id` (nome e e-mail do ator não vêm de cabeçalho); valores aparados, vazio ou não ASCII visível conta como ausente; cabeçalho repetido ou com vírgula dá 400 e as duas outras mensagens 400 do doc (sem identidade; par parcial); nível usuário, root só com `[auth].root_issuer` e `[auth].root_subject` exatos; chave de identidade `oidc:<N>:<emissor><assunto>` (N = bytes do emissor) com o par vencendo o username; `GET /identity` devolve a chave em `operator`.
+- Identidade do proxy **não tem linha de conta**: sem `last_seen_at`, sem `author_id` em páginas ou auditoria, sem espectador de acesso por projeto (projetos restritos não são aplicados a ela).
 - O proxy configurado conta para "distingue operadores" (`docs/users.md`).
 - **Recusas da inicialização** do proxy (`docs/users.md` § "Startup refusals"): proxy sem bearer root, proxy igual ao root, emissor e assunto não definidos juntos.
 
@@ -50,7 +52,11 @@ Equipes com um provedor de identidade central (IdP OIDC) precisam que cada desen
 - **Renovação recusada pelo IdP:** usa o token vencido; o servidor provavelmente devolve 401.
 - **Token renovado que não pode ser salvo:** usa o token antigo naquela requisição, para ficar coerente com o arquivo.
 - **Username só, sem par:** mesma chave de um usuário local com o mesmo nome; recomendação do doc é sempre afirmar o par.
-- **Perfil de hook com servidor e token próprios:** nunca usa o token OIDC.
+- **Perfil de hook com servidor e token próprios:** nunca usa o token OIDC, e o token persistido da instalação nunca vai ao servidor do perfil.
+- **Arquivo de token ilegível ou malformado no envio:** sem bearer, sem erro (só `auth status` relata o erro).
+- **Endpoint de token gravado com `http` fora de loopback:** a renovação falha antes de qualquer requisição e o token antigo é usado.
+- **Redirecionamento (3xx) em qualquer etapa:** tratado como falha de status; o refresh token nunca é reenviado.
+- **Servidor sem bearer root nem login humano configurados:** não confere bearers; a requisição é anônima.
 
 ## Constraints
 - **Segurança:** tokens nunca impressos nem em log; arquivo atômico e `0600`; cabeçalhos de identidade só valem com o bearer do proxy; root nunca por username.
@@ -60,7 +66,7 @@ Equipes com um provedor de identidade central (IdP OIDC) precisam que cada desen
 - [ ] Tabela de desfechos da sondagem e tabela de falhas de `docs/sso.md` cobertas por teste contra um IdP de teste
 - [ ] Ordem de bearer de hooks e CLI testada
 - [ ] Regras do proxy (400, nível, chave de identidade) testadas, incluindo os adversariais do `docs/mcp-server.md` §7
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Cliente OIDC no `cli` (fluxo de dispositivo, armazenamento e renovação), usado pela resolução de bearer do hook e dos comandos. No servidor, um degrau novo no ponto único de autenticação da 007, entre o root e as credenciais de banco, que produz o contexto do ator a partir dos cabeçalhos.
@@ -78,3 +84,12 @@ Cliente OIDC no `cli` (fluxo de dispositivo, armazenamento e renovação), usado
 - [x] Constraints explícitas
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada
+
+## Correções da auditoria
+
+Auditoria 012 (Chinese Wall, contra o código original). Relatório: `reports/012-auditoria-006-007-009.md`.
+
+- `docs/sso.md` verificado contra o original sem divergência material: escopo `openid profile offline_access`, sufixo de descoberta, regra https/loopback, parâmetros do device grant e do refresh, desfechos da sondagem, gravação em `auth.json` sob `oidc`, e ausência total de validação do token no servidor.
+- `docs/threat-model-and-data-handling.md`: o "a confirmar" sobre validação de JWT OIDC no servidor foi resolvido — não existe; a validação cabe ao gateway.
+- `docs/security.md`: resolvido que hooks em script (curl) não usam o token OIDC; só o comando de hook nativo tem spool e o token OIDC como último recurso.
+- Observação: esta spec cita bibliotecas de uma linguagem específica em Constraints; os docs permanecem agnósticos.

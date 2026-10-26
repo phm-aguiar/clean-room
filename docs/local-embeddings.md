@@ -46,8 +46,8 @@ Um provedor remoto ou auto-hospedado faz mais sentido quando já existe um em us
 ## Modelo e arquivos
 
 - Modelo: `all-MiniLM-L6-v2`, 384 dimensões. Os vetores são gravados com o provedor `local` e o nome do modelo acima.
-- Tamanho: cerca de 87 MB para o arquivo de pesos. O total dos três arquivos está a confirmar.
-- Licença do modelo: a confirmar.
+- Tamanho: cerca de 87 MB para o arquivo de pesos; o tokenizador e a configuração somam alguns MB (tamanho exato não é verificado pelo ai-memory, só o SHA-256).
+- Licença do modelo: o ai-memory não a registra nem a verifica (o modelo público é distribuído pelo repositório de origem sob a licença dele); fora do escopo do comportamento.
 - Diretório de cache: `<data_dir>/models/all-MiniLM-L6-v2/`.
 
 Arquivos do modelo e checksums SHA-256 fixados em 2026-09-01:
@@ -60,10 +60,11 @@ Arquivos do modelo e checksums SHA-256 fixados em 2026-09-01:
 
 ### Download
 
-- A origem é o repositório público do modelo `all-MiniLM-L6-v2` no hub de modelos Hugging Face.
+- A origem é o repositório público `sentence-transformers/all-MiniLM-L6-v2` no hub Hugging Face: `GET https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/<arquivo>` (segue redirecionamentos para outro host).
 - Os três arquivos são baixados em ordem. Um arquivo que já existe com o checksum correto é pulado. Um arquivo que existe com checksum errado é baixado de novo e substituído.
 - Cada arquivo é verificado antes de ser gravado. A gravação passa por um arquivo temporário e termina com renomeação. Se o checksum não bater, o download é recusado e nada é instalado.
-- Timeouts do download: 30 s para estabelecer a conexão e 600 s por arquivo.
+- Timeouts do download: 30 s para estabelecer a conexão e 600 s por arquivo. O corpo é lido inteiro em memória antes da verificação; o temporário tem o mesmo nome com a extensão trocada por `part`.
+- Mensagens: `downloaded <arquivo> sha256 <hash> does not match pin <fixado>; refusing to install an unverified model`; no carregamento, `local embedding model file missing: <caminho>. Start the server once with network access to fetch it, or download <URL> manually into <diretório>` e `local embedding model file <caminho> sha256 <hash> does not match the pinned <fixado>; delete it and re-fetch`.
 - A checagem de presença, usada no início do servidor, só confirma que os três arquivos existem. O checksum é verificado ao carregar o modelo.
 - Consequência: um arquivo presente, mas corrompido, não é baixado de novo. No modo padrão, o servidor registra um aviso e segue sem vetores. No modo explícito, a inicialização falha. Nos dois casos, apague o arquivo para forçar um novo download.
 - Enquanto o modelo estiver ausente, cada inicialização tenta baixá-lo de novo.
@@ -91,7 +92,7 @@ Ao iniciar, o modelo é lido inteiro para a memória, uma vez por inicializaçã
 
 - Cada vetor guarda a tripla (provedor, modelo, dimensão). A busca usa apenas vetores cuja tripla bate com a configuração atual. Vetores de outras triplas permanecem guardados e são ignorados.
 - Trocar de provedor é uma mudança de configuração. Voltar ao provedor anterior reativa os vetores antigos.
-- Backfill de inicialização: quando há vetorização ativa, o servidor calcula, em segundo plano, os vetores que faltam para a tripla atual. Páginas que possuem resumo (campo `abstract`) recebem um vetor próprio para ele. Páginas já vetorizadas são puladas.
+- Backfill de inicialização: quando há vetorização ativa (qualquer provedor), o servidor calcula, em segundo plano, os vetores que faltam para a tripla atual. Páginas que possuem resumo (campo `abstract`) recebem um vetor próprio para ele. Páginas já vetorizadas são puladas. Toda escrita de página com embedder ativo também embute o corpo e o resumo na hora (ver [wiki-files-layer](wiki-files-layer.md)).
 - Backfill periódico: opcional, via configuração de manutenção (`maintenance.embedding_backfill_interval_secs`). O padrão é 0, desligado.
 - Para recalcular tudo com o provedor atual, use `ai-memory embed --force`. Sem `--project`, o comando vale para todos os projetos. A CLI é cliente HTTP, então o servidor precisa estar em execução. `--dry-run` apenas conta o que seria feito.
 - Se a inicialização encontrar triplas diferentes da configuração atual, o servidor registra um aviso. Isso não bloqueia a inicialização.
@@ -108,7 +109,7 @@ Para comparação com o modo local. Cada provedor usa a própria chave ou autent
 | `openai-compat` | Obrigatório em `embedding_model` | Obrigatória em `embedding_dim` | URL base obrigatória; chave opcional |
 | `copilot` | `text-embedding-3-small` | 1536 | Autenticação OAuth do Copilot |
 
-Clientes de OpenAI, Voyage e openai-compat usam timeout de 120 s por requisição. Para Google e Copilot, o timeout está a confirmar.
+Clientes de OpenAI, Voyage, Google e openai-compat usam timeout de 120 s por requisição; o do Copilot é de 300 s. Retentativa: ver [cliente de LLM](llm-client.md) §8.3 (OpenAI e compatível repetem 429 e 503 com `Retry-After`; Google e Copilot, só 429; Voyage, nenhuma).
 
 Os provedores remotos enviam o texto das páginas e das consultas ao serviço externo. Ver [Provedores de LLM](llm-providers.md) para a configuração completa de provedores.
 

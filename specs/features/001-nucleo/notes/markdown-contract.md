@@ -1,22 +1,49 @@
 # Nota: contrato de frontmatter, OKF, título e links
 
-Tarefa T004, feature 001-nucleo. Somente leitura. Fontes: `docs/okf.md`, `docs/wiki-files-layer.md` (§3, §5.2), `docs/domain-vocabulary.md` (§4.2, §6.6, §6.7, §6.8, §14), `docs/database-schema.md` (tabela `links`, linhas 188-210), `specs/features/001-nucleo/plan.md`, `.github/memory/constitution.md`.
+Feature 001-nucleo. Fontes: `docs/okf.md`, `docs/wiki-files-layer.md` (§3, §5.2), `docs/domain-vocabulary.md` (§4.2, §6.6, §6.7, §6.8, §14), `docs/database-schema.md` (tabela `links`, linhas 188-210), `.github/memory/constitution.md`. Em toda dúvida vale o comportamento do original descrito nos docs.
+
+> **Auditoria de 2026-10-18, passada 2.** Os docs `wiki-files-layer.md` §3 e §5 foram reescritos
+> contra o comportamento de referência e **vencem** esta nota. Pontos principais:
+> - o fechamento `---` como **última linha do arquivo, sem quebra** é aceito (corpo vazio); o tipo de
+>   quebra (LF ou CRLF) é decidido pela cerca de abertura;
+> - o frontmatter guarda **tipos** (booleano, número, nulo, texto, lista, mapeamento), com a resolução
+>   de escalares do núcleo YAML 1.2 descrita no doc: só `true/True/TRUE` e `false/False/FALSE` são
+>   booleanos (`yes`, `on` são texto), datas são texto, `007` é texto, inteiro acima de 64 bits é erro,
+>   chave duplicada é erro. Um frontmatter cuja raiz não é mapeamento é aceito na leitura; na escrita, a
+>   conformidade OKF o troca por mapeamento vazio;
+> - `pinned` só fixa quando é o **booleano** `true`; não há herança da fixação da versão anterior
+>   (como no original);
+> - a chave `tier` é sempre gravada com o tier do pedido de escrita (vence o frontmatter); na
+>   reindexação, o tier sai da chave `tier` (ausente → `semantic`; nulo, não texto ou desconhecido → erro);
+> - título: **pula** linhas dentro de bloco cercado (a linha da tabela (b) que diz o contrário está
+>   errada) e não tem teto;
+> - ordem de emissão e estilo YAML (wiki §3.3): ordem de inserção preservada, chaves novas no fim; antes
+>   da conformidade OKF a escrita grava `tier` e, se fixada, `pinned`; a conformidade acrescenta, nesta
+>   ordem e só se faltarem, `type`, `description`, `stale_after`, `sources`, `generated` (`by`, depois
+>   `at`); lista compacta (`-` na coluna da chave), bloco literal `|` para texto com quebra, aspas duplas
+>   só quando necessário, datas sem aspas, `{}`/`[]` para vazio, sem dobra de linha;
+> - arquivo idêntico **é** regravado com os mesmos bytes (nova data de modificação; o evento do watcher é
+>   absorvido pelo caso A); bloco emitido em LF, sem BOM; corpo com os fins de linha originais;
+> - links: algoritmo completo no doc (links markdown com `<destino>`, destino com espaços, parênteses
+>   aninhados, título opcional, escape com `\`, **decodificação `%XX` uma vez**; wikilink precedido de
+>   `!` **é** link; relações só como lista de textos, relativas à raiz do projeto, sem decodificação);
+> - as antigas lacunas desta nota estão **fechadas** pelo doc (ver o fim da nota).
 
 ## (a) Estrutura do frontmatter YAML
 
 ### Reconhecimento do bloco (wiki-files-layer §3.1; okf "Leitura de frontmatter")
-- Só vale o bloco canônico no início do documento: linha `---`, conteúdo YAML, linha `---` de fechamento seguida de quebra de linha.
+- Só vale o bloco canônico no início do documento: linha `---`, conteúdo YAML, linha `---` de fechamento seguida de quebra de linha ou no fim do arquivo (corpo vazio).
 - As quebras podem ser LF ou CRLF. Um bloco CRLF não pode virar corpo, porque duplicaria o frontmatter na migração OKF.
 - Um BOM UTF-8 inicial é descartado antes de tudo. Se ficasse no corpo, ocultaria o primeiro título e seria regravado depois do bloco.
 - Não é frontmatter (o documento inteiro vira corpo) nestes casos:
   - bloco sem fechamento;
-  - bloco sem quebra de linha após o fechamento;
+  - fechamento seguido de texto na mesma linha;
   - bloco vazio, ou seja, duas linhas `---` consecutivas.
 - Frontmatter presente mas com YAML inválido gera o erro tipado "YAML" (wiki-files-layer §11).
 - O parser YAML é usado diretamente, e não um extrator de frontmatter de terceiros. Esses extratores perdem comentários e a ordem das chaves.
 - Consequência: a reemissão não preserva comentários do frontmatter original.
 - O corpo mantém suas quebras de linha originais em qualquer caso.
-- O plano (plan §2.1) modela `Frontmatter` como "mapa ordenado", com `gopkg.in/yaml.v3` (plan §1).
+- O frontmatter é um mapa ordenado e tipado (booleano, número, nulo, texto, lista, mapeamento), lido pelas regras de escalares de wiki §3.2.
 
 ### Chaves conhecidas e tipos
 
@@ -34,13 +61,14 @@ Tarefa T004, feature 001-nucleo. Somente leitura. Fontes: `docs/okf.md`, `docs/w
 | `abstract` | texto. Resumo de uma linha. Vazio ou não-texto é ignorado. Limite público: 1024 caracteres brutos, aparado. | wiki-files-layer §5.2; domain-vocabulary §6.6 |
 | `kind` | texto, até 64 caracteres, sem caractere de controle, aparado. Vazio significa ausente. | domain-vocabulary §6.6 |
 | `relations` | mapa de relação para alvos (ver (c)). Até 32 alvos no total, cada um com até 1024 caracteres e sem caractere de controle. | domain-vocabulary §6.6; wiki-files-layer §3.5 |
-| `pinned` | lido do frontmatter na escrita. Frontmatter de índice recebe a forma canônica (nível de retenção e fixação). | wiki-files-layer §5.2 passo 5 |
+| `pinned` | só o booleano `true` fixa (o texto `"true"` não). Fixação final = pedido **ou** `_slots/` **ou** `pinned: true`. Gravado como `pinned: true` quando fixada; `pinned: false` presente fica como está. Sem herança da versão anterior. | wiki-files-layer §5.2 passo 5 |
+| `tier` | na escrita, sempre sobrescrito pelo tier do pedido (posição mantida se existia, senão no fim). Na reindexação, lido daqui (ausente → `semantic`; nulo, não texto ou desconhecido → erro). | wiki-files-layer §5.2 passo 5 e reindex de página |
 | `last_modified_by` | bloco com identificador do autor, quando houver. Ator anônimo não gera bloco. | wiki-files-layer §5.2 passo 3 |
 | `okf_version` | `"0.2"`, só no `index.md` da raiz. O frontmatter permitido em `index.md` é só esse. | okf "Versão do formato" |
 
 - Chaves de extensão preservadas sem alteração: `tier`, `kind`, `slot_kind`, `entities`, `pinned`, `consolidated`, `session_id`, `agent`, `summary`, `expires_at` (okf "Chaves de extensão preservadas").
 - Consumidores devem tolerar chaves desconhecidas (okf "Versão do formato").
-- `generated_by_model`: se presente, vira `generated.by`. O doc marca "a confirmar" se algum produtor a grava. Pela constituição, isso deve ser tratado como decisão nossa em ADR.
+- `generated_by_model`: se presente, vira `generated.by`, como no original (okf).
 - Nenhum `status` é gravado (okf).
 - `_meta.md` é manifesto, não conceito. Recebe apenas `type: Scope Manifest` (okf).
 
@@ -49,7 +77,7 @@ Tarefa T004, feature 001-nucleo. Somente leitura. Fontes: `docs/okf.md`, `docs/w
 - Caso contrário: bloco YAML com quebras LF, seguido do corpo.
 
 ### Ordem canônica das chaves
-LACUNA: nenhuma fonte define ordem canônica de emissão das chaves. Os docs só dizem que a ordem original é preservada na leitura (wiki-files-layer §3.1) e que o plano usa "mapa ordenado" (plan §2.1). A ordem de chaves novas, como `type`, `description`, `generated`, `sources` e `stale_after`, e o estilo de emissão do YAML (indentação, aspas) precisam de decisão do Analyst, registrada em ADR. Nada impede que seja: chaves existentes na ordem original, chaves derivadas acrescentadas ao final.
+Definida em wiki-files-layer §3.3 (resumo no quadro do início desta nota): chaves existentes na ordem original; `tier`/`pinned` e depois `type`, `description`, `stale_after`, `sources`, `generated` acrescentados ao fim só se faltarem. Os casos dourados do doc são o teste de aceitação.
 
 ### Conformação (okf "Determinismo"; domain-vocabulary §14)
 - É determinística e idempotente. Preenche só o que é derivável e não inventa nada.
@@ -71,13 +99,12 @@ Fonte: wiki-files-layer §3.3, okf "Demais chaves" (linha `title`).
 
 Ordem de prioridade:
 1. Campo `title` do frontmatter, se for texto e não vazio após remover espaços das pontas.
-2. Primeira linha do corpo que começa com `# ` e tem texto depois (também após aparar). A busca é por linha e não pula blocos de código (okf).
+2. Primeira linha do corpo que começa com `# ` e tem texto depois (também após aparar). A busca é por linha e **pula** linhas dentro de blocos cercados (corrigido: a referência ignora `# ` em código cercado; wiki §3, título).
 3. Nome do arquivo sem o sufixo `.md`, sem o caminho de diretórios.
 
 Limites:
 - Na escrita, o título é derivado depois da cadeia de admissão (wiki-files-layer §5.2 passo 6).
-- O plano (plan §2.1 P-07) fixa título de observação ≤ 80 caracteres, na sanitização (constituição INV-06).
-- LACUNA: nenhuma fonte fixa limite de tamanho para o título de página derivado do frontmatter ou do `# `. Os 80 caracteres valem para título de observação sanitizada (INV-06). Aplicar a páginas é decisão a registrar.
+- Título de página **não tem teto** (wiki §3.3). Os 80 caracteres valem só para título de observação sanitizada (INV-06).
 - A regra de derivação é idêntica à da exportação. Lá, `title` ausente ou vazio na cópia do pacote é derivado pela mesma ordem (okf).
 
 ## (c) Links e relações tipadas
@@ -121,7 +148,7 @@ Limites:
 ### Relações tipadas
 - Vêm da chave `relations` do frontmatter, com a mesma gramática de alvo dos wikilinks (wiki-files-layer §3.5).
 - Vocabulário fechado: `causes`, `fixes`, `contradicts`.
-- Chave fora do vocabulário é ignorada com aviso (wiki-files-layer §3.5). O domain-vocabulary §6.8 diz que o nome desconhecido "não é erro" e o link fica como referência simples. As duas fontes são compatíveis. Resolver a leitura exata fica para o Analyst.
+- Chave fora do vocabulário é ignorada com aviso (wiki-files-layer §3.5; DV §6.8 corrigido), como no original. Não vira `references`.
 - Alvo que não nomeia uma página (diretório, `.md` sem nome, extensão diferente de `.md`) é ignorado com aviso.
 - Valores de log vindos do frontmatter são truncados a 200 bytes, por serem entrada não confiável.
 - Conjunto de links da página: toda escrita grava o conjunto completo, ou seja, links do corpo mais relações do frontmatter, por uma única função de extração (wiki-files-layer §3.6).
@@ -141,7 +168,7 @@ Limites:
 - NULL em coluna de PK não deduplica no SQLite. A aplicação deve deduplicar antes de inserir pela chave lógica `(to_workspace, to_project, to_path, link_type)`.
 - Os links da página são regravados (delete e insert) a cada nova versão, na mesma transação da página (INV-03, constituição).
 - Índices: `idx_links_to` (parcial, `to_page_id IS NOT NULL`), `idx_links_unresolved_path` (parcial, `to_page_id IS NULL`), `idx_links_to_path`, `idx_links_scope(to_project, to_path)`.
-- Link de corpo (wikilink ou markdown) usa `link_type = 'references'` (padrão). Relação tipada usa o nome da relação. Isso é inferido do DEFAULT e do vocabulário. LACUNA: nenhuma fonte diz literalmente "link de corpo = references".
+- Link de corpo (wikilink ou markdown) usa `link_type = 'references'` (padrão). Relação tipada usa o nome da relação. Confirmado pela auditoria contra o original (wiki §3, relações).
 
 ### Reescrita de links na exportação (okf "Reescrita de links no pacote")
 - `[[alvo]]` e `[[alvo|rótulo]]` do próprio projeto viram link markdown relativo ao arquivo de destino. O texto é o rótulo, ou o alvo se não houver rótulo. `.md` é acrescentado quando necessário, e `#` e `?` são preservados.
@@ -149,7 +176,7 @@ Limites:
 - Código cercado e código inline não são alterados.
 - Alvos vazios ou malformados ficam intactos.
 - Destinos com espaços, controles ou parênteses desbalanceados vão entre `<...>`. Se nem assim, ficam como `[[...]]`.
-- A exportação é de escopo posterior. Provavelmente fora da 001, mas a regra existe no doc.
+- A exportação é da feature 006.
 
 ## (d) Derivação do tipo OKF
 
@@ -177,30 +204,22 @@ Fonte: okf "Chave type"; domain-vocabulary §14. As regras valem em ordem, e a p
 
 - `_meta.md` recebe `type: Scope Manifest` quando não tem `type`, independentemente das regras acima.
 - O okf.md compara por prefixo de diretório. O domain-vocabulary §14 lista sem barra. São equivalentes.
-- Arquivos sem tratamento como conceito: `index.md`, `log.md`, `log-AAAA-MM.md` (ledger por nome e conteúdo, wiki-files-layer §9) e `_pending/` (okf; wiki-files-layer §8).
-- Detalhe de escopo: o doc cita `index.md` na raiz do projeto com `okf_version: "0.2"` e listagem dos diretórios. A 001 tem `index.md` no layout (plan §2.4).
+- Arquivos sem tratamento como conceito na exportação OKF: `index.md`, `log.md`, `log-AAAA-MM.md` (ledger por nome e conteúdo, wiki-files-layer §9) e `_pending/` (okf; wiki-files-layer §8).
+- `index.md` com `okf_version: "0.2"` só é criado pela migração OKF (feature 006). Na operação normal ele é página comum: não é ignorado pelo watcher nem pela reindexação.
 
 ## (e) Bytes idênticos na reescrita, BOM e CRLF
 
-- Reescrever conteúdo idêntico não altera os bytes do arquivo nem cria nova versão (wiki-files-layer §5.2, "Propriedades observáveis").
-- No `UpsertPage`, o caso A (idêntico) não cria versão e só registra evidência (plan P-04). A comparação de conteúdo na escrita considera corpo, frontmatter sem `generated.at`, título, tier e fixação (okf "Determinismo e idempotência").
+- Escrever conteúdo idêntico **regrava** o arquivo com os mesmos bytes (nova data de modificação) e não cria nova versão (wiki-files-layer §5.2, "Propriedades observáveis"); o evento do watcher é absorvido pelo caso A.
+- No upsert, o caso A (idêntico) não cria versão nem grava auditoria (SR §5.1). A comparação de conteúdo na escrita considera corpo, frontmatter sem `generated.at`, título, tier e fixação (okf "Determinismo e idempotência").
 - Quando o conteúdo é igual, a versão atual é mantida e o `generated.at` original é preservado (okf).
 - Idempotência da conformação: aplicar duas vezes dá o mesmo resultado, e a segunda passada não altera nada (okf; domain-vocabulary §14).
 - Na migração e no reparo, a reescrita do arquivo só ocorre se o conteúdo mudou (okf, passo 7 e "Reparos").
 - Verificação prevista: ida e volta. Emitir um documento e lê-lo de volta produz o mesmo documento (okf "Verificação").
 - Corpo preservado byte a byte, inclusive fins de linha (okf "Leitura de frontmatter"; wiki-files-layer §3.1).
-- BOM UTF-8: descartado na leitura (okf; wiki-files-layer §3.1). A emissão não grava BOM, pois o bloco emitido começa com `---`. LACUNA: nenhuma fonte diz explicitamente que a emissão nunca escreve BOM. O texto de wiki-files-layer §3.1 diz que, se o BOM permanecesse, seria "regravado depois do bloco".
-- CRLF: o frontmatter é reconhecido com LF ou CRLF. A emissão do bloco YAML usa LF (§3.2).
-- LACUNA: não está especificado como fica a quebra de linha do bloco emitido quando o arquivo original usava CRLF, nem se o corpo CRLF mais bloco LF gera arquivo com fins de linha mistos. O corpo mantém seus fins de linha originais. O Analyst deve decidir se isso afeta a regra de "bytes idênticos". Hipótese segura: reescrita sem mudança de conteúdo não toca o arquivo, então não há reescrita do bloco.
-- Escrita atômica (wiki-files-layer §4; plan P-06; INV-10): temporário `.ai-memory-tmp.*` no mesmo diretório, `Sync`, rename e fsync do diretório. No Windows, repete até 5 vezes para os códigos 32 e 33, com espera de 10 a 50 ms.
-- O watcher ignora as próprias escritas por prefixo do temporário e pelo identificador do arquivo. A checagem de hash de conteúdo no índice faz o reindex de conteúdo idêntico ser no-op (wiki-files-layer §8.1 e §13.3).
+- BOM UTF-8: descartado na leitura (okf; wiki-files-layer §3.1). A emissão nunca grava BOM.
+- CRLF: o frontmatter é reconhecido com LF ou CRLF. A emissão do bloco YAML usa sempre LF; o corpo mantém seus fins de linha (arquivo com fins mistos é aceito), como no original (wiki §3).
+- Escrita atômica (wiki-files-layer §4; INV-10): temporário `.ai-memory-tmp.*` no mesmo diretório, `Sync`, rename e fsync do diretório em melhor esforço. No Windows, repete até 5 vezes só para os códigos 32 e 33, com espera de 10 a 50 ms, reaproveitando o mesmo temporário; acesso negado (5) propaga na hora.
+- O watcher ignora o temporário pelo prefixo. O identificador do arquivo **não** é usado. As próprias escritas são absorvidas pela checagem de conteúdo idêntico no índice (wiki-files-layer §4, §8.1 e §13.3).
 
-## Gaps e itens "a confirmar" para o Analyst
-1. LACUNA: ordem canônica das chaves e estilo de emissão do YAML (aspas, indentação) não especificados.
-2. LACUNA: limite de tamanho do título de página derivado.
-3. LACUNA: tratamento de CRLF na emissão do bloco e de fins de linha mistos.
-4. LACUNA: que a emissão nunca escreve BOM.
-5. LACUNA: confirmação literal de `link_type = 'references'` para links de corpo.
-6. "A confirmar" nos docs: produtor de `generated_by_model` (okf), e se a ingestão automática pega arquivos desempacotados sem reindexação (okf "Importação"). Pela constituição, decidir em ADR.
-7. Plano: `plan.md` §1 e §2.1 citam Go 1.26 e `yaml.v3`, enquanto o contexto do projeto menciona Go 1.25. Fora do escopo desta nota, mas divergente.
-8. Não houve execução de `go build`. A tarefa era só de leitura de docs.
+## Estado das antigas lacunas
+Todas fechadas pelos docs corrigidos contra o original: ordem e estilo de emissão (wiki §3.3), título sem teto (wiki §3.3), CRLF e BOM na emissão (wiki §3), `link_type = 'references'` para links de corpo (wiki §3), `generated_by_model` (okf). A importação de arquivos desempacotados segue `docs/okf.md` § Importação (feature 006).

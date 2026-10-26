@@ -453,7 +453,7 @@ ssh "$SERVER" "docker exec ai-memory ai-memory compact --confirm"
 Compaction rebuilds the full-text indexes and rewrites the whole database to
 return free pages. It deletes nothing. It holds an exclusive lock for its duration,
 so every write blocks until it finishes. It needs free disk space on the same
-filesystem, roughly the size of the database (a confirmar). If there is nothing
+filesystem, roughly the size of the database (confirmed in the reference code comments and in the refusal text of `compact` without `--confirm`; the size measured is page count × page size, not the file system size, so a write-ahead sidecar does not move it). The command prints `Compacted: <before> → <after> (<n> reclaimed).` (binary units B/KiB/MiB/GiB/TiB, one decimal from 1 KiB up) and, when nothing was reclaimed, `Nothing to reclaim — the database had no meaningful free-page backlog. This is the normal result for a store that has not just had a large deletion.` Without `--confirm` it fails and explains the lock and the free-space need. If there is nothing
 meaningful to reclaim, it says so and changes nothing.
 
 Some destructive commands offer `--compact` inline, which runs the same reclaim

@@ -23,7 +23,7 @@ Além disso, a recuperação temporal (janelas de validade e consulta `as_of`) j
 - **Caminho padrão sem provedor de LLM.** Captura, busca e contagem de evidência funcionam sem provedor configurado. A contagem de evidência é baseada em regras. O passe de experiência é opt-in.
 - **Escrita única.** Toda escrita passa por um único ator de escrita. A evidência de uma página é gravada na mesma transação da escrita da página.
 - **Migrações com arquivo de segurança.** Antes de uma migração de esquema avançar, o sistema grava um arquivo de segurança pré-migração.
-- **Superfície de ferramentas MCP fixa.** A lista tem 23 ferramentas e um teste confere o conjunto registrado. Nenhum empréstimo adiciona ferramenta. Os novos campos entram como parâmetros opcionais ou campos de explicação.
+- **Superfície de ferramentas MCP fixa.** A lista tem 24 ferramentas e um teste confere o conjunto registrado. Nenhum empréstimo adiciona ferramenta. Os novos campos entram como parâmetros opcionais ou campos de explicação.
 - **Correção vence contagem.** Uma nova versão que diverge substitui a versão atual, mas o histórico continua acessível. A quantidade de evidência nunca impede uma correção de ser gravada ou retornada.
 
 ## 3. P1: rótulos tipados de redação
@@ -179,6 +179,8 @@ Essas propostas exigem medição antes de virar padrão. A regra é a mesma usad
 - Com `false`, o briefing não muda.
 - Com `true`, o briefing ganha uma lista `settled` com até 8 páginas atuais, do tipo regra ou decisão, que não estejam expiradas. A ordem é: contagem de evidência decrescente, depois data de atualização decrescente.
 - A contagem usada é a de registros de evidência da página, incluindo tipos que não são sessão.
+- Cada item traz `{path, title, kind, evidence_count}`. Página sem evidência entra com contagem 0 (junção externa). Empate em contagem e data: ordem não especificada.
+- O "tipo" é derivado assim (verificado no original): o `kind` do frontmatter, se presente (valor não textual é convertido para texto, ex.: `5` vira `"5"`); senão, pelo prefixo do caminho: `_rules/`→`rule`, `_slots/`→`slot`, `sessions/`→`session`, `decisions/`→`decision`, `gotchas/`→`gotcha`, `concepts/`→`concept`, `procedures/`→`procedure`, `notes/`→`note`, `profile/`→`preference`; senão `fact`. Os prefixos são literais (o `_` não é curinga) e sensíveis a maiúsculas. Entram em `settled` só os tipos `rule` e `decision` (logo, uma página em `decisions/` com `kind: note` no frontmatter **não** entra, e uma página fora desses diretórios com `kind: decision` entra).
 
 ### 6.2 Implementado, opt-in: passe de experiência entre sessões
 

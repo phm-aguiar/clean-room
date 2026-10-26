@@ -142,8 +142,17 @@ dos limites acima.
 ### Status
 
 O status do sistema informa o número de páginas sem embedding, separado entre
-páginas com corpo e páginas vazias, e a contagem de linhas por tripla
-(provedor, modelo, dimensão). Mais de uma tripla no status indica
+páginas com corpo (`latest_pages_missing_embeddings`) e páginas de corpo vazio
+(`latest_pages_unembeddable`, que nenhum embedder cobre), o total de linhas de
+embedding, a contagem de linhas por tripla (provedor, modelo, dimensão; ordenada por
+contagem decrescente e depois por provedor, modelo, dimensão) e as falhas de
+embedding: `embed_failures_unresolved` (páginas mais recentes cuja última tentativa
+falhou ou foi pulada e que ainda não têm embedding) e `embed_failures_recovered`
+(têm falha registrada mas já têm embedding). A CLI mostra `embeddings: <N> rows; <M>
+latest pages missing`, a linha `unembeddable: <K> (empty body; no embedder can cover
+these)` quando K>0, uma linha `<provedor>/<modelo> dim <D>: <N> rows` por tripla e,
+só se houver pendência, `embed failures: <U> unresolved (<R> recovered since)`. O
+registro de falha guarda no máximo 500 caracteres do erro (mais `…` quando cortado). Mais de uma tripla no status indica
 heterogeneidade: o usuário trocou de provedor sem reembedar.
 
 ## Decisões de projeto

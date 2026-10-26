@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 010
-- **Status:** draft (revisada contra os docs em 2026-10-13 no nível de escopo; os contratos por agente são extraídos na fase 0 do `tasks.md`; nova revisão prevista quando a 002 terminar)
+- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (ingestão, spool, cliente de hook, `install-*` do Claude Code); 007 e 009 para credenciais por pessoa e OIDC nos hooks
@@ -21,12 +21,15 @@ A promessa do produto é trocar de agente no meio da tarefa sem reexplicar o con
 - **Eventos por agente** (`docs/support-matrix.md` § captura): eventos instalados, onde o handoff é entregue (início de sessão, `additionalContext`, primeiro prompt no Kimi, primeiro `PostToolUse` no Grok, só a invocação 0 no Antigravity) e o evento de fim.
 - **Normalização por agente** (`docs/lifecycle-event-ingestion.md` §3.3 a §3.5): marca de versão do Cursor, agentes de esquema fechado (nomes e ids de chamada por agente, desfecho do pós-ferramenta), caminho genérico (Gemini, Kimi, Devin), extensões (`extension`, `source_event`).
 - **Captura comum** (`docs/support-matrix.md`): `--capture-mode`, captura da resposta do assistente com opt-in duplo (Claude Code, Codex, OpenCode 2; `capture_assistant` no servidor), descarte de subagente com conjunto de sessões para agentes que não marcam a sessão pai (limite 4096), cópia redundante do Cursor descartada, checkpoint de turno do OpenCode (`docs/lifecycle-event-ingestion.md` §5, §4.5 e §8.4).
-- **`finalize-session`** para agentes sem evento de fim (Command Code, Kiro, Antigravity, ZCode, Pool).
+- **Agentes adicionais ao original:** Factory Droid, Muse Code (hooks e MCP), CodeBuddy Code, IBM Bob, Prime Agent (só MCP), DeepSeek Harness (só impressão) e GrizzyBot (externo); regras de fusão que preservam hooks de terceiros e reconhecimento de entrada própria (`docs/install.md` § "How `install-hooks --apply` merges…").
+- **Lista de descarte do servidor** (`[ingest] drop_tool_use_id_prefixes` / `drop_tool_names`, `docs/lifecycle-event-ingestion.md` §4.6) e **motor de decisão da política de captura** (§4.4a), inclusive reinspeção no servidor.
+- **`finalize-session`** para agentes sem evento de fim (Command Code, Kiro, Antigravity, ZCode, Pool, IBM Bob).
 - **Scripts de hook** POSIX e PowerShell com o mesmo contrato do hook nativo, seleção por `AI_MEMORY_HOOK_PLATFORM`, aviso de que não aplicam a política de captura (`docs/hook-scripts-and-container-deploy.md` §1 a §3, `docs/cli.md` §5.4).
-- **Ponte `mcp-bridge`** com `X-Memory-Actor-Session-Id` e `install-mcp --session-aware` (Claude Code), recusando subir sem id de sessão (`docs/mcp-install.md`, `docs/auto-scope.md` § "Session-aware clients").
+- **Ponte `mcp-bridge`** em dois modos (`docs/mcp-install.md` § Claude Code): **com sessão** (`X-Memory-Actor-Session-Id`; `--agent claude-code|muse` escolhe a única variável lida; recusa subir sem id) e **sem sessão** (`--no-session-id`, para os demais clientes); conecta ao servidor antes de servir, responde "método não encontrado" antes do `initialize`; `install-mcp --session-aware` (só Claude Code), entrada fixa do Muse (`mcp-bridge --agent muse`, mapa `mcpServers` ou legado `mcp_servers`, recusa com os dois) e roteamento do token em arquivo (`docs/users.md` § "Local root bearer token file"): Claude Code → ponte com sessão; Codex, Prime Agent e Droid → referência por nome a `AI_MEMORY_AUTH_TOKEN`; ZCode → recusa; demais → ponte sem sessão no formato do cliente.
+- **`auth enable`** e o token raiz gerado pelo `init` em instalação nova (`docs/users.md` § "Local root bearer token file"): o `install-*` reaproveita esse caminho; o restante pertence à 007.
 - **Captura por orquestrador externo** (`docs/external-lifecycle.md`): dono de captura declarado antes do lançamento, contrato público de eventos, campos de proveniência, chave de ingestão estável, lotes e confirmações, limites do spool nativo.
 - **Adaptadores de transcrição somente leitura** (`docs/harness-adapters.md` §3): JSONL em arquivo, SQLite nativo, Antigravity; normalização; descoberta e verificação de sessão.
-- **Backfill** (`docs/design-boot-backfill.md`): gatilho destacado no início de sessão por sentinela, comando `backfill` com `--dry-run`, `--force`, `--session`, `--max-sessions`, `--json`, `--quiet`, seleção, mapeamento de eventos, horário, lotes e retentativas, relatório JSON, portão de vazio, limites, `backfill_on_start` e `AI_MEMORY_BACKFILL_ON_START`; `repair-backfill-timestamps` e `POST /admin/repair-session-times`.
+- **Backfill** (`docs/design-boot-backfill.md`): gatilho destacado no início de sessão por sentinela **e marcador "em andamento" com trava de arquivo e token de dono (30 min para tomar um órfão)**, comando `backfill` com `--dry-run`, `--force`, `--session`, `--max-sessions`, `--json`, `--quiet` (mais as opções ocultas `--auto`, `--inflight-claim`, `--server-url`, `--server-profile`), **portão de admissão do modo de captura (`skipped_not_admitted`)**, seleção, mapeamento de eventos **com a política de captura/`ignore_paths` aplicada pelo cliente**, horário, lotes (256 itens e 8 MiB) com validação da confirmação item a item e retentativas, **chaves de ingestão `recovery_<55 hex>` que o servidor aceita e deduplica**, relatório JSON, portão de vazio (consulta de 30 s), limites, `backfill_on_start` e `AI_MEMORY_BACKFILL_ON_START`; `repair-backfill-timestamps` e `POST /admin/repair-session-times`.
 - **`doctor`** (`docs/cli.md` §8): compara sessões locais e capturadas por agente e mostra o comando de correção.
 - **Integração restante** (`docs/cli.md` §8): `install-instructions`, `install-skills`, `setup-agent`, `uninstall` simétrico para todos os agentes; `backup-agents` e `restore-agents` (`docs/design-backup-agent-assets.md`).
 
@@ -34,6 +37,11 @@ A promessa do produto é trocar de agente no meio da tarefa sem reexplicar o con
 - Lançamento gerenciado `ai-memory run` e workstreams (feature 013); esta feature entrega os adaptadores de transcrição que a 013 reaproveita.
 - macOS e o app de barra de menus (fora do escopo inicial em `tech.md`).
 - Imagem de contêiner, AUR e serviço de sistema (feature 015).
+
+## Correções da auditoria (2026-10-24, adaptadores de transcrição)
+- Verificação parcial encerrada: analisadores de Claude Code, Codex, Pi/OMP, Kimi, Command Code, Kiro v2/v3, Grok, Copilot, OpenCode/2, Crush e Antigravity conferidos linha a linha e transcritos em `docs/harness-adapters.md` §6 (perdas literais, cabeçalhos, SQL, cursores, limites).
+- Corrigido: filtro de eco do Claude só em `tool_result`; Antigravity não exporta no `run`; datas SQL ausentes; allowlist de metadados do servidor descarta `success`/`attribution`.
+- Dialeto do OpenCode por sondagem de versão também vale para `install-hooks`/`install-mcp`.
 
 ## Comportamento Esperado
 
@@ -55,10 +63,13 @@ A promessa do produto é trocar de agente no meio da tarefa sem reexplicar o con
 - Kimi Code: handoff entregue no primeiro prompt, uma vez por sessão.
 - Grok: handoff na saída do primeiro `PostToolUse`; sessão sem tool recupera pelo MCP.
 - Backfill interrompido: a primeira sessão gravada torna a loja não vazia; retomada só com `--force`.
-- Chaves de ingestão do backfill (`<sessão>:<evento>`) não passam na validação do servidor (o doc registra isso; a deduplicação vem do portão de vazio e da sentinela).
+- Chaves de ingestão do backfill (`recovery_` + 55 hexadecimais do SHA-256 de intervalo, sessão, tipo e id do evento) são aceitas pelo servidor: reenviar o mesmo evento (por exemplo `--force`) não duplica.
+- Diretório não admitido pelo modo de captura (lista de permissão sem marcador): nada importado, servidor não contatado, sem sentinela.
+- Rajada de inícios de sessão no mesmo diretório: um só backfill automático (marcador "em andamento").
+- Ponte sem id de sessão disponível: não sobe (modo com sessão); `--no-session-id` ignora `CLAUDE_CODE_SESSION_ID` mesmo presente.
 
 ## Constraints
-- **Segurança:** token nunca na linha de comando dos hooks; a sanitização do servidor vale também para o backfill; `ignore_paths` não se aplica ao backfill (o doc registra como requisito não implementado).
+- **Segurança:** token nunca na linha de comando dos hooks nem em configuração de harness quando vem de arquivo; a sanitização do servidor vale também para o backfill; **`ignore_paths` e o modo de captura se aplicam ao backfill, pelo cliente** (tabela de decisão do hook ao vivo).
 - **Plataformas:** Windows e Linux; a matriz marca o Windows nativo como experimental.
 - **Tecnologia:** leitura de SQLite nativo de harness pelo `modernc.org/sqlite` em modo somente leitura.
 
@@ -66,7 +77,7 @@ A promessa do produto é trocar de agente no meio da tarefa sem reexplicar o con
 - [ ] Cada agente com status "Suportado" na matriz instala hooks e MCP e passa por um teste de captura com fixtures de payload versionadas
 - [ ] Os testes de paridade entre hook nativo e scripts (`docs/hook-scripts-and-container-deploy.md` §6) passam
 - [ ] Os casos de teste de `docs/design-boot-backfill.md` § Testes passam, incluindo o canário de segredo
-- [ ] `scripts/check.sh` e o lint passam sem apontamentos
+- [ ] `go vet ./...`, `go test -race ./...` e `golangci-lint run` passam sem apontamentos
 
 ## Abordagem Escolhida
 Instalador orientado por tabela (um descritor por agente: arquivos, formato, eventos, aliases), sobre a escrita idempotente da 002. Normalização por agente como funções puras no `ingest`, com fixtures. Adaptadores de transcrição no `cli` (leem arquivos do usuário, fora da wiki). Backfill reaproveita o lote do spool da 002.
@@ -80,6 +91,6 @@ Instalador orientado por tabela (um descritor por agente: arquivos, formato, eve
 - [x] Escopo delimitado (dentro/fora)
 - [x] Cenários cobrem happy path e alternativos
 - [x] Edge cases identificados com comportamento esperado
-- [ ] Constraints explícitas (contratos por agente vêm da fase 0)
+- [x] Constraints explícitas (contratos por agente em `docs/harness-adapters.md`)
 - [x] Critérios de sucesso mensuráveis
 - [x] Abordagem escolhida justificada

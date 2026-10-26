@@ -24,15 +24,19 @@ Agente -> hook nativo (cliente) -> spool local -> POST /hook/batch  (ou POST /ho
                                                        v
  1. remove o campo bruto da mensagem final do assistente (sempre)
  2. normaliza o JSON em evento (parsing tolerante)
- 3. recusa o evento se os aliases do marcador de projeto forem inválidos       -> 202, descartado
- 4. aplica o excerto do assistente (somente com o opt-in duplo)
- 5. política de captura: Keep / Drop / MetadataOnly                             -> Drop: 202
+ 3. aplica o excerto do assistente (somente com o opt-in duplo; consome a marca)
+ 4. recusa o evento se os aliases do marcador de projeto forem inválidos       -> 202, descartado
+ 5. política de captura: keep / drop / metadata-only                             -> drop: 202
  6. descarta o rascunho reservado do Cursor                                     -> 202, descartado
- 7. descarte de subagente (somente se o projeto optou)                          -> 202, descartado
- 8. limite global de processamento simultâneo (cheio)                           -> 429
- 9. limite por fonte (sem token)                                                -> 429
-10. responde 202 "queued" e processa em segundo plano
+ 7. lista de descarte do servidor `[ingest]` (seção 4.6)                         -> 202, descartado
+ 8. descarte de subagente (somente se o projeto optou)                          -> 202, descartado
+ 9. limite global de processamento simultâneo (cheio)                           -> 429
+10. limite por fonte (sem token)                                                -> 429
+11. responde 202 "queued" e processa em segundo plano
 ```
+
+(Ordem conferida no código original pela auditoria 002. No lote, entre os passos 8 e 9 há
+ainda o descarte de item sem identificador de sessão, seção 2.2.)
 
 **Garantias de projeto**
 
@@ -43,6 +47,10 @@ Agente -> hook nativo (cliente) -> spool local -> POST /hook/batch  (ou POST /ho
   transação do dado).
 - Falhas no processamento em segundo plano não alteram a resposta já enviada no caminho
   de evento único. Para lotes, a falha aparece no reconhecimento (seção 2.2).
+- **Exceção do lote:** em `POST /hook/batch` os itens são processados **dentro da requisição**
+  (em sequência, sem tarefa de segundo plano), para que os efeitos de cada item (por exemplo,
+  página de sessão e handoff de um fim de sessão) estejam gravados quando o reconhecimento
+  volta. Só `POST /hook` responde antes de processar.
 
 ---
 
@@ -53,6 +61,7 @@ Agente -> hook nativo (cliente) -> spool local -> POST /hook/batch  (ou POST /ho
 | `/hook` | POST | Um evento: parâmetros de consulta + corpo JSON. |
 | `/hook/batch` | POST | Lote de até **256** itens `{url, body}`; confirmações parciais. |
 | `/handoff` | GET | Contexto síncrono de início de sessão (handoff, bloco de contexto, aviso de caixa de entrada). |
+| `/recap` | GET | Recapitulação somente leitura do trecho perdido na última compactação (seção 2.5). |
 
 Antes destas rotas, o middleware de autenticação identifica o ator e o nível de
 autorização. A lista de webhooks a pular, enviada no cabeçalho `X-Memory-Skip-Admission-Chain`,
@@ -74,7 +83,13 @@ A resposta traz:
 - `accepted`: prefixo contínuo confirmado, mantido por compatibilidade com drenagens antigas.
 - `accepted_indices`: índices confirmados, quando não coincidem com o prefixo.
 - `failed_index`: item que falhou no processamento, quando houver.
-- `results`: desfecho de cada item confirmado.
+- `results`: desfecho de cada item confirmado, como lista de `{index, outcome}` (índice a partir
+  de zero na requisição). Valores de `outcome`: `stored`, `replayed`, `resumed`, `ignored_end`,
+  `dropped_policy` (política de captura ou lista `[ingest]`), `dropped_subagent`,
+  `dropped_unauthorized`, `dropped_collision`, `dropped_invalid` (aliases inválidos, rascunho do
+  Cursor, sem identificador de sessão, ou sessão já expurgada).
+- `accepted_indices` é omitido quando coincide exatamente com o prefixo contínuo; `failed_index`
+  é omitido quando não houve falha. Com falha, `accepted_indices` é sempre enviado (mesmo vazio).
 
 Regras:
 
@@ -95,7 +110,7 @@ Regras:
 
 - **202 "queued"**: evento aceito para processamento.
 - **202** com motivo (`invalid marker aliases`, `capture policy dropped`,
-  `cursor draft placeholder dropped`, `subagent capture dropped`): descarte reconhecido,
+  `cursor draft placeholder dropped`, `ingest drop list`, `subagent capture dropped`): descarte reconhecido,
   sem consumir capacidade.
 - **429** `hook queue full`: limite global atingido.
 - **429** `hook source rate limited`: limite por fonte atingido.
@@ -106,6 +121,46 @@ Regras:
 - **200** com corpo vazio quando não há nada a entregar ou quando a busca falha (a falha é registrada).
 - **403** com o motivo quando a identidade ou o escopo do repositório são recusados. Esse
   erro nunca é injetado como contexto do agente.
+
+### 2.5 `GET /recap` (recapitulação de compactação)
+
+Rota somente leitura, usada quando o operador pede "reload context" depois de uma compactação.
+**Nunca** reivindica handoff, nunca publica o projeto ativo e nunca grava observação.
+
+- Parâmetros: `session_id` (obrigatório; o identificador nativo, convertido como na seção 3.3),
+  `budget` (orçamento em caracteres; ausente ou não numérico vale **8000**; limitado ao intervalo
+  **2000–9500**) e `agent` (só para log).
+- Respostas: **400** `session_id is required` (ausente ou só espaços); **200** com o texto; **200**
+  com corpo vazio em erro interno (registrado em log).
+- Sessão desconhecida, de outro dono (filtro de dono igual ao do `/handoff`) ou de projeto sem
+  permissão de leitura recebem o **mesmo** aviso:
+  `> 🧭 **ai-memory: compaction recap**: no session is recorded under this id for you, so there is nothing to reload.`
+  (assim o identificador não serve de sonda).
+- Leitura: até **400** observações dos tipos prompt do usuário, parada e pré-compactação, da mais
+  nova para a mais antiga. Sem pré-compactação: aviso
+  `> 🧭 **ai-memory: compaction recap**: no compaction is recorded for session `<id>` yet, so there is nothing to reload.`
+- Janela: do último marco de pré-compactação até o anterior (ou até a linha mais antiga lida).
+  Marcos de pré-compactação adjacentes sem prompt entre eles contam como **uma** compactação.
+  Prompts que são marcação do harness ou instruções injetadas não contam. A resposta mais nova
+  não vazia (corpo da parada) é a "última resposta". Se a leitura bateu no limite de 400 sem
+  achar o início, a janela é marcada como truncada.
+- Lista até **5** handoffs abertos do projeto (com o filtro de dono), os da própria sessão
+  primeiro, cada um como `- <resumo> Next: <passo>; <passo>. (created <AAAA-MM-DD HH:MM UTC>, from this session)`.
+- Formato: cabeçalho `> 🧭 **ai-memory: compaction recap** (requested with "reload context")`, a
+  linha `> **Security boundary:** <aviso fixo de conteúdo não confiável>`, a frase
+  ``Session `<id>`: what was captured from <início ou "the session start"> to the compaction at <horário>. Session page: `sessions/<id>.md`.``;
+  depois, entre as cercas `<!-- ai-memory:untrusted-history:start -->` e
+  `<!-- ai-memory:untrusted-history:end -->`: `_Earlier rows of this window were not read._` (se
+  truncada), `## Your prompts before the compaction (oldest first)` (linhas `- [<AAAA-MM-DD HH:MM UTC>] <prompt>`
+  ou `_No prompts were captured in this window._`), `## The agent's last reply before the compaction`
+  (a resposta, ou `_Replies were not captured. Install the hooks with `--capture-assistant` and enable `capture_assistant` on the server to include them._`)
+  e, se houver, `## Open handoffs in this project (none claimed)`. Rodapé:
+  ``Full record: `memory_read_session_observations` with `session_id: "<id>"` and `kinds: ["user-prompt", "stop"]`.``
+- Orçamento: a resposta e os handoffs reservam até 1000 e 500 caracteres; os prompts mais novos
+  ficam inteiros, o próximo é cortado se sobrarem ao menos 300 caracteres (ou se nenhum coube), os
+  mais antigos são omitidos com a linha `- _<N> earlier prompts omitted to fit; see the full record below._`.
+  Todo corte acrescenta `\n[truncated]`; o texto final é cortado no orçamento. Textos armazenados são
+  escapados contra fechamento das cercas.
 
 ---
 
@@ -187,7 +242,8 @@ aplicada depois (seção 8).
 | Pré e pós-ferramenta | `tool`, `tool_name` ou `name`; ou `toolCall.name`; ou `step <n>` | só no pós-ferramenta: `tool: <nome>` + separador + resultado, onde o resultado vem de `tool_response`, `tool_output`, `output` ou `result`; senão `error`; senão `(no output captured)` |
 | Notificação | `message` ou `text` | o mesmo campo |
 | Pós-compactação | `summary` | `summary` |
-| Demais (parada, pré-compactação, fim de sessão, subagentes) | nenhum | nenhum |
+| Fim de sessão | nenhum | se houver `reason` textual não vazio no topo do JSON, `reason: <primeira linha>` (usado no `summary` da página de sessão); senão nenhum |
+| Demais (parada, pré-compactação, subagentes) | nenhum | nenhum |
 
 Se o evento vier de uma extensão (campos `extension` e `source_event`), o título e o corpo
 usam as pistas da extensão como alternativa.
@@ -195,23 +251,52 @@ usam as pistas da extensão como alternativa.
 ### 3.5 Agentes de esquema fechado
 
 Para os agentes cujo esquema de ferramenta é fechado (Claude Code, CommandCode, Codex,
-Cursor, OpenCode, Pi, Omp, AntigravityCli, Grok, Hermes, Pool, Zcode, CopilotCli e
-Grizzybot), eventos de pré e pós-ferramenta seguem estas regras:
+Cursor, OpenCode, Pi, Omp, AntigravityCli, Grok, Hermes, Pool, Zcode, CopilotCli,
+Grizzybot, Kiro CLI, Droid, Muse, CodeBuddy e IBM Bob), eventos de pré e pós-ferramenta
+seguem estas regras:
 
 - **Título**: `tool <família>`, onde a família é `file`, `search-list`, `non-file` ou
-  `unknown`.
-- **Corpo**: `tool_family: <família>`, mais `tool_call_id` quando existir e for válido.
-  No pós-ferramenta, acrescenta `outcome: success | error | unknown` e, se a família não
-  for `unknown`, o separador e a saída. Quando não há saída, o texto é `(no output captured)`.
-- **Nome e identificador da chamada** vêm de campos específicos de cada agente. Por exemplo,
-  `tool_name` e `tool_use_id` para Claude Code e agentes parecidos, `tool` e `callID` para
-  OpenCode, Pi e Omp, `toolCall.name` para AntigravityCli. Sem identificador válido, a chamada
-  segue sem ele.
-- **Desfecho do pós-ferramenta**: para Pi e Omp, vem de um campo booleano de erro. Para
-  AntigravityCli e Zcode, de um campo de erro textual.
-  Para CopilotCli e Hermes, de campos de resultado próprios. Nos demais, o desfecho é sempre
-  `unknown`. Isso é intencional, porque no Codex o pós-ferramenta também dispara em comandos
-  que falharam.
+  `unknown`. No pré-ferramenta, exige-se a presença de `tool_input` (ou `args`); sem esse objeto, o título cai para `pre-tool-use` e o corpo fica vazio. Quando o evento já vem reduzido a `metadata-only` pelo cliente, o título traz apenas `<família>` (ex.: `file`), enquanto a redução no servidor produz `tool <família>`.
+- **Corpo**: `tool_family: <família>`, mais `tool_call_id: <id>` quando existir e for válido (1 a 128 caracteres ASCII em `[A-Za-z0-9_.-]`).
+  No pós-ferramenta, acrescenta `outcome: success | error | unknown` e, **somente se a família não for `unknown`**, o separador `---` e a saída. Quando a família é `unknown`, o corpo contém apenas o cabeçalho (sem `---` e sem saída). Quando não há saída e a família é conhecida, o texto após `---` é `(no output captured)`.
+- **Famílias de ferramentas** (comparação sem diferenciar maiúsculas/minúsculas):
+  - `file`: `read`, `write`, `edit`, `apply_patch`, `notebookedit`, `notebook_edit`, `create_file`, `delete_file`, `remove`, `rename_file`, `move_file`, `multi_edit`, `multiedit`, `replace`, `replace_all`, `view_file`, `replace_file_content`, `multi_replace_file_content`, `write_to_file`, `fs_read`, `fs_write`, `read_file`, `write_file`, `edit_file`, `patch`, `read_many_files` (esta lê todos os arquivos que seus padrões `include` expandem);
+  - `search-list`: `search`, `grep`, `glob`, `find`, `list`, `ls`, `list_files`, `read_dir`, `list_dir`, `grep_search`, `search_files`, `find_by_name`, `list_directory`, `search_file_content`;
+  - `non-file`: `bash`, `shell`, `shell_command`, `exec`, `execute`, `run_command`, `web_search`, `search_web`, `manage_task`, `manage_subagents`, `terminal`, `execute_bash`, `execute_cmd`, `powershell`, `run_shell_command`, `execute_code`, `browser_exec`, `browser_navigate`, `web_extract`, `web_fetch`, `delegate_task`;
+  - `unknown`: qualquer outro nome ou ausente. **Não há regra de prefixo `mcp__`**: ferramentas MCP, `TodoWrite`, `WebFetch` escrito em outra grafia, `Task`, `Skill` e semelhantes são `unknown` (nomes de outros agentes entram na lista só nos casos específicos acima). Famílias desconhecidas nunca guardam argumentos nem saída;
+  - nomes de ferramenta que leem a saída de um comando iniciado por chamada anterior (`bashoutput`, `taskoutput`, `write_stdin`, `process`, `read_bash`, `write_bash`, `read_powershell`, `write_powershell`) recebem tratamento especial na política de captura (a chamada que gerou a saída pode ter sido descartada, então a saída não volta por elas); `execute_code` é código-fonte inline, em que nada léxico prova que não leu um arquivo ignorado.
+- **Nomes de ferramenta próprios de um só agente** (não mudam a classificação do mesmo nome em
+  outros agentes): Copilot CLI: `view`, `create` e `str_replace_editor` são `file`, `rg` é `search-list`;
+  Droid: `Create` e `ApplyPatch` são `file` (`ApplyPatch` recebe o mesmo envelope de patch do
+  `apply_patch` do Codex); Muse: as ferramentas de memória do Muse (que nomeiam um arquivo markdown em
+  `path`) são `file` e `monitor` é `non-file`; `bash_input` (escreve num shell que um `bash` anterior
+  iniciou e devolve o que ele imprimiu) continua `unknown` e conta como leitor de saída de comando
+  anterior, como o `write_stdin` do Codex.
+- **Nome e identificador da chamada** vêm de campos específicos de cada agente:
+  - `tool_name` e `tool_use_id`: Claude Code, Command Code, Codex, Cursor, Grok, Grizzybot, Zcode,
+    Copilot CLI, Muse, CodeBuddy e IBM Bob;
+  - `tool` e `callID`: OpenCode, Pi e Omp;
+  - `tool_name` **sem** identificador de chamada: Kiro CLI, Pool e Droid (o Droid não entrega o id
+    da chamada ao hook);
+  - `toolCall.name` (sem identificador): Antigravity CLI;
+  - `tool_name` e `extra.tool_call_id`: Hermes.
+  Sem identificador válido, a chamada segue sem ele. Outros agentes não têm esquema fechado.
+- **Entrada exigida no pré-ferramenta** (a "prova" de que o formato é conhecido): o campo
+  `tool_input` para Claude Code, Command Code, Codex, Cursor, Grok, Hermes, Kiro CLI, Pool, Zcode,
+  Copilot CLI, Grizzybot, Droid, Muse, CodeBuddy e IBM Bob; `toolCall.args` para Antigravity CLI;
+  `args` para os demais (OpenCode, Pi, Omp). O pós-ferramenta não exige entrada.
+- **Desfecho do pós-ferramenta**:
+  - Pi e Omp: o booleano `isError`;
+  - Kiro CLI: o booleano `tool_response.success`;
+  - Antigravity CLI: `error` textual não vazio vira erro;
+  - Zcode e Muse: `error` textual não vazio vira erro (o Muse dispara `PostToolUseFailure` no lugar do
+    `PostToolUse` quando a ferramenta falha);
+  - Copilot CLI: `tool_result.result_type` (`success` é sucesso; `failure` ou `error` são erro; outro
+    valor é desconhecido); sem `tool_result`, um `error` textual não vazio é erro;
+  - Hermes: `extra.status` (`ok` é sucesso, `error` é erro, o resto desconhecido);
+  - Nos demais (incluindo Claude Code e Codex), o desfecho é sempre `unknown` (a menos que o nome do
+    evento seja `postToolUseFailure`, que força `error`). Isso é intencional, porque no Codex e no Claude
+    Code o pós-ferramenta também dispara em comandos que falharam.
 - **Caso especial**: no OpenCode, o pós-ferramenta usa o caminho legado, com o nome em `tool`
   e o resultado nos campos de saída comuns.
 
@@ -259,23 +344,40 @@ ignorados (`[capture] ignore_paths`) do marcador `.ai-memory.toml` mais próximo
 | Orçamento de comparações por chamada | 1 000 000 |
 
 Se o orçamento de comparações for excedido em um caminho de arquivo, o resultado é
-`MetadataOnly` (fail-safe). Em comandos de shell, o resultado é `Drop` (seção 4.4).
+`metadata-only` (fail-safe). Em comandos de shell, o resultado é `drop` (seção 4.4).
 
 ### 4.3 Estado do marcador e decisão
 
 O marcador é lido por quem faz a E/S, e a política recebe um de três estados:
 
-- **Inativa** (sem marcador, em modo denylist): `Keep`.
-- **Inválida** (marcador malformado): para ferramenta de arquivo ou comando de shell,
-  `MetadataOnly`. Para as demais, `Keep`. Um marcador quebrado não prova que o argumento de
-  um comando de shell evita os caminhos ignorados, então falha fechado.
-- **Ativa**:
-  - busca ou listagem: `Drop`;
-  - arquivo com caminho(s) que casam com um padrão: `Drop`;
-  - arquivo sem caminho extraível ou com caminho malformado: `MetadataOnly`;
-  - arquivo sem casamento: `Keep`;
-  - comando de shell: `Drop` se algum argumento casa com um caminho ignorado, `Keep` se nenhum casa;
-  - demais famílias: `Keep`.
+- **Inativa** (sem marcador, em modo denylist): `keep`.
+- **Inválida** (marcador malformado, ou padrão que a compilação recusa): para ferramenta de
+  arquivo, de busca/listagem, comando de shell ou leitora de saída de processo, `metadata-only`.
+  Para as demais, `keep`. Um marcador quebrado não prova que o argumento de um comando de shell
+  (nem uma busca) evita os caminhos ignorados, então falha fechado.
+- **Ativa** (em ordem de avaliação):
+  1. ferramenta leitora de saída de processo (`bashoutput`, `taskoutput`, `write_stdin`,
+     `process`, `read_bash`, `write_bash`, `read_powershell`, `write_powershell`; para o Muse
+     também `bash_input`): `metadata-only` (nada prova que o comando original evitou os caminhos);
+  2. busca ou listagem: `drop`, sem extrair caminho algum (estado de extração "não se aplica");
+  3. ferramenta de arquivo: sem caminho extraível, ou algum caminho inutilizável (vazio, mais de
+     4096 caracteres, "relativo de unidade" como `C:foo`, nome de dispositivo): `metadata-only` com
+     estado de extração `missing-or-malformed`; orçamento de comparações estourado: o mesmo; algum
+     caminho casa com um padrão: `drop`; nenhum casa, mas algum caminho aponta para arquivo de
+     saída que o próprio harness gravou em disco: `metadata-only`; senão `keep`;
+  4. a ferramenta `execute_code` (cuja entrada é código-fonte, que monta caminhos em tempo de
+     execução) ou um comando de shell acima de 1 MiB (1 048 576 caracteres, somando os elementos
+     de um argv, não analisado): `metadata-only`;
+  5. comando de shell: alguma palavra casa com um padrão, **ou o orçamento estoura**: `drop`;
+     nenhuma casa, mas o comando usa sintaxe que o casamento léxico não avalia (expansão de
+     chaves `{a,b}`, classe `[ab]`, grupo de glob `(a|b)`/`@(x)`, escape ANSI-C numérico
+     `$'\x64'`, `~usuário`/`~N`/`~-`, código inline de interpretador, script aninhado além de
+     4 níveis, valor padrão de parâmetro aninhado além de 4 níveis), ou nomeia arquivo de saída
+     do harness, ou (sessão Windows) nomeia arquivo que não se consegue situar: `metadata-only`;
+     senão `keep`;
+  6. demais famílias (`unknown`): `keep`.
+- Nenhuma decisão guarda argumentos, caminhos ou nomes brutos; o corpo substituto é o da seção
+  acima.
 
 A decisão **nunca guarda** argumentos brutos, caminhos ou nomes arbitrários. Guarda apenas
 família da ferramenta, quantidade de caminhos e identificador válido da chamada.
@@ -287,13 +389,43 @@ protocolo.
 ### 4.4 Protocolo cliente e servidor
 
 - O cliente anexa a marca de protocolo (versão 1) quando aplica a política.
-- O servidor **reinspeciona** o evento. Se o cliente pediu `Drop`, o servidor responde 202 e
+- O servidor **reinspeciona** o evento. Se o cliente pediu `drop`, o servidor responde 202 e
   conta como "descartado pela política", sem gastar capacidade. Essa checagem protege contra
   clientes antigos.
 - Um evento descartado reconhecido **nunca** entra em spool, fila, transporte, log ou
   armazenamento.
 
 ---
+
+### 4.4a Motor de decisão: regras exatas
+
+**Padrões (`ignore_paths`).** Todas as entradas são compiladas juntas; uma entrada recusada torna a política inteira **inválida** (nada é aplicado parcialmente). Recusas, com o texto `ignore_paths entry "<padrão>" <motivo>`: vazio (`is empty`); mais de 1 024 caracteres; contém um destes caracteres `! { } [ ] ( ) | ^ $ %` (`contains an unsupported glob character (one of ! { } [ ] ( ) | ^ $ %)`); contém `${` (`contains a shell-style variable expansion (${...})`); três ou mais `*` seguidos; contém um segmento `..` (também com `\`); começa com `~` mas não com `~/` (`starts with '~' but not '~/' (only home-relative '~/...' is supported)`); "relativo de unidade" como `C:foo`. Mais de 128 entradas: ``ignore_paths` has more than 128 entries``. Um padrão `~/…` sem diretório pessoal disponível: ``a pattern starts with '~/' but no home directory is available to expand it``. Um padrão absoluto POSIX num repositório Windows: ``…is a POSIX absolute path in a Windows repository; spell it relative to the marker or with a drive (C:/...)``.
+- Resolução: `~/x` vira `<home>/x`; absoluto fica; relativo vira `<diretório do marcador>/x`. Depois os segmentos são normalizados (`.` e vazios somem). O padrão é do tipo **Windows** se, depois de expandido, começar com `\\`, `//` ou `X:`; senão POSIX. Um padrão Windows é escrito como os candidatos (ver adiante).
+- Linguagem: `*` casa qualquer sequência **sem** `/`; `**` (só entre barras ou nas pontas) casa qualquer profundidade; `?` casa um caractere que não seja `/`. Um padrão que termina em `/**` também casa o próprio diretório-base (`docs/**` casa `docs`), e o diretório-base pode conter globs (`docs/a?r/**`). Cada padrão guarda o **prefixo literal** (segmentos inteiros antes do primeiro `*` ou `?`); só um candidato que comece por esse prefixo é comparado (um candidato com `*`/`?` usa a regra de "alcance" abaixo).
+- Comparação: sensível a maiúsculas em POSIX; **insensível** em candidatos Windows e, num anfitrião macOS, em tudo (nesse caso padrões e candidatos são antes normalizados para composição NFC e minúsculas Unicode completas; só a máquina cliente conhece os padrões, então a reinspeção do servidor não depende disso). A comparação sem diferenciar caixa só vale para ASCII.
+- Orçamento: cada comparação padrão×candidato custa (caracteres do padrão + do diretório-base) × (caracteres do candidato); soma acima de **1 000 000** por inspeção é "estouro" (arquivo: `metadata-only`; shell: `drop`).
+
+**Candidatos de arquivo.** O caminho vem de campos fixos, em ordem: `file_path`, `filePath`, `path`, `absolute_path`, `AbsolutePath`, `notebook_path`, `TargetFile` (cada um precisa ser texto; qualquer outro tipo torna a extração malformada), mais a lista `paths` (de textos). No máximo 32 candidatos por chamada, cada um não vazio e com no máximo 4 096 caracteres. Ferramentas `multi_edit`/`multiedit`/`replace_all` acrescentam os caminhos de cada item de `edits` (ou `replacements`; lista não vazia, até 32); `read`/`fs_read` aceitam `operations[]` do mesmo modo; `read_many_files` usa a lista `include` (as globs; `exclude` só restringe e não conta). O Muse `read_memory`/`add_memory`/`edit_memory` só tem caminho conhecido com `scope == "project"` (`<repositório>/.agents/memory/<path>`, ou o caminho absoluto dado); nos escopos pessoais (padrão) o arquivo fica fora do repositório e a extração falha (resultado `metadata-only`). O texto de patch do `apply_patch`/`patch` (cabeçalhos `*** Add File:`, `*** Update File:`, `*** Delete File:`, `*** Move to:`) **não** é lido pela decisão de captura, só pela busca de marcadores (abaixo): um `apply_patch` sem campo de caminho direto fica `metadata-only` sob política ativa.
+
+**Normalização do candidato** (a partir do diretório de trabalho do evento, que precisa ser absoluto): relativo vira `<cwd>/<candidato>`; `.` e `..` são resolvidos lexicalmente (sem tocar o disco e sem seguir links); em POSIX, `//` inicial vira `/`. Numa sessão **Windows** (cwd com letra de unidade ou UNC): o prefixo de provedor do PowerShell (`FileSystem::`, `Microsoft.PowerShell.Core\FileSystem::`, qualquer caixa) é removido; `\\?\`, `\\.\` e `\??\` antes de unidade ou `UNC\servidor\partilha` apontam a própria unidade/partilha (qualquer outro dispositivo, como `\\?\Volume{GUID}`, não é caminho utilizável); `\\localhost\C$` e `\\127.0.0.1\C$` são a unidade local; `/c/x` e `/cygdrive/c/x` (Git Bash, MSYS2, Cygwin) são lidos **das duas formas**, `C:/x` e a raiz da unidade do cwd (`C:/c/x`); outro caminho enraizado (`/x`, `\x`) fica na unidade do cwd; sufixo de fluxo alternativo (`nome:fluxo`, `nome::$DATA`) e pontos e espaços finais de cada segmento são descartados (segmentos com `* ? [ ] { } ( ) |` ficam como estão); `\` vale `/`; a letra da unidade fica maiúscula.
+
+**Busca/listagem** (`search-list`): a decisão é `drop` sem ler argumentos; os argumentos só servem para localizar marcadores (raízes: os campos de caminho, `dir_path`, `directory`, `DirectoryPath`, `SearchDirectory`, `SearchPath`, no Droid também `directory_path` e `folder`; filtros: `pattern` (só em ferramentas de glob: `glob`, `find`, `find_by_name`), `glob`, `include`, `file_pattern`, `file_glob`, `Includes`, e no Droid `patterns`/`glob_pattern`; um `pattern` de `grep` é expressão regular e não conta).
+
+**Comando de shell.** O texto vem de `command`, `cmd` ou `CommandLine` (texto único ou lista de argumentos; outro tipo, ou lista com não-texto, não tem comando). Divisão em palavras, sem expandir nada nem executar: aspas simples e duplas agrupam; espaço e os operadores `| & ; < > ( ) \`` separam palavras; barra invertida escapa só espaço, operador, `'`, `"` e `\` (assim `docs\adr\x.md` mantém as barras); dentro de aspas duplas ela escapa `" \ $ \``; `$'…'` decodifica os escapes simples (`\n \t \a \b \e \f \r \v \\ \' \" \?`); `$"…"` perde o `$`; barra-nova continua a linha; um `~` só vale como diretório pessoal se estiver fora de aspas e não for precedido de `\`. **Cada palavra gera argumentos candidatos**: a própria palavra (se não começa com `-`), o valor de `--flag=valor`, `NOME=valor` e `-Param:valor` (PowerShell), o valor colado a uma flag curta (`-fARQUIVO`), o caminho de um nome de objeto do git (`REV:caminho`, `:caminho`, `:2:caminho`, que o git resolve a partir da raiz do repositório, então também se tenta a partir do diretório do marcador; letra de unidade, URL e `host:caminho` não são), e o caminho de qualquer um desses que seja uma URL `file:` (com `%XX` ASCII decodificado, sem `?`/`#`). `~/…` vira `<home>/…` e `~+` o diretório atual. Uma palavra que contém mais de uma palavra (`bash -c 'cat x'`, `"$(cat x)"`, argumento de `eval`, de `sh|bash|zsh|dash|ksh|mksh|ash|yash|fish -c` ou `su|script -c`, também em clusters como `-lc` e depois de opções com valor como `-o pipefail`) é dividida de novo, até **4 níveis**; além disso o comando é "opaco". Valores padrão de parâmetro (`${X:-docs/x.md}`, `:=`, `:+`, e as formas sem `:`) acrescentam também a leitura com o operando no lugar, até 4 níveis. Elementos de uma lista de argumentos são mantidos inteiros (se tiverem até 256 caracteres) **e** divididos, para um caminho com espaço não ser separado. Numa sessão Windows (ou PowerShell) o comando também é lido sem os escapes de acento grave e circunflexo e com as barras invertidas literais (`\\srv\share\x` é UNC), e o `~` vale sempre. Interpretadores com código inline tornam o comando opaco: `python*/pypy*/py -c`, `perl -e|-E`, `ruby -e`, `node|nodejs|bun -e|-p`, `php -r`, `lua|luajit|Rscript|osascript -e`, `deno eval`, (considerando as opções com valor de cada um). O `workdir`, `dir_path` ou `directory` (no Antigravity, `Cwd`) do chamado muda a base de resolução dos argumentos relativos (relativo ao cwd, absoluto como está).
+
+**Arquivos de saída que o próprio harness gravou** (a chamada que os gerou pode ter sido descartada, então não se prova que evitaram os caminhos ignorados; contam como `metadata-only`): `…claude…/projects/…/tool-results/…` (Claude Code), `…claude…/…/tasks/<id>.output`, `…/opencode/tool-output/…` e `pi-bash-<id>.log` (Pi). Os segmentos comparam-se sem diferenciar caixa e um padrão com `*`/`?` conta se puder expandir para tal arquivo (e pelo menos um segmento que se encaixa precisa soletrar, em texto literal, parte do que o torna distintivo: três caracteres seguidos do nome); um orçamento estourado nessa checagem conta como "é".
+
+**Globs de ferramenta de leitura em lote** (`read_many_files`, do Gemini CLI): cada entrada é lida como padrão, sem diferenciar caixa e com `**` recursivo; entrada com `[ ] { } ( ) !` falha fechado (`metadata-only`); uma entrada sem glob é tratada também como diretório (`docs` lê `docs/**`). Em comandos de shell, um argumento com `*` ou `?` também "alcança" o padrão se puder expandir para dentro do prefixo literal dele (`docs/*/x.md` alcança `docs/adr`; `*.md` no diretório pai nunca), e `**` é tratado como recursivo mesmo no bash.
+
+**`..` depois de `**`** (e segmentos que um bash antigo expande para `..`, como `.*`): cada `..` desses gera duas leituras (o `**` casando nada e o `**` casando um diretório); no máximo 16 leituras por glob, acima disso falha fechado.
+
+**Marcadores de outros checkouts.** A política de **cada** marcador que governa um local nomeado pela chamada também vale, e a decisão final é a **mais estrita** (`drop` > `metadata-only` > `keep`). Locais: alvos de ferramenta de arquivo (para `apply_patch`, os arquivos citados no patch), raízes e filtros com separador de busca, e cada argumento de shell que nomeia caminho (com separador, depois de `~/`), mais o próprio `workdir`. Os marcadores são achados pela mesma subida léxica do evento (sem canonicalizar), a partir do diretório existente mais próximo de cada local, com resposta memorizada por diretório; globs são seguidos a partir da raiz literal (`**` lista a subárvore, exceto a do próprio checkout; nunca segue link simbólico). Limites: 4 096 locais distintos por chamada, **16** marcadores além do próprio, 256 diretórios e 32 768 entradas lidas na caminhada de globs, 16 384 consultas ao sistema de arquivos, **50 ms** de orçamento total. Fora do checkout próprio, estourar qualquer limite, glob que não se consegue seguir ou local ilegível é "não provável" e recebe a decisão de política inválida (`metadata-only` para arquivo/shell/busca); dentro do próprio checkout só encerra a procura. O "checkout próprio" é a raiz `.git` mais próxima do cwd, exceto a raiz do sistema de arquivos ou um diretório que seja o home ou o contenha. Além disso, quando uma ferramenta de arquivo opera (todos os alvos absolutos) num checkout/marcador **diferente** do cwd do evento e o checkout de origem manteria o evento, o evento é roteado para o projeto do alvo (a mesma âncora para todos os alvos; um alvo sem marcador nem repositório não cria escopo).
+
+**Reinspeção no servidor.** O cliente nunca envia os padrões. O servidor só age quando o corpo traz `_ai_memory_capture`; sem ele, o evento passa como veio. Para reinspecionar, compila uma política com o estado informado pelo cliente e, se ativa, com **um padrão sentinela que nunca casa** (um caminho do mesmo tipo do cwd: `C:/__ai_memory_capture_server_inspection_never_match__` em sessão Windows, `/__ai_memory_capture_server_inspection_never_match__` nas demais; o cwd ausente vale `/`). Regras, em ordem:
+1. protocolo que não interpreta (versão diferente de 1, campo a mais ou a menos, valor fora do enum): inspeção direta como **política inválida**; se der `metadata-only` o corpo é trocado pelo corpo de metadados, senão o evento passa como veio;
+2. disposição `drop` informada pelo cliente: descartado (202, `dropped_policy`), sem admissão e sem olhar os demais campos;
+3. disposição `metadata-only` informada: o corpo é **reconstruído** só com a lista permitida (`session_id` até 512 bytes, `cwd` até 4 096, `tool_call_id` válido, `tool_family` igual ao do protocolo e `tool_name` igual ao nome canônico da família, protocolo legal); campos extras são ignorados; formato inválido é descartado;
+4. disposição `keep`: inspeção direta com o estado de política informado. Se o protocolo contradiz a inspeção: quando qualquer lado diz "arquivo", cai para a política inválida (corpo de metadados); senão segue a disposição da inspeção (`drop` descarta, `metadata-only` troca o corpo, `keep` mantém). Protocolo coerente: mantém o evento.
 
 ### 4.5 Descarte de subagente
 
@@ -306,6 +438,27 @@ no marcador do projeto).
   subagente (limite de 4096). Qualquer evento **sem marcador** dessa sessão também é
   descartado, inclusive o final dela. O fim de sessão remove a sessão do conjunto.
 - Claude Code não marca a sessão pai. Só os eventos marcados são descartados.
+
+### 4.6 Lista de descarte do servidor (`[ingest]`)
+
+Configuração do **servidor**, para todos os projetos: o operador nomeia chamadas de ferramenta que o
+servidor nunca deve guardar, qualquer que seja o cliente.
+
+- Chaves em `[ingest]`: `drop_tool_use_id_prefixes` (prefixos de identificador de chamada; o Claude Code
+  marca chamadas de plugin com um prefixo próprio, por exemplo `toolu_plugin_`) e `drop_tool_names` (nomes
+  de ferramenta, comparação **exata**, com diferença entre maiúsculas e minúsculas, por exemplo
+  `mcp__noisy__poll`). Ambas começam vazias e são lidas **uma vez na subida**.
+- Limites: no máximo **64** entradas por lista, cada uma com no máximo **128** caracteres, sem entrada em
+  branco e sem caractere de controle. Violação impede a subida com uma mensagem do tipo
+  `[ingest].<lista> holds <n> entries; the limit is 64`, `… has a blank entry`, `… has an entry longer than
+  128 characters` ou `… has an entry with a control character`.
+- Só eventos de pré e pós-ferramenta podem casar. O nome e o identificador da chamada vêm do mapeamento por
+  agente da seção 3.5; um agente sem esquema fechado usa os campos genéricos no estilo do Claude Code. Um
+  evento casa se o identificador **começa com** algum prefixo, ou se o nome é igual a algum nome da lista.
+- Efeito: resposta 202 como qualquer descarte de política (`ingest drop list`; desfecho
+  `dropped_policy`), **antes** do sanitizador, do limitador de taxa, do semáforo de ingestão e do
+  armazenamento, então não consome capacidade. Vale também para itens de `POST /hook/batch`. Roda depois da
+  política de captura do cliente e do marcador de alias inválido, e antes do descarte de subagente.
 
 ---
 
@@ -376,15 +529,13 @@ sessão (padrão ligada) e o modo de roteamento de meio de sessão.
 Para um evento de sessão já existente, o escopo da própria sessão é a referência. Um
 `cd` para um subdiretório, em um projeto sem git, não deve fragmentar a sessão.
 
-- Um marcador explícito sempre vence.
-- O diretório do evento precisa estar **dentro** da subárvore do diretório da sessão.
-- Sessão enraizada na raiz do sistema de arquivos ou na pasta pessoal nunca "gruda".
+- Um marcador explícito (`project_src = marker` ou `project` sem `project_src`) sempre vence. Se `workspace` for informado na query e resolver para um workspace diferente do workspace da sessão, a sessão pegajosa também não se aplica.
+- Sessão enraizada na raiz do sistema de arquivos (`/`, `C:\` ou raiz UNC) ou na pasta pessoal (`$HOME`) nunca "gruda".
 - O modo `[routing] mid_session` decide o resto:
-  - `follow-cwd` (padrão): só gruda dentro da subárvore da sessão, ou fora dela quando a
-    estratégia é `repo-root` e não há sobreposição.
+  - `follow-cwd` (padrão): só gruda quando o diretório do evento permanece **dentro** da subárvore do diretório da sessão (sem sobreposição de projeto), ou fora dela quando a estratégia é `repo-root`, não há sobreposição e o novo diretório não está em nenhum repositório git.
   - `sticky`: também gruda fora da subárvore, para qualquer estratégia, desde que a sessão
     tenha uma âncora significativa. Pode substituir uma sobreposição derivada da raiz do
-    repositório, mas **nunca** um marcador explícito.
+    repositório (`project_src = repo-root`), mas **nunca** um marcador explícito.
 
 ---
 
@@ -432,16 +583,19 @@ entrega chegar de novo com a mesma chave, o servidor não duplica a observação
 - Não encerram a sessão e não criam handoff.
 - Se o agente já escreveu a página de sessão, essa página é **mantida**, e o checkpoint não a
   sobrescreve.
-- Se a consolidação por LLM estiver configurada, ela é tentada primeiro:
-  - resposta vazia: nada é escrito;
-  - falha do **provedor** (recusa, limite de taxa, indisponibilidade, resposta não mapeável):
-    cai para a página sintetizada sem LLM;
-  - falha de **política ou infraestrutura** (webhook de admissão recusou o ator ou o escopo,
-    falha de armazenamento, sessão sem resolução): **não** cai para o modo sem LLM. Falha
-    fechado. A operação de admissão de consolidação continua valendo para a página de fallback.
-    Em qualquer caso, o evento segue e o erro é registrado.
-- Se o provedor não for usado, ou depois do fallback, a página é sintetizada sem LLM e
-  escrita em `sessions/<identificador>.md`. Sessão efêmera não gera página.
+- **O provedor nunca é chamado dentro do hook** (a chamada demora mais que o prazo do cliente).
+  A página é sempre sintetizada **sem LLM** e escrita primeiro em `sessions/<identificador>.md`;
+  sessão efêmera (ou sem trabalho substantivo) não gera página.
+  - Com consolidador configurado, essa escrita carrega a operação de admissão `consolidate`: se a
+    política (webhook de admissão) recusa o ator ou o escopo, o checkpoint **falha fechado** antes
+    de gravar a página e antes de enfileirar; falha de armazenamento ou de resolução na escrita só
+    gera aviso e o evento segue.
+  - Depois da escrita (e do commit), enfileira o job de reescrita por LLM na fila durável
+    (`consolidation-llm.md` §3.7 e §3.8), independente de `consolidate_on_session_end`; falha ao
+    enfileirar faz o evento falhar para ser reentregue. A reescrita roda no trabalhador; falha do
+    provedor deixa a página por regras; resposta vazia/inválida encerra o job sem escrever.
+  - Reentrega de um checkpoint cujo job daquela geração já está em andamento ou concluído não regrava
+    a página por regras.
 - O commit usa o rótulo do checkpoint: `pre-compact(session <id8>): checkpoint` ou
   `post-compaction(session <id8>): checkpoint`. `<id8>` são os oito primeiros caracteres do
   identificador.
@@ -450,7 +604,8 @@ entrega chegar de novo com a mesma chave, o servidor não duplica a observação
 
 **Sessão efêmera** (nenhuma observação de prompt do usuário, pré-ferramenta ou pós-ferramenta):
 
-- A sessão é encerrada **sem página, sem handoff e sem consolidação**.
+- A observação de `session-end` é gravada e registrada no `log-AAAA-MM.md`.
+- A sessão é encerrada (`ended_at` preenchido) **sem página, sem novo handoff e sem consolidação**; se a sessão efêmera havia reivindicado (`accepted`) um handoff no início de sessão, o handoff mais recente aceito por ela é **reaberto** (`state = 'open'`, limpando `accepted_at`, `accepted_by_session` e `accepted_by_user`) para não desperdiçar o bastão.
 - Faz commit com o título `lifecycle-only session <id8>`.
 - Se a gravação descobrir trabalho substantivo concorrente, segue o caminho normal abaixo.
 - A definição de efêmera deve ser idêntica no cálculo do servidor e na verificação do
@@ -500,11 +655,13 @@ Efeitos:
 
 ### 9.1 Resumo
 
-- **Um prompt**: `Session focused on: <prompt>`.
-- **Vários prompts**: `Started: <primeiro>` + linha em branco + `Last: <último>`.
+As perguntas em aberto (`open_questions`, seção 9.3) são calculadas antes do resumo para evitar duplicar o último prompt:
+
+- **Um prompt**: se o prompt já foi citado em `open_questions`, o resumo é `Single-prompt session; the prompt is quoted under open questions.`; caso contrário, `Session focused on: <prompt>`.
+- **Vários prompts**: se o último prompt já foi citado em `open_questions`, o resumo traz apenas `Started: <primeiro>`; caso contrário, `Started: <primeiro>` + linha em branco + `Last: <último>`.
 - **Nenhum prompt**: `Session ended; <N> observations recorded.` Para checkpoint de turno,
   o início muda para `Turn checkpoint; <N> observations recorded.`
-- Se existir um excerto do assistente, acrescenta `Latest assistant response: <excerto>`.
+- Se existir um excerto do assistente, acrescenta duas quebras de linha e `Latest assistant response: <excerto>`.
 - Cada texto de prompt é limitado a **1500 caracteres**. O corte acrescenta `…`.
 - Blocos de markup entregues como turno do usuário (por exemplo, notificações do próprio
   harness) não contam como prompt.
@@ -530,9 +687,9 @@ Em handoff automático de fim de sessão, a primeira regra que casar vence:
 Em **checkpoint de turno**, a regra é só uma: `Continue from last request: <último prompt
 substantivo>`, ou nada.
 
-**Prompt de confirmação** (ignorado como pergunta de continuação): vazio, ou uma frase curta
-de confirmação com até 20 caracteres, sozinha ou seguida só de pontuação. Exemplos:
-`ok`, `thanks`, `got it`, `好的`, `谢谢`. Frases mais longas são mantidas.
+**Prompt de confirmação** (ignorado como pergunta de continuação): vazio, ou até **20 caracteres** (após remover pontuação final `.`, `!`, `。`, `！`, `~`, `～`) compostos por uma ou mais das 27 frases de confirmação separadas por `,`, `.`, espaço, `，` ou `。`:
+- Inglês (19, sem diferenciar maiúsculas): `ok`, `okay`, `k`, `kk`, `thanks`, `thank you`, `thx`, `ty`, `got it`, `roger`, `ack`, `noted`, `sounds good`, `great`, `cool`, `nice`, `awesome`, `perfect`, `lgtm`;
+- Chinês (8): `好`, `好的`, `好吧`, `收到`, `明白`, `知道了`, `谢谢`, `多谢`.
 
 ---
 
@@ -565,7 +722,7 @@ Ordem de preferência:
 ### 10.2 Resumo
 
 Uma linha de prosa, sem marcador de lista, sem cabeçalho e sem metadados em formato de
-lista. Exemplo: `2 prompts, 3 completed tool calls across Bash and Edit, over 18m.`
+lista. Exemplo: `2 prompts, 3 completed tool calls across Bash and Edit, over 18m, ended (user_exit).`
 
 - Contagem de prompts (no singular ou plural).
 - Chamadas de ferramenta concluídas: **só pós-ferramenta** conta. Contar pré e pós duplicaria.
@@ -574,6 +731,7 @@ lista. Exemplo: `2 prompts, 3 completed tool calls across Bash and Edit, over 18
   houver rótulos, a cláusula de nomes é omitida.
 - Duração entre o início e o fim da sessão, quando maior que zero: `<n>s`, `<n>m`, `<h>h` ou
   `<h>h <m>m`.
+- Se a observação `session-end` registrou `reason: <motivo>`, acrescenta `, ended (<motivo>)` antes do ponto final.
 - Se nada couber, o resumo é omitido.
 
 ### 10.3 Corpo
@@ -593,8 +751,8 @@ lista. Exemplo: `2 prompts, 3 completed tool calls across Bash and Edit, over 18
 ### 11.1 Parâmetros
 
 `agent`, `cwd`, `workspace`, `project`, `session_id`, `project_strategy`, além das opções de
-contexto (brief e perfil). Se houver uma execução gerenciada no parâmetro correspondente, o
-ledger dela também é entregue.
+contexto (brief e perfil). Se houver uma execução gerenciada no parâmetro correspondente (`managed_run`), o
+ledger dela também é entregue; para isso `session_id` e `cwd` também são necessários (ver managed-workstreams.md, "Quem recebe o pacote"). Parâmetros adicionais: `briefing` e `briefing_budget` (ver session-brief.md), `profile_contribute`, `profile_consume` e `profile_digest` (ver design-cross-project-profile.md §5.4).
 
 ### 11.2 Ordem de operações
 
@@ -655,6 +813,7 @@ Rotas, montadas ao lado de `/hook` e sob a mesma autenticação:
 | `/workstream/runs/{id}/context/accept` | POST | Aceita o contexto. |
 | `/workstream/runs/{id}/link` | POST | Vincula uma sessão. |
 | `/workstream/runs/{id}/finish` | POST | Finaliza com eventos. |
+| `/workstream/runs/{id}/recover/finish` | POST | Finaliza/reimporta uma execução expirada ou repete uma finalizada (usado por `ai-memory recover`). |
 | `/workstream/recent` | POST | Lista workstreams recentes. |
 | `/workstream/rename` | POST | Renomeia. |
 | `/workstream/{id}/events` | GET | Busca no ledger. |
@@ -666,12 +825,15 @@ Limites:
 | Item | Limite |
 |---|---|
 | Eventos por finalização | 4096 (acima disso, rejeita) |
-| Conteúdo de cada evento | 64 KiB. O excedente é cortado e marcado como `[truncated by ai-memory]`. O conteúdo é sanitizado antes do corte. |
+| Conteúdo de cada evento | 64 KiB na rota (o excedente é cortado e marcado com `
+[truncated by ai-memory]`; sanitizado antes do corte; é esta versão que vai ao segmento bruto). O armazenamento do ledger limita de novo a 16 KiB no total, terminando em `…` (U+2026) quando corta. |
 | Identificador de evento | de 1 a 512 bytes |
 | Diretório informado | 16 KiB |
 | Nomes | 256 bytes |
 | Metadados lidos do armazenamento | acima de 16 KiB, são tratados como ausentes |
-| Metadados na escrita | a confirmar |
+| Metadados na escrita | reduzidos à allowlist (ver api-reference.md §6): textos ≤ 512 bytes após sanitização; `source_record_id` ≤ 512 bytes |
+| Papel (`role`) | até 32 caracteres `[A-Za-z0-9_-]` |
+| Eventos por finalização | 4096 (413) |
 
 O conteúdo é sanitizado antes de ser gravado no segmento bruto imutável, sob o diretório de
 dados do servidor, e antes da indexação.
