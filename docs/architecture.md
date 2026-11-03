@@ -21,6 +21,101 @@ derived SQLite index provides full-text, entity, and link-neighbour
 retrieval. The markdown files remain the source of
 truth.
 
+## Topology and Container Environment (Docker Compose)
+
+The local server deployment operates inside a Docker Compose container with single-port exposure and host-mounted persistent storage:
+
+```mermaid
+graph TD
+    subgraph Host ["Host Machine"]
+        subgraph FS ["Host Filesystem"]
+            HostData["/var/opt/docker/.../data<br/>(Persistent Storage)"]
+            EnvFile[".env.production<br/>(Tokens and Configuration)"]
+        end
+        ClientMCP["MCP Clients / Coding Agents"]
+        Browser["Web Browser / Dashboard"]
+    end
+
+    subgraph Docker ["Docker Engine / Compose"]
+        subgraph Container ["ai-memory Container (:49374)"]
+            Entrypoint["Entrypoint: ai-memory serve"]
+            
+            subgraph WebApp ["HTTP & MCP Server Surface"]
+                AuthLayer["Authentication & Sanitizer Layer"]
+                ScopeRes["Central Scope Resolver"]
+                HookRouter["Lifecycle Hook Ingress (/hook, /hook/batch)"]
+                McpRouter["MCP Router (JSON-RPC 2024-11-05)"]
+                AdminRouter["Administrative API (/admin/*)"]
+                ApiRouter["API v1 & Web Browser (/api/v1/*)"]
+            end
+
+            subgraph StorageEngine ["Storage Engine"]
+                WriterQueue["SQLite Writer Single-Queue<br/>(Capacity: 1024 commands)"]
+                ReaderPool["SQLite Reader Pool (WAL Mode)"]
+                WikiAtomic["Wiki Atomic Markdown Layer"]
+                GitEmbedded["Embedded Git Mirror"]
+            end
+
+            VolData["/data Mount"]
+        end
+    end
+
+    HostData -->|Bind Mount / Volume| VolData
+    EnvFile -.->|Environment Loading| Entrypoint
+    VolData -->|db/ai-memory.db| WriterQueue
+    VolData -->|db/ai-memory.db| ReaderPool
+    VolData -->|wiki/| WikiAtomic
+    WikiAtomic --> GitEmbedded
+
+    ClientMCP -->|HTTP SSE/POST :49374/mcp| McpRouter
+    Browser -->|HTTP GET :49374/| ApiRouter
+    ClientMCP -->|HTTP POST :49374/hook| HookRouter
+
+    HookRouter --> ScopeRes
+    McpRouter --> ScopeRes
+    AdminRouter --> ScopeRes
+    ApiRouter --> ScopeRes
+
+    ScopeRes --> WriterQueue
+    ScopeRes --> ReaderPool
+    ScopeRes --> WikiAtomic
+```
+
+## Request Processing and Concurrency Lifecycle
+
+Requests follow a strict pipeline enforcing sanitization, actor identification, optimistic concurrency, and a single-writer SQLite queue:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Agent as Agent / Client HTTP
+    participant Auth as Auth & Sanitizer
+    participant Scope as Scope Resolver
+    participant Router as Tool / Hook Router
+    participant Writer as SQLite Writer (Queue 1024)
+    participant Wiki as Wiki Layer (Disk + Git)
+
+    Agent->>Auth: Request (JSON Payload)
+    Auth->>Auth: Scrubber (27 Secret Patterns)
+    Auth->>Auth: Validate Bearer Token / Actor Identity
+    Auth->>Scope: Resolve Scope (workspace, project)
+    Scope-->>Router: Resolved Scope (explicit, pointer, default)
+    
+    alt Page Write
+        Router->>Wiki: Atomic Write (tempfile -> fsync -> rename -> parent fsync)
+        Wiki->>Writer: Enqueue DB Update (FTS5, Entities, Links)
+        Writer->>Writer: Single Transaction in WAL Mode
+        Writer-->>Router: Updated Version (is_latest=1)
+        Router-->>Agent: 200/202 Response ({ page_id, path, checkpoint })
+    else Version Conflict
+        Router->>Router: Compare expected_page_id != current_page_id
+        Router-->>Agent: JSON-RPC -32600 (precondition_failed)
+    else Hook Ingestion Saturated
+        Router->>Router: Check in-flight concurrent hooks >= 1024
+        Router-->>Agent: HTTP 429 Too Many Requests
+    end
+```
+
 ## Data flow
 
 Solid arrows are request, read, and write paths. Dashed arrows are background
@@ -61,7 +156,7 @@ managed-workstream continuity ledger.
    at-least-once: a crash during them can repeat an already applied effect, but
    it does not silently drop the rest. An interrupted SessionEnd replay converges
    the wiki commit and the pending key, without
-   appending another observation (a confirmar). Each captured hook event appends
+   appending another observation. Each captured hook event appends
    a line of the form `## [YYYY-MM-DDTHH:MM:SSZ] <event> | <title>` to the
    project's monthly event ledger `log-YYYY-MM.md` (UTC month of the event;
    a legacy `log.md` is recognized but never appended to). A page write
@@ -70,8 +165,7 @@ managed-workstream continuity ledger.
 3. **Session end.** On a true SessionEnd event, the server writes a rule-based
    session summary page (no LLM) under `sessions/` and opens a handoff for the
    next agent. The automatic handoff, the session's ended stamp, and the
-   covered observation count are written in one database transaction (a
-   confirmar). A later SessionEnd repeats this path only when the session's
+   covered observation count are written in one database transaction. A later SessionEnd repeats this path only when the session's
    observation generation has advanced. Resumed sessions are therefore captured,
    while duplicate delivery and clock skew converge. Sessions that already ended
    when the store migrates are baselined, not replayed as historical work. The
@@ -109,7 +203,7 @@ managed-workstream continuity ledger.
    once per page per minute, so a burst of overlapping searches does not flood
    the writer with redundant reinforcement writes. Other read paths that surface
    a page reinforce it through the same throttled path (`memory_read_page`,
-   including its related-page walk) (a confirmar).
+   including its related-page walk).
 5. **Retention.** The forget sweep runs on demand and on the server's
    `[maintenance]` schedule. Its passes are described in
    [Memory tiers and retention](#memory-tiers-and-retention).
@@ -123,15 +217,15 @@ current repository and worktree workstream. It resolves an explicit harness, or
 the newest usable local or linked harness. It creates or resumes that harness's
 native session, and marks lifecycle calls with an invocation-scoped run id.
 SessionStart injects an unseen, bounded event range. A harness without
-SessionStart receives it through a temporary, supported global-context path
-(a confirmar). When the child process exits, the host imports the native
-transcript tail and a Git checkpoint (a confirmar).
-Every injected packet starts with a versioned origin marker. The Claude
+SessionStart receives it through a temporary, supported global-context path.
+When the child process exits, the host imports the native
+transcript tail and a Git checkpoint.
+Every injected packet starts with a versioned origin marker (`<!-- ai-memory:managed-workstream-packet:v1 -->`). The Claude
 transcript normalizer excludes a marked packet if the harness persists it and
-reads it back, so delivered history does not re-enter the ledger (a confirmar).
+reads it back, so delivered history does not re-enter the ledger.
 An explicitly pending handoff is delivered before the managed event range.
 Their single-use delivery claims share one write transaction, made after the
-complete startup response is assembled (a confirmar). Manual handoffs take
+complete startup response is assembled. Manual handoffs take
 precedence. Otherwise the newest automatic handoff eligible for the current
 directory is delivered. That same transaction expires older eligible automatic
 handoffs but keeps manual and sibling-directory handoffs. Inserting a new
@@ -216,7 +310,7 @@ single-writer rule.
 request limit:
 
 * User prompts are capped at 16 KiB, cut on a UTF-8 character boundary.
-  Post-compaction summaries use the same cap (a confirmar).
+  Post-compaction summaries use the same 16 KiB cap.
 * Notification and tool excerpts are capped at 2 KB.
 * Native `ai-memory hook` commands apply the event-specific cap before spooling
   and transport. The server applies it again when it parses each request, so
@@ -232,7 +326,7 @@ hook body lets a client supply the event's original time. Today only the
 timestamps. Imported sessions and observations are then stamped with when they
 happened, not with the import time. The field is read from the top level of the
 body only, so a harness payload that happens to contain an `occurred_at` key
-inside its own structure is never mistaken for it (a confirmar). It is numeric
+inside its own structure is never mistaken for it. It is numeric
 metadata, not text, so it does not go through the sanitizer. It is still
 client-controlled, so the server accepts it only if it is greater than zero and
 at most five minutes ahead of server time. Anything else (missing, unparsable,
@@ -262,7 +356,7 @@ immediately instead of after it ages in place.
 * `<data_dir>/client-projects.json` is a private, client-local list of checkout
   links for `ai-memory show`, keyed by a credential-free server identity plus
   workspace and project. It is not part of the database or wiki source of
-  truth, and no server API exposes host paths (a confirmar).
+  truth, and no server API exposes host paths.
 
 **Schema (current head).**
 
@@ -290,7 +384,7 @@ immediately instead of after it ages in place.
 
 | Tier | Lifetime | Decay |
 |---|---|---|
-| Working | Current session (lifetime handling a confirmar) | Not eligible for decay eviction in the sweep. |
+| Working | Current session (exempt from decay sweep; replaced by supersession or explicit TTL) | Not eligible for decay eviction in the sweep. |
 | Episodic | Retained while its score stays above the cold threshold. Then evicted, or compacted (opt-in). | Eligible for decay eviction. Score formula below. |
 | Semantic | Indefinite. Default tier when a page has no tier in its frontmatter. | Not eligible for decay eviction. Changed only by supersession. |
 | Procedural | Indefinite | Not eligible for decay eviction in the sweep. Included as a candidate for the contradiction check in lint. |
@@ -318,14 +412,14 @@ breadth = 1 + breadth_weight * ln(1 + max(distinct_operators - 1, 0))
 
 When the score falls below `cold_threshold` (default 0.20), the sweep evicts the
 page through the wiki layer, removes the authoritative file, and leaves a decay
-tombstone (a confirmar: tombstone behavior).
+tombstone (`is_latest = 0`, `superseded_at` set to the eviction timestamp).
 
 **Extractive compaction (opt-in).** With `[decay] compact_cold_episodic = true`
 (default false), the sweep runs a compaction pass before the eviction pass. A
 cold episodic page that is not already compacted is rewritten through the wiki
-layer. The rewrite keeps the page's abstract, a first-paragraph summary, and a
-set of keep-tokens (paths, URLs, code spans, error codes, identifiers), and drops
-the prose (the exact set of kept elements is a confirmar). The rewrite supersedes
+layer. The rewrite keeps the page's abstract (or a first-paragraph summary capped at 240 chars) and up to
+32 deterministic keep-tokens (backtick spans, URLs, paths, SCREAMING_SNAKE/ERR-* codes, snake_case/camelCase identifiers, and version literals; see [storage-and-retrieval.md](storage-and-retrieval.md) §12.2), and drops
+the remaining prose. The rewrite supersedes
 the prior version, so the full body stays
 reachable through git and the supersession chain, and a restore command can
 recover it. The compacted marker makes the page terminal for the decay pass. It
@@ -336,13 +430,13 @@ uses no LLM.
 
 1. **TTL.** Pages past their frontmatter `expires_at` are hard-deleted through
    the wiki layer, both file and rows. This applies whether or not the page is
-   pinned (a confirmar: pinned behavior).
+   pinned (TTL overrides `pinned`).
 2. **Decay eviction.** Cold episodic pages are evicted (see above).
 3. **Tombstone purge.** Tombstones older than `hard_delete_after_days` (default
    180) are purged together with their full version ancestry. The purge is
    limited to the sweep's resolved workspace and project, and it removes the
    entity rows orphaned by the purge. A newer page recreated at the same path
-   is preserved (a confirmar: recreated-page preservation).
+   is preserved (only tombstoned chains without a live `is_latest = 1` descendant at that path are purged).
 4. **Observation prune (opt-in).** Disabled unless `[decay]
    observation_retention_days` is positive (default 0, never prune). It deletes
    raw observations older than that age, but only for sessions whose summary
@@ -363,7 +457,7 @@ Scheduled sweeps and rule-based lint enumerate every existing workspace and proj
 daily cleanup removes project rows at least 7 days old that contain no pages,
 sessions, observations, handoffs, or managed workstreams.
 Managed continuity history therefore keeps its project scope alive even when no
-lifecycle-hook session has been captured (a confirmar: daily schedule).
+lifecycle-hook session has been captured (runs 60 s after startup and once every 24 hours thereafter).
 
 ## Cross-project links
 
@@ -377,23 +471,21 @@ the graph:
 
 The parser yields a target with workspace, project, and path. The store
 resolves it against the named project's latest page and records the scope in
-the link row. A link to a page that does not exist yet stays unresolved. It is
-re-pointed when that page later lands, across projects as well as within one
-(a confirmar: re-pointing mechanism).
+the link row. A link to a page that does not exist yet stays unresolved (`to_page_id = NULL`). It is
+re-pointed inside the page upsert transaction whenever that target page later lands, across projects as well as within one.
 
 Because the target page id is global, a resolved cross-project link appears as a
 backlink on its target. Related-page results carry the source's workspace and
-project, so the dependency is labelled and navigable (a confirmar). This is what
+project, so the dependency is labelled and navigable. This is what
 turns the per-project wikis into one dependency graph. It is visible through the
 graph endpoint of the web interface, and also through the dangling reference
-check in lint and the dependent counts in briefings (a confirmar).
+check in lint and the dependent counts in briefings.
 
 ## Component responsibilities
 
 The system is split into functional layers. Each layer has one responsibility
-and exposes a typed interface. Dependencies do not form cycles, and each
-boundary enforces one or more of the invariants below. The absence of
-dependency cycles is a confirmar.
+and exposes a typed interface. Dependencies form a strict DAG without cycles (see [overview.md](overview.md) §9), and each
+boundary enforces one or more of the invariants below.
 
 * **Domain model.** Types, identifiers, and errors. No input or output.
 * **Storage.** Database schema and migrations, the single writer, the read-only
@@ -411,29 +503,34 @@ dependency cycles is a confirmar.
 * **Web interface.** A read-only wiki browser served under `/web`, with JSON
   APIs under `/api/v1`.
 
-## MCP tool surface (20 tools)
+## MCP tool surface (25 tools)
 
-Hints are the server's tool annotations (a confirmar for each tool).
+Hints are the server's tool annotations.
 
 | Tool | Hint | Purpose |
 |---|---|---|
 | `memory_query` | read-only | Full-text, entity-match, and graph RRF search, followed by the bounded kind, tier, pinned, and tag authority adjustment and raw fallback. Bumps access counters for page hits. Defaults to the current project. Default-scoped calls also merge the reserved `_global` preferences scope as `global_scope_hits`. `scopes` searches named sibling projects. `global=true` searches every project at once, and each hit is labelled with its workspace and project. `explain=true` adds per-hit score details: per-stream ranks, matched entities, raw scores, RRF contributions, graph provenance including the typed edge kind (`causes`, `fixes`, `contradicts`), the evidence count, and the authority multiplier. It also adds a top-level `streams_active` list. `include_expired=true` also returns TTL-expired pages. `include_superseded=true` also returns superseded versions, each labelled `superseded: true`. The current version is never labelled. With the default `false`, the response is identical to the latest-only behavior. `pin_first=true` prepends up to 10 pinned latest pages of the project, deduplicated by page id and marked `pinned: true`, then re-truncates to the requested limit. It applies to single-project searches only. |
 | `memory_recent` | read-only | The most recently updated latest pages. |
-| `memory_read_page` | read-only | Fetches the full body of one page, by path or by the top full-text hit for a query. Optional workspace and project target a named sibling. `include_related=true` walks the link graph outward from the page: a bounded breadth-first walk, default 1 hop (a confirmar), hard cap 3 hops, a visited set against cycles, and at most 50 nodes in total, across projects. Each related page carries its depth and direction (`link` or `backlink`). With the default, the response has no `related` field. |
-| `memory_read_session_observations` | read-only | Pages through one session's raw observations, with the full sanitized body capped per row by `body_max_chars`. Restricted to rows in the resolved scope and to sessions the caller may see. Reports `total` and `elided_other_scope`. If no session id is given, the latest completed visible session is read. |
-| `memory_status` | read-only | Counts, paths, version, and the `scope` that answered: workspace, project, and `resolved_by` (`explicit`, `session`, `shared_slot`, `startup_seed`, `default`, `default_after_mismatch`; the value list is a confirmar). Unscoped reads resolved by `startup_seed` or `default_after_mismatch` also log a server warning. |
-| `memory_briefing` | read-only | Structured counts, activity, rules, slots, and recent pages. Project snapshots include up to 10 pinned latest pages as standing context. This list is separate from slots. It is empty and omitted from the output when the project has no pins. Opt-in `settled_first: true` leads with up to 8 of the project's highest-standing rule and decision pages, ordered by evidence count and then recency (the limit of 8 is confirmed). |
+| `memory_read_page` | read-only | Fetches the full body of one page (capped at `max_chars`, default 12000, range 500..64000, returning `truncated` and `total_chars`), by path or by the top full-text hit for a query, plus up to 100 ATX `sections` (`{ anchor, level, sha256 }`) and `sections_truncated` for `memory_patch_page`. Optional workspace and project target a named sibling, or `scope: "global"` reads `default/_global`. `include_related=true` walks the link graph outward from the page: a bounded breadth-first walk, default 1 hop, hard cap 3 hops, a visited set against cycles, and at most 50 nodes in total, across projects. Each related page carries its depth and direction (`link` or `backlink`). With the default, the response has no `related` field. |
+| `memory_read_session_observations` | read-only | Pages through one session's raw observations (`limit` default 20, max 200; `body_max_chars` default 1000, range 200..16384). Restricted to rows in the resolved scope and to sessions the caller may see. Reports `total` and `elided_other_scope`. If no `session_id` is given, selects the session with the newest captured work visible to the caller in the resolved project (scanning up to 16 recent sessions, preferring the caller's `cwd`), or the latest completed session. |
+| `memory_status` | read-only | Counts, paths, version, and the `scope` that answered: workspace, project, and `resolved_by` (`explicit`, `active_project`, `active_project_shared`, `active_project_fallback`, `default`, `default_fallback`). Unscoped reads resolved by `active_project_fallback` or `default_fallback` also log a server warning. |
+| `memory_briefing` | read-only | Structured counts, activity, rules, slots, and recent pages. Project snapshots include up to 10 pinned latest pages as standing context. This list is separate from slots. It is empty and omitted from the output when the project has no pins. Opt-in `settled_first: true` leads with up to 8 of the project's highest-standing rule and decision pages, ordered by evidence count and then recency. |
+| `memory_explore` | read-only | LLM-synthesized prose digest over the project briefing (or structured briefing fallback when no LLM provider is configured). |
 | `memory_handoff_begin` | destructive | Opens an owner-scoped handoff for the next agent. `shared=true` publishes it to the whole project. Optional workspace and project target a named sibling. |
 | `memory_handoff_list` | read-only | Lists open handoffs visible to the caller, own and shared, with inspectable body and identity fields. It does not claim or expire anything. Root-only `any_owner=true` lists across operators. |
 | `memory_handoff_accept` | destructive | Fetches and acknowledges an open handoff. Passing `handoff_id` claims that exact row. Without it, the latest eligible open handoff is claimed. Automatic handoffs are matched on the working directory. Root-only `any_owner=true` recovers across operators. |
 | `memory_handoff_cancel` | destructive | Marks one exact visible open handoff as expired, for a handoff created by mistake. Root-only `any_owner=true` recovers across operators. |
-| `memory_message_send` | destructive | Sends a directed cross-project message into another project's inbox. Requires the target workspace and project. The recipient must already exist (fail-closed, never created). The body is secret-scrubbed and size-capped. This is the one tool that crosses project isolation on purpose. |
+| `memory_message_send` | destructive | Sends a directed cross-project message into another project's inbox. Requires the target workspace and project (and optional `to_agent`, `nature`, `evidence`). The recipient must already exist (fail-closed, never created). The body is secret-scrubbed and size-capped. This is the one tool that crosses project isolation on purpose. |
 | `memory_message_list` | read-only | Lists pending mail for this project. `box="inbox"` (poppable, the default) or `box="outbox"` (cancellable). Bodies are untrusted cross-project input. |
 | `memory_message_pop` | destructive | Claims one inbox message exactly once (the oldest, or a specific `message_id`). Returns it fenced as untrusted input with sender provenance, or `null` when the inbox is empty. |
 | `memory_message_cancel` | destructive | Retracts a pending sent message by `message_id`, or clears the whole outbox when no id is given. Scoped to the sender's project. |
 | `memory_feedback` | write | Records a quality signal for one page, by exact path. `helpful` and `not_helpful` step the page's salience for sweep-eligible episodic pages. `stale` and `wrong` floor the salience and surface the page as a `feedback_flagged` lint finding. It never deletes anything. The path resolves to the current version inside the transaction, so a later rewrite clears the flag. Retrieved content never authorizes feedback by itself. |
-| `memory_write_page` | destructive | Writes durable wiki knowledge when the user explicitly asks to remember or annotate something. `scope: "global"` writes into the reserved `_global` preferences scope. Optional `expires_at` sets an RFC 3339 or date-only TTL. |
-| `memory_delete_page` | destructive | Deletes one page by exact path. Runs the admission chain with the delete operation. Idempotent. |
+| `memory_write_page` | destructive | Writes durable wiki knowledge when the user explicitly asks to remember or annotate something. `scope: "global"` writes into the reserved `_global` preferences scope; `scope: "profile"` writes into the cross-project profile scope. Optional `expires_at` sets an RFC 3339 or date-only TTL. Supports `expected_page_id` and `create_only`. |
+| `memory_patch_page` | destructive | Applies a bounded batch (up to 32 edits) of heading-anchored edits (`append`, `add_section`, `replace_section`) to an existing Markdown page without re-emitting its full body or frontmatter. Requires `expected_page_id` from `memory_read_page` and `section_sha256` for `replace_section`. |
+| `memory_delete_page` | destructive | Deletes one page by exact path. Runs the admission chain with the delete operation. Supports `expected_page_id`; idempotent when omitted. |
+| `memory_restore_page` | destructive | Admin-only: lists git checkpoints for a page (`rev` omitted) or restores a historical revision (`rev` provided) as the new latest page version. |
+| `memory_consolidate` | destructive | Consolidates a session into one or multiple wiki pages using an LLM provider (`dry_run=true` previews the plan). |
+| `memory_auto_improve` | destructive | Runs the self-improvement pipeline over a completed session to propose or apply wiki updates. |
 | `memory_forget_sweep` | destructive | Retention pass. Evicts cold pages through the wiki layer, purges aged tombstone ancestry, and hard-deletes TTL-expired pages. `dry_run=true` previews. |
 | `memory_lint` | destructive | Rule-based findings, written under `_lint/`. |
 | `memory_install_self_routing` | read-only | Returns the canonical slim routing snippet, the managed Agent Skill payloads, and target hints for `CLAUDE.md` and `AGENTS.md` installs. |
@@ -512,13 +609,14 @@ Wiki                    search  read-page  write-page  delete-page  commit  chec
 Maintenance             forget-sweep  lint  curator  compact  reorg  backfill
                         repair-backfill-timestamps  reclaim-ledger-versions
 Data and backup         backup  restore  backup-agents  restore-agents  reset
-                        purge-session  purge-project  rename-project  move-project  move-session
+                        purge-session  purge-project  rename-project  move-project  merge-project
+                        move-session  rename-workspace  merge-workspace  delete-workspace
                         audit-contamination  list-projects
 Access and identity     auth  user  api-key  project  profile  server
 ```
 
-The `hook-drain` and `mcp-bridge` commands are internal and hidden from the
-help output. They are called by the hook and integration machinery.
+The `hook-drain`, `mcp-bridge`, `render-plugins`, `upgrade-refresh-hooks`, and `service-host` commands are internal and hidden from the
+help output. They are called by the hook, packaging, and integration machinery.
 
 A few commands carry specific behavior worth knowing:
 
@@ -576,7 +674,7 @@ shipped defaults.
 bind = "127.0.0.1:49374"
 log_level = "info"                 # the default filter also pins the MCP protocol logs to warn
                                    # and moves the 30 s reconcile summary to debug.
-                                   # Override with log_level or RUST_LOG.
+                                   # Override with log_level or AI_MEMORY_LOG_LEVEL.
 tcp_keepalive_secs = 60            # idle time before TCP keepalive probes an accepted serve
                                    # connection. Reaps sockets left half-open by a dead peer.
                                    # 0 disables keepalive. Env: AI_MEMORY_TCP_KEEPALIVE_SECS
@@ -617,7 +715,7 @@ compact_cold_episodic = false      # opt-in: compact a cold episodic page in pla
 per_user = false                   # opt-in: a bounded per-user namespace for slot writes on shared servers
 
 [retrieval]                        # opt-in ranking signals, all off by default
-query_intent = false               # (default a confirmar) lexical session-recall routing for queries phrased as
+query_intent = false               # lexical session-recall routing (default false) for queries phrased as
                                    # "last time" and similar. Hands session pages a reduced
                                    # default kind and tier penalty.
 session_recall_bonus = 0.25        # extra authority on top of the cancelled penalty

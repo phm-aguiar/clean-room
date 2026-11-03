@@ -8,7 +8,7 @@
 >
 > **Fidelidade ao original:** em toda dúvida, a reimplementação se comporta o mais parecido possível com o
 > ai-memory original, **inclusive nos defeitos conhecidos**. Os docs foram auditados contra o código original
-> (relatórios em `reports/`). Onde um doc ainda marcar algo como "a confirmar", a resposta vem do comportamento do
+> e as regras consolidadas na documentação (`docs/`) e nas especificações (`specs/`). Onde um doc ainda marcar algo como "a confirmar", a resposta vem do comportamento do
 > original, não de uma decisão nossa. Nomenclatura, pacotes e idioma do código seguem Go 1.26 idiomático.
 >
 > Origem: invariantes de `docs/overview.md` §4 (numeração `INV-nn` do projeto de origem), regras de fronteira e

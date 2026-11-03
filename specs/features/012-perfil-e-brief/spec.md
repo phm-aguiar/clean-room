@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 012
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (`/handoff`, MCP, marcador), 004 (manutenção e agendadores), 007 (topologia de operadores, projetos restritos)
@@ -60,7 +60,7 @@ Pontos em que a versão anterior desta spec, ou os docs dos quais ela dependia, 
 - **MCP:** `applies_to`/`enforced_by` só são aceitos em entradas de perfil; `scope: "profile"` não combina com workspace/projeto; mensagens de recusa no doc.
 
 ## Correções da auditoria — segunda passada (2026-10-24)
-Fechamento da auditoria da 012 (o relatório dessa rodada não está mais em `reports/`). A spec passa a exigir também:
+Fechamento da auditoria da 012 (auditoria consolidada diretamente nesta spec e nos docs). A spec passa a exigir também:
 - **Texto escrito pelo usuário:** bloco de marcação = texto entre `<` e o PRIMEIRO `>` com 1–64 caracteres `[A-Za-z0-9_/-]`; remoções em sequência (bloco de roteamento, depois histórico não confiável); vetores de referência em `docs/design-cross-project-profile.md` §5.1.
 - **Casos-limite do detector** (§5.1), classes Unicode (Apêndice A.11) e **vetores dourados** (Apêndice D) como testes unitários obrigatórios.
 - **Matriz adversarial** do §9.1 (B1–B20) e as **lacunas G1–G8** do original, que a implementação Go deve cobrir.

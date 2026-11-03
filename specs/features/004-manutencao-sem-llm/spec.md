@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 004
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 003 (purga, tombstones e compactação do banco), 002 (servidor, MCP, `/admin/*`)
@@ -103,7 +103,7 @@ Passadas como funções puras sobre dados carregados (classificação, retençã
 
 ## Correções da auditoria
 
-Auditoria 011 (2026-10-25), validação linha a linha contra o original. Relatório: `reports/011-auditoria-003-004-005.md`.
+Auditoria 011 (2026-10-25), validação linha a linha contra o original. Auditoria consolidada nas regras e tabelas desta spec e dos docs.
 
 - Fórmula de retenção, feedback de saliência, limiar de `stale` (0,6/λ, com retorno a 30 dias), regras de lint (lista completa: `stale`, `rule_suggestion`, `pinned_expiring`, `duplicate`, `broken_link`, `contradiction` declarada, `feedback_flagged`, `contradiction` por faixa de similaridade, mais as do LLM, nessa ordem), curador (4 sinais, 25 por tipo, 7/30 dias) e compactação A2 (L1 de 500 bytes, 48 keep-tokens de 2 a 128 bytes, rodapé literal): **conferidos e fiéis**.
 - **Resolvidos três "a confirmar"** em `docs/design-memory-aging.md`: (1) a pontuação de retenção só é calculada pela varredura (e pelas passadas que reaproveitam o conjunto frio) e pelo curador, e **não** entra no ranking da busca; (2) a lista de ferramentas que reforçam acesso está completa: `memory_query`, `memory_recent`, `memory_read_page` e `memory_explore`, só via MCP; (3) `memory_query` também reforça os acertos vindos do escopo global reservado e do escopo de perfil.

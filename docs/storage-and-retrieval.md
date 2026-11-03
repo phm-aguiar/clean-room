@@ -295,6 +295,63 @@ já encerrada; fim inválido de escopo; fim sem sessão.
   baixo, para que o reencerramento continue correto.
 - **Fila de consolidação:** ver seção 15.
 
+### 6.3 Uso de tokens de sessão e rastreamento granular de chamadas (`session_usage`, `token_calls`, `token_call_tools`)
+
+O armazenamento rastreia o consumo de tokens em dois níveis complementares (migrações V91, V92 e V94):
+
+1. **Chamadas granulares ao vivo (`token_calls` e `token_call_tools`):**
+   - Qualquer evento de hook (`POST /hook`) pode incluir o array opcional `_ai_memory_usage_calls` com até **256** chamadas de modelo por requisição.
+   - Identificadores (`call_id`, `turn_id`, `response_id`, `tool_id`) devem ter 1..128 bytes ASCII (`[A-Za-z0-9_.:-]`) e passar inalterados pelo sanitizador; `model` e `tool_name` passam pelo sanitizador e são truncados em **64** caracteres.
+   - Cada chamada aceita até **16** ferramentas associadas (`relation` em `'requested'`, `'input'` ou `'turn'`, mais `is_error` anulável `0`/`1`).
+   - Contadores de tokens por chamada (`input_tokens`, `output_tokens`, `cache_write_tokens`, `cache_read_tokens`) são limitados individualmente a `1 000 000 000`.
+   - O upsert em `token_calls` sobre `(session_id, call_id)` é **idempotente e monotônico** (`MAX` para contadores de tokens e `COALESCE` para `model`, `turn_id`, `native_response_id` e `response_at`). Em `token_call_tools`, `is_error = 1` prevalece de forma monotônica.
+   - Na mesma transação, os totais agregados de `session_usage` são recalculados por `SUM(...)` sobre todas as linhas de `token_calls` da sessão.
+2. **Reporte de encerramento (`_ai_memory_usage`):**
+   - No `SessionEnd` (ou em um `Stop` marcado como `turn_checkpoint` para OpenCode/Antigravity), o hook também pode enviar um objeto agregado `_ai_memory_usage`, que faz upsert direto em `session_usage` (independente de a sessão ter gerado página de resumo ou ser apenas de fronteira).
+
+```text
+PROCEDIMENTO RegistrarChamadasDeTokenAoVivo(conexao, idSessao, listaChamadas)
+  INICIAR TRANSAÇÃO EM conexao
+  agora <- AgoraMicrossegundos()
+
+  PARA CADA chamada EM Primeiros(listaChamadas, 256) FAÇA
+    INSERIR EM token_calls (
+      session_id, call_id, model, input_tokens, output_tokens,
+      cache_write_tokens, cache_read_tokens, observed_at,
+      turn_id, native_response_id, response_at
+    ) VALORES (
+      idSessao, chamada.call_id, chamada.model,
+      Minimo(chamada.input_tokens, 1000000000),
+      Minimo(chamada.output_tokens, 1000000000),
+      Minimo(chamada.cache_write_tokens, 1000000000),
+      Minimo(chamada.cache_read_tokens, 1000000000),
+      agora, chamada.turn_id, chamada.response_id, chamada.response_at
+    )
+    EM CONFLITO (session_id, call_id) ATUALIZAR
+      model = COALESCE(excluded.model, model),
+      input_tokens = MAX(input_tokens, excluded.input_tokens),
+      output_tokens = MAX(output_tokens, excluded.output_tokens),
+      cache_write_tokens = MAX(cache_write_tokens, excluded.cache_write_tokens),
+      cache_read_tokens = MAX(cache_read_tokens, excluded.cache_read_tokens),
+      turn_id = COALESCE(turn_id, excluded.turn_id),
+      native_response_id = COALESCE(native_response_id, excluded.native_response_id),
+      response_at = COALESCE(response_at, excluded.response_at)
+
+    PARA CADA ferramenta EM Primeiros(chamada.tools, 16) FAÇA
+      INSERIR EM token_call_tools (session_id, call_id, tool_id, tool_name, relation, is_error)
+      VALORES (idSessao, chamada.call_id, ferramenta.id, ferramenta.name, ferramenta.relation, ferramenta.is_error)
+      EM CONFLITO (session_id, call_id, tool_id, relation) ATUALIZAR
+        tool_name = excluded.tool_name,
+        is_error = CASO QUANDO is_error = 1 OU excluded.is_error = 1 ENTÃO 1 SENÃO COALESCE(excluded.is_error, is_error) FIM
+    FIM PARA
+  FIM PARA
+
+  totais <- ConsultarSomaTokensDaSessao(conexao, idSessao)
+  UpsertSessionUsage(conexao, idSessao, totais, PrimeiroModeloNaoNulo(listaChamadas), agora)
+  COMMIT TRANSAÇÃO
+FIM PROCEDIMENTO
+```
+
 ---
 
 ## 7. Handoffs (batões de continuidade)
@@ -374,13 +431,14 @@ manuais não são afetados. A leitura manual não tem essa restrição.
 ## 9. Mensagens entre projetos
 
 - **Inserção:** recusada com erro de caixa cheia se o destinatário já tem **256** mensagens pendentes.
-  Campos de texto são truncados em **16 KiB**.
+  Campos de texto são truncados em **16 KiB**. Aceita destinatário opcional de agente (`to_agent`), natureza epistêmica (`nature`: `unknown`, `measured`, `reported`, `inferred`) e evidências (`evidence`).
 - **Retirada:** transição `pending → claimed` por compare-and-set. Exatamente um retirante ganha a
-  mensagem. Quem perde não recebe nada.
+  mensagem. Quem perde não recebe nada. Na entrega automática de `SessionStart`, mensagens direcionadas ao agente da sessão (`to_agent = session.agent_kind`) têm prioridade sobre mensagens abertas (`to_agent IS NULL`).
+- **Edição pela interface web:** uma mensagem `pending` pode ser retida temporariamente em `editing` (`POST /messages/{id}/edit`), editada e devolvida à fila (`POST /messages/{id}/save`, gravando `edited_at`) ou liberada sem alteração (`POST /messages/{id}/release`). Enquanto está em `editing`, nenhum agente a consome.
 - **Cancelamento:** o remetente pode cancelar as próprias mensagens enquanto estão pendentes.
 - **Remoção em cascata:** as duas pontas (remetente e destinatário) apontam para workspace e projeto com
   remoção em cascata. Purgar qualquer um dos lados remove as mensagens correspondentes.
-- Estados possíveis: `pending`, `claimed`, `cancelled`.
+- Estados possíveis: `pending`, `claimed`, `cancelled`, `editing`.
 
 ---
 
@@ -463,6 +521,48 @@ esses tokens brutos.
    de coluna, e frases e operadores da consulta original **não** são preservados.
 7. Consulta vazia (só espaços), ou sem nenhum termo depois do tratamento, devolve texto vazio. O
    chamador deve pular a consulta nesse caso.
+
+#### 11.2.1 Indexação e consulta FTS5 auxiliar para CJK (`pages_cjk_fts` e `observations_cjk_fts`)
+
+Como o tokenizador `unicode61` não segmenta sequências contínuas de ideogramas Han, Kana ou Hangul sem espaços, o armazenamento mantém duas tabelas virtuais FTS5 auxiliares (migração V87): `pages_cjk_fts(title, body, path_search)` e `observations_cjk_fts(title, body)`.
+
+1. **Extração de termos na escrita e no backfill de abertura (`cjk_index_terms`):**
+   - Percorre cada sequência contínua (run maximal) de caracteres CJK (Han, Hiragana, Katakana, Hangul e extensões CJK).
+   - Cada sequência contribui todos os seus **unigramas** (valores escalares individuais) seguidos de todos os seus **bigramas sobrepostos** (`janela de 2 caracteres`), separados por espaço. Textos latinos e pontuação ficam de fora do índice auxiliar.
+   - Em `DELETE` ou `UPDATE` nas tabelas base (`pages` e `observations`), triggers SQL removem a linha antiga de `*_cjk_fts` pelo `rowid`, e a camada de escrita reinsere os termos CJK atualizados na mesma transação. Na abertura do banco, um backfill idempotente em lotes preenche linhas ausentes com `PRAGMA wal_checkpoint(TRUNCATE)` entre lotes.
+2. **Construção da expressão de busca CJK (`prepare_cjk_fts5_query`):**
+   - Se a consulta contiver os operadores explícitos `AND`, `NOT` ou `NEAR`, retorna `Nulo` (declina o fluxo auxiliar para não inverter exclusões quando unido ao fluxo principal).
+   - Para cada token separado por espaço, preserva qualificadores de coluna conhecidos (`title:` ou `body:`, mesmo após parênteses de abertura `(`) e extrai as sequências CJK:
+     - Uma sequência CJK de 2 ou mais caracteres vira uma frase exata dos seus bigramas sobrepostos (ex.: `"東 京" "京 都"` → `"東京 京都"`, qualificada com `title:`/`body:` se presente).
+     - Uma sequência CJK de 1 único caractere usa o unigrama como fallback (`"東"`).
+   - As expressões geradas são unidas por ` OR `. Quando o resultado não é vazio, a leitura executa a consulta em `pages_cjk_fts` (ou `observations_cjk_fts`) e une seus candidatos aos do índice principal (`pages_fts` / `observations_fts`), preservando o melhor rank BM25 por linha.
+
+```text
+FUNÇÃO ExtrairTermosIndexacaoCjk(texto)
+  termos <- ListaVazia()
+  sequencia <- ListaVazia()
+  PARA CADA caractere EM Caracteres(texto) FAÇA
+    SE EhCaractereCjk(caractere) ENTÃO
+      Adicionar(sequencia, caractere)
+    SENÃO
+      DespejarSequenciaCjk(termos, sequencia)
+    FIM SE
+  FIM PARA
+  DespejarSequenciaCjk(termos, sequencia)
+  RETORNE Juntar(termos, " ")
+FIM FUNÇÃO
+
+PROCEDIMENTO DespejarSequenciaCjk(termos, sequencia)
+  SE sequencia ESTÁ VAZIA RETORNE
+  PARA CADA c EM sequencia FAÇA
+    Adicionar(termos, String(c)) // unigrama
+  FIM PARA
+  PARA i DE 0 ATÉ Tamanho(sequencia) - 2 FAÇA
+    Adicionar(termos, String(sequencia[i]) + String(sequencia[i + 1])) // bigrama sobreposto
+  FIM PARA
+  Limpar(sequencia)
+FIM PROCEDIMENTO
+```
 
 ### 11.3 Busca híbrida
 
@@ -552,6 +652,70 @@ divide por `fator`. Em ambos os casos, **fator maior sempre significa melhor pos
 
 **Passo 7: ordenação e corte.** Ordena por rank e, em empate, por caminho (comparação de bytes). Trunca
 em `limit`. Se `include_superseded` é verdadeiro, marca quais resultados são versões superseded.
+
+#### 11.3.0 Algoritmo em Pseudocódigo da Busca Híbrida
+
+```text
+ALGORITMO BuscarMemoriaHibrida(termoConsulta, escopo, limite, parametrosDecaimento):
+    // Janela padrão de candidatos por fluxo: max(4 * limite, 20)
+    janela = Maximo(4 * limite, 20)
+
+    // 1. Fluxo FTS5 (BM25)
+    candidatosFTS = ExecutarFTS5(termoConsulta, escopo, janela)
+    
+    // 2. Fluxo de Entidades (tokenização pontuada e corte de stopwords)
+    tokensEntidade = TokenizarEntidades(termoConsulta)
+    candidatosEntidades = BuscarPorEntidades(tokensEntidade, escopo, janela)
+
+    // 3. Fluxo Vetorial (somente se houver embedder ativo)
+    candidatosVetoriais = []
+    SE EmbedderAtivo() ENTÃO:
+        vetorConsulta = GerarEmbedding(termoConsulta)
+        candidatosVetoriais = BuscarPorSimilaridadeCosseno(vetorConsulta, escopo, janela)
+    FIM SE
+
+    // 4. Fluxo de Grafo (expansão dos vizinhos das sementes)
+    sementes = ObterPrimeirosResultados([candidatosFTS, candidatosVetoriais, candidatosEntidades], maxSementes=10)
+    candidatosGrafo = ExpandirVizinhosGrafo(sementes, escopo, janela)
+
+    // 5. Fusão RRF (Reciprocal Rank Fusion) com K = 60
+    pontuacoes = NovoMapa()
+    PARA CADA (pagina, posicao) EM candidatosFTS FAÇA:
+        pontuacoes[pagina.id] += 1.0 / (60.0 + posicao)
+    FIM PARA
+    PARA CADA (pagina, posicao) EM candidatosEntidades FAÇA:
+        pontuacoes[pagina.id] += 1.0 / (60.0 + posicao)
+    FIM PARA
+    PARA CADA (pagina, posicao) EM candidatosVetoriais FAÇA:
+        pontuacoes[pagina.id] += 1.0 / (60.0 + posicao)
+    FIM PARA
+    PARA CADA (pagina, posicao) EM candidatosGrafo FAÇA:
+        pontuacoes[pagina.id] += 1.0 / (60.0 + posicao)
+    FIM PARA
+
+    // 6. Aplicação de Sinais de Autoridade e Decaimento Temporal
+    instanteAtual = ObterInstanteMicrossegundos()
+    resultadosFinais = []
+    PARA CADA id EM pontuacoes.Chaves() FAÇA:
+        pagina = ObterMetadadosPagina(id)
+        fatorAutoridade = CalcularFatorAutoridade(pagina) // limitado entre [0.55, 1.50]
+        
+        // Decaimento exponencial baseado no último acesso/atualização
+        deltaSegundos = (instanteAtual - pagina.updated_at) / 1000000.0
+        fatorDecaimento = Exponencial(-parametrosDecaimento.lambda * (deltaSegundos / 3600.0))
+        
+        // Conversão de convenção FTS5: rank = -score * autoridade * decaimento
+        rankFinal = -(pontuacoes[id] * fatorAutoridade * fatorDecaimento)
+        descritor = GerarDescritorSeSemTrecho(pagina)
+
+        resultadosFinais.Adicionar({ id: id, rank: rankFinal, path: pagina.path, descritor: descritor })
+    FIM PARA
+
+    // 7. Ordenação decrescente de relevância (rank menor é melhor) e corte
+    Ordenar(resultadosFinais, por=["rank ASC", "path ASC"])
+    RETORNAR Truncar(resultadosFinais, limite)
+FIM ALGORITMO
+```
 
 **Vários escopos numa consulta:** cada escopo é buscado separadamente com o mesmo limite. Com um escopo
 só, o resultado é o dele, sem mudança. Com vários, os resultados são unidos; uma página que aparece em

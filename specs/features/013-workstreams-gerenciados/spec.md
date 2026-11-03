@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 013
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 010 (adaptadores de transcrição, instalação nos agentes), 002 (`/handoff` e reivindicação), 007 (dono e acesso por projeto)
@@ -25,7 +25,7 @@ Quem troca de harness no meio de um trabalho quer que a retomada nativa do harne
 - **Lease e heartbeat:** 90 s, heartbeat a cada 30 s com tempo de 10 s, espera por lease alheio, `--force-unlock` só para o mesmo operador, cancelamento e códigos de saída.
 - **Recuperação** (`docs/downtime-recovery.md`): diário local, `ai-memory recover`, rota `recover/finish`.
 - **Registro local do cliente** (`client-projects.json`) e `continue`/`resume` (`--all`, `--search`, `--limit`).
-- **Rotas `/workstream/*`** (12, incluindo `recover/finish`) e limites (`docs/lifecycle-event-ingestion.md` §12, `docs/api-reference.md` §6); acesso por projeto e regra de dono nas mutações de run (`docs/design-per-project-authz.md`).
+- **Rotas `/workstream/*`** (13, incluindo `recover/finish` e `POST /workstream/project-candidates`) e limites (`docs/lifecycle-event-ingestion.md` §12, `docs/api-reference.md` §6); `managed_runs.scope_by_id` (V96); acesso por projeto e regra de dono nas mutações de run (`docs/design-per-project-authz.md`).
 - **Auto-wire** (`run_autowire`, uma vez por harness, versão e local; sem MCP no degradado).
 - **Yolo e ai-jail** (`docs/design-yolo-safety-ai-jail.md`): aviso do `--yolo`, `--true-yolo` do Claude. **No MVP Windows o jail é inexistente**: `--jail` falha com a mensagem do doc, `--no-jail` é aceito, nunca há oferta nem reexecução; detecção, oferta, checklist e seleção do que o jail expõe ficam para as plataformas Unix.
 - **Contribuições de harness gerenciado** (`docs/managed-harness-contributions.md`): contrato para registrar um harness novo, script de aceitação.
@@ -71,7 +71,7 @@ Quem troca de harness no meio de um trabalho quer que a retomada nativa do harne
 - **Lease/purga (003):** o 409 da purga não tem campo `active_workstreams` (só `error` com a lista); critério de lease vivo confirmado (`active` e `lease_expires_at > agora`); `docs/lifecycle-ops.md` e a spec 003 corrigidos.
 - **Concorrência:** `docs/managed-workstreams.md` § Concorrência: escritor serial; a rota `finish` **não** é atômica (lê estado, grava segmento, depois transação), então um `cancel` no meio dá `400 invalid state: managed run <id> is expired` e deixa segmento órfão; demais corridas tabeladas.
 
-### Correções da auditoria dos adaptadores e planos de lançamento (2026-10-24; o relatório dessa rodada não está mais em `reports/`)
+### Correções da auditoria dos adaptadores e planos de lançamento (2026-10-24; consolidadas nesta spec e nos docs)
 - **OpenCode:** `run opencode` sonda `--version` (2 s, major 1 ou 2; `opencode2` força V2); documentado em `docs/harness-adapters.md` § "Dialeto do OpenCode".
 - **Eco do pacote no Claude Code** só é filtrado em resultados de ferramenta (não em mensagens); datas dos adaptadores SQLite ausentes; Kimi/Kiro v2/Antigravity convertem ms; demais repassam o texto de `timestamp` sem validar.
 - **Antigravity** não exporta transcript no `run` (só backfill/listagem); janela de abertura é de 5 s para mais ou menos.

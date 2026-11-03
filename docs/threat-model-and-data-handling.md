@@ -219,13 +219,12 @@ caracteres) **não** são redigidas. O operador que precisa disso deve adicionar
 - Consulta por entidade: até **12 termos**, com no mínimo **3 caracteres** cada. A correspondência é
   lexical e **não faz chamada externa**.
 - Nome de entidade continua sendo dado não confiável quando aparece em explicações.
-- Limite de tamanho de consulta livre e de parâmetros SQL: a confirmar.
+- Limite de tamanho de consulta livre e de parâmetros SQL: consultas de busca e FTS5 são tokenizadas com descarte de operadores e limitadas pelos tetos das rotas (2 MiB JSON em `/api/v1/search`, 10 MiB em `/mcp`, 200 caracteres em `/api/v1/docs?q=`), e todas as consultas SQL usam parâmetros vinculados (*bound parameters*).
 
 ### 2.11 Injeção de prompt por conteúdo armazenado
 
 - Prompts de consolidação, lint e bootstrap marcam observações e páginas como **dado não confiável, não
-  instrução**. Handoffs, pacotes de workstream e roteamento MCP seguem a mesma convenção. A cobertura
-  completa de cada superfície é a confirmar.
+  instrução**. Handoffs, pacotes de workstream, mensagens entre projetos e briefings injetados seguem a mesma convenção com o aviso `UNTRUSTED_MEMORY_NOTICE`.
 - Sanitização e esquemas de saída estruturada são **defesa em profundidade, não prova**. Afirmações
   sensíveis devem ser verificadas contra as instruções atuais e contra o checkout.
 
@@ -320,9 +319,7 @@ Todos são **desligados por padrão** e exigem configuração explícita.
 
 Notas:
 
-1. **Embeddings de provedor** são a via mais ampla. Trocar de `local` para a nuvem **reenvia o corpus
-   existente**: há a rota de backfill manual (`POST /admin/embed`, ou o comando `embed --force`) e o backfill
-   na inicialização descrito no modelo de configuração. A confirmar o gatilho exato após a troca. Para
+1. **Embeddings de provedor** são a via mais ampla. Trocar de `local` para a nuvem **não reenvia silenciosamente os vetores de outra tripla**, mas o backfill periódico de páginas sem vetor na tripla ativa e o comando explícito `ai-memory embed --force` (`POST /admin/embed`) enviam o corpus ao provedor configurado. Para
    conteúdo que não pode sair, mantenha `local` ou use um endpoint interno compatível com OpenAI.
 2. **Captura e rerank** passam pelo sanitizador, que é melhor esforço.
 3. **Webhooks de admissão** são serviços externos ao ai-memory. Quem opera o webhook é responsável pelo
@@ -372,8 +369,7 @@ Os dados persistem até serem removidos, exceto por dois mecanismos **ligados po
 - **Páginas com TTL.** Uma página com `expires_at` fica **oculta na leitura** ao expirar e é apagada (arquivo e
   linhas) na varredura seguinte. **TTL vence `pinned`**.
 - **Exclusão** é em nível de sistema de arquivos: remover o diretório de dados remove tudo.
-- **Exclusão com escopo**: purga por projeto e por sessão, além da remoção de workspace (com confirmação e
-  força). A confirmar a rota exata do workspace. Essas operações são isoladas: não tocam outros projetos.
+- **Exclusão com escopo**: purga por projeto (`POST /admin/purge-project`) e por sessão (`POST /admin/purge-session`), com `confirm: true`. Essas operações são isoladas: não tocam outros projetos.
   Ver [database-schema.md](database-schema.md) e [api-reference.md](api-reference.md).
 
 ### 5.6 Exposição de rede

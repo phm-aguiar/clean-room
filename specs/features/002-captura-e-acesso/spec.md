@@ -2,11 +2,11 @@
 
 ## Metadados
 - **ID:** 002
-- **Status:** spec auditada contra o original (relatório `reports/010-auditoria-002.md`); sem plano nem tasks; não há código de reimplementação no workspace
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; não há código de reimplementação no workspace
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-12 (revisada em 2026-10-25)
 - **Feature Anterior:** 001 (Núcleo), que fornece domínio, armazenamento e wiki.
-- **Discovery Report:** — (o relatório de discovery não está mais em `reports/`)
+- **Discovery Report:** — (conteúdo incorporado diretamente nas regras da spec e dos docs)
 - **Aprovado:** true
 
 ## Propósito
@@ -25,14 +25,14 @@ inclusive nos defeitos conhecidos descritos em `docs/`.
 ## Escopo
 
 ### Dentro do escopo
-- **Ingestão**: `POST /hook` e `/hook/batch` (202 ao enfileirar, 429 na saturação, ≤ 1024 em voo, ≤ 256 itens por lote, 413 acima disso), `GET /handoff` (contexto de início de sessão), chave de ingestão idempotente na mesma transação da observação, sanitização na admissão.
+- **Ingestão**: `POST /hook` e `/hook/batch` (202 ao enfileirar, 429 na saturação, ≤ 1024 em voo, ≤ 256 itens por lote, 413 acima disso), `GET /handoff` (contexto de início de sessão), chave de ingestão idempotente na mesma transação da observação, sanitização na admissão, e ingestão idempotente de uso de tokens ao vivo (`_ai_memory_usage_calls`, até 256 chamadas e 16 ferramentas por chamada em `token_calls`, `token_call_tools` e `session_usage`) e no encerramento (`_ai_memory_usage`).
 - **Ledger de eventos**: cada evento processado acrescenta uma linha ao arquivo mensal `log-AAAA-MM.md` do projeto (`docs/lifecycle-event-ingestion.md` §13).
 - **CLI de hook**: `ai-memory hook --event ...` com spool local (`{created_ms:013}-{pid}-{seq:016x}-{recovery_key}.json`), trava de arquivo do sistema operacional (`LockFileEx` no Windows / `flock` no Unix sobre `<data_dir>/hook-spool/.drain.lock`), drenagem desacoplada (`hook-drain`, oculto) e política de captura por marker (`.ai-memory.toml`); nunca bloqueia o agente. Em estouro de capacidade (10 000 arquivos, verificado sob `<data_dir>/hook-spool..capacity.lock`, com os dois pontos que o original produz; a espera de 50 ms pela trava nunca descarta o evento), preserva o backlog existente e descarta o **novo evento recebido** com aviso no stderr.
 - **Sessão**: SessionEnd gera `sessions/<id>.md` por regras (tier episodic), e encerra a sessão e grava o handoff automático numa só transação. Sessão efêmera (sem prompt, pré-ferramenta nem pós-ferramenta) encerra sem página e sem handoff, e **reabre** (`state = 'open'`, limpando `accepted_at`, `accepted_by_session` e `accepted_by_agent`) o handoff mais recente aceito por aquela sessão efêmera para não perder o bastão.
 - **Handoffs**: `begin`, `accept`, `list` e `cancel`, reivindicados exatamente uma vez, páginas compartilhadas e handoffs com dono. O `cancel` marca como expirado o handoff aberto de identificador exato, para que a próxima sessão não o consuma (`docs/mcp-server.md` §3.3).
 - **Instância única e processo vivo (INV-09)**: `ai-memory serve` segura a trava exclusiva do sistema operacional sobre `<data_dir>/.serve.lock` (`LockFileEx` no Windows / `flock` no Unix, com PID informativo em `.serve.lock.holder`) enquanto roda. A guarda de `reset`, `restore`, `reindex` e `uninstall --purge-data` **enumera os processos do sistema** (comparando `ai-memory` e `ai-memory.exe` sem diferenciar maiúsculas no Windows) e recusa se houver outro processo `ai-memory` vivo (`docs/cli.md` §3.1, `docs/overview.md` item 9). Não há arquivo de PID.
 - **Horário de ocorrência (`occurred_at`)**: lido do topo do corpo do evento; vale se for positivo e no máximo 5 minutos à frente do relógio do servidor, senão "agora" (`docs/lifecycle-event-ingestion.md` §3.3). É campo de entrada da observação e vira `created_at`; o esquema não tem a coluna (`docs/domain-vocabulary.md` §5.2, `docs/database-schema.md`). **Sem migração nova.**
-- **Servidor MCP** (stdio e HTTP streamable, autenticação Bearer, protocolo fixado em `2024-11-05` como no original, `docs/mcp-server.md` §1), 12 tools: `memory_query`, `memory_read_page`, `memory_recent`, `memory_write_page`, `memory_status`, `memory_briefing`, `memory_delete_page`, `memory_read_session_observations`, `memory_handoff_begin`, `memory_handoff_accept`, `memory_handoff_list` e `memory_handoff_cancel` (`docs/architecture.md`, `docs/mcp-server.md` §3).
+- **Servidor MCP** (stdio e HTTP streamable, autenticação Bearer, protocolo fixado em `2024-11-05` como no original, `docs/mcp-server.md` §1), 13 tools no núcleo (de um catálogo total de 25 no servidor completo): `memory_query`, `memory_read_page`, `memory_recent`, `memory_write_page`, `memory_patch_page`, `memory_status`, `memory_briefing`, `memory_delete_page`, `memory_read_session_observations`, `memory_handoff_begin`, `memory_handoff_accept`, `memory_handoff_list` e `memory_handoff_cancel` (`docs/architecture.md`, `docs/mcp-server.md` §3).
 - **CLI** (único compositor): `serve`, `hook`, `install-hooks --agent claude-code` (hooks em `~/.claude/settings.json`; no Windows nativo usa formato de execução direta com `command` e array `args`, e `"timeout": 15` em `SessionEnd`), `install-mcp --client claude-code` (servidor em `~/.claude.json`) e `status` (`docs/cli.md` §8, `docs/mcp-install.md`, `docs/windows.md`).
 - Ponteiro de projeto ativo por ator; resolução de escopo conforme `docs/mcp-server.md` §2.1 e `docs/storage-and-retrieval.md`.
 
@@ -89,7 +89,7 @@ inclusive nos defeitos conhecidos descritos em `docs/`.
 
 | # | Antes | Agora | Fonte |
 |---|---|---|---|
-| 1 | 9 tools, com uma `memory_handoff` de ações | 12 tools; o handoff são `memory_handoff_begin`, `_accept`, `_list` e `_cancel` | `docs/architecture.md`, `docs/mcp-server.md` §3 |
+| 1 | 9 tools, com uma `memory_handoff` de ações | 13 tools no núcleo (de 25 no servidor completo, incluindo `memory_patch_page`); o handoff são `memory_handoff_begin`, `_accept`, `_list` e `_cancel` | `docs/architecture.md`, `docs/mcp-server.md` §3 |
 | 2 | `occurred_at` por migração V02 | Campo de entrada que vira `created_at`; sem migração | `docs/domain-vocabulary.md` §5.2, `docs/database-schema.md` |
 | 3 | `ai-memory install` grava hooks em `settings.json` | `install-hooks` (`~/.claude/settings.json`) e `install-mcp` (`~/.claude.json`) | `docs/cli.md` §8, `docs/mcp-install.md` |
 | 4 | `serve` grava `ai-memory.pid` e a guarda lê o arquivo | `.serve.lock` para instância única; a guarda enumera os processos do sistema | `docs/cli.md` §3.1, `docs/overview.md` item 9, `docs/security-boundaries.md` §10 |
@@ -102,7 +102,7 @@ inclusive nos defeitos conhecidos descritos em `docs/`.
 
 ## Critérios de Sucesso
 - [ ] Fluxo ponta a ponta: hook de Claude Code → observação → `sessions/<id>.md` → handoff → `memory_query` encontra o resultado
-- [ ] As 12 tools MCP respondem por stdio e HTTP com autenticação Bearer
+- [ ] As 13 tools MCP do núcleo respondem por stdio e HTTP com autenticação Bearer
 - [ ] Handoff disputado por dois aceites tem um único vencedor (teste multi-sessão com `-race`)
 - [ ] Replay do mesmo evento não gera segunda observação
 - [ ] 429 na saturação e hook sem bloqueio verificados em teste de carga com 1025 requisições em voo
@@ -148,7 +148,7 @@ Windows e Linux; o SDK MCP pode exigir adaptação para reproduzir o pino de pro
 ## Correções da auditoria
 
 Auditoria 002 (2026-10-25), docs conferidos contra o código original. Relatório completo em
-`reports/010-auditoria-002.md`.
+as regras foram consolidadas nos docs e nesta spec.
 
 - `GET /recap` (recapitulação somente leitura da última compactação, disparada pelo prompt
   `reload context`) existia no código e faltava nos docs: documentada em
@@ -158,8 +158,8 @@ Auditoria 002 (2026-10-25), docs conferidos contra o código original. Relatóri
   `ingest drop list` acrescentado.
 - `/hook/batch` processa os itens dentro da requisição (não em segundo plano); valores de
   `outcome` e regras de omissão de `accepted_indices`/`failed_index` documentados.
-- Servidor MCP tem **24** ferramentas (faltava `memory_restore_page`, somente administrador);
-  contagem corrigida em mcp-server.md, api-reference.md e mcp-install.md.
+- Servidor MCP tem **25** ferramentas (incluindo `memory_restore_page`, somente administrador, e `memory_patch_page`, edições ancoradas por cabeçalho);
+  contagem corrigida em mcp-server.md, architecture.md, api-reference.md e mcp-install.md.
 - `memory_message_pop`: atomicidade confirmada (troca condicional `pending → claimed` em
   transação). `memory_message_cancel` sem `message_id` cancela todas as pendentes enviadas.
   `send`/`pop`/`cancel` recusam escopo inferido (mensagem literal registrada).
@@ -188,7 +188,7 @@ Auditoria 002 (2026-10-25), docs conferidos contra o código original. Relatóri
   - Pegada de memória do mapa de projeto ativo: não há limite de tamanho das chaves
     (auto-scope.md). Resolvido: reproduzir o original, sem teto de chaves.
   - Regra de acesso no ingresso confirmada (external-lifecycle.md).
-  - Contagem de 24 ferramentas corrigida em design-decisions.md (com a linha da tabela),
+  - Contagem de 25 ferramentas corrigida em design-decisions.md (com a linha da tabela),
     design-hindsight-borrowings.md e desktop/plan.md.
 - Terceira rodada da auditoria (2026-10-25):
   - auto-scope.md lista agora qual ferramenta MCP cria escopo (`memory_write_page`,

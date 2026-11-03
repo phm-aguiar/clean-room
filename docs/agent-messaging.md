@@ -18,19 +18,51 @@ outbox).
 
 ## The model
 
-- A message is addressed to a **project**, not a person. Any session working in
-  the recipient project can pop it. Knowledge is shared; the pop is the
+- A message is addressed to a **project**, or optionally targeted to a specific **agent** (`to_agent`), not a person. Any session working in
+  the recipient project (and matching `to_agent` if specified) can pop it. Knowledge is shared; the pop is the
   claim-once step, the same rule that handoffs follow.
 - **Claim-once queue.** A message is `pending` until a session in the recipient
   project pops it (it becomes `claimed`, exactly once) or the sender cancels it
-  (it becomes `cancelled`). A second pop of the same message returns nothing.
+  (it becomes `cancelled`). An in-flight draft may also be held in `editing` (holding it out of the queue until released back to `pending`). A second pop of the same message returns nothing.
   Claimed and cancelled messages are kept for audit rather than deleted. They
   are removed only if the sending or receiving workspace or project is purged.
+- **Epistemic provenance.** Messages can declare `nature` (`"unknown"`, `"measured"`, `"reported"`, `"inferred"`) and supporting `evidence` (up to 1,000 characters).
 - **Fail closed on an unknown recipient.** The recipient workspace and project
   must already exist. A send to an unknown target is rejected; nothing is stored
   and no inbox is created.
 - **Bounded.** Each recipient inbox holds at most **256 pending messages**. A
   send to a full inbox is rejected.
+
+### Message Lifecycle State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: memory_message_send (to_workspace, to_project, to_agent?)
+    [*] --> editing: Draft creation / held message
+    
+    editing --> pending: Edit completed (released to queue)
+    editing --> cancelled: memory_message_cancel
+    
+    pending --> editing: Sender holds message for revision (edited_at updated)
+    
+    pending --> claimed: memory_message_pop (Atomic CAS claim)
+    pending --> cancelled: memory_message_cancel (Retraction)
+    
+    claimed --> [*]: Consumed by session
+    cancelled --> [*]: Removed from active queue
+```
+
+### Session Start Notice Ordering and Formatting
+
+When a new session begins, notice blocks are emitted in strict deterministic order separated by single newlines:
+1. **Cross-project profile summary** (first)
+2. **Handoff** (if claimed)
+3. **Pending handoff notice**
+4. **Managed context**
+5. **Session brief**
+6. **Pending cross-project messages notice** (last): `📬 ai-memory: <N> cross-project message(s) waiting...`
+
+Project names in notices are formatted with string-literal escaping. Furthermore, payload sanitization enforces a security split: MCP tools run through the full configured sanitizer (including custom operator patterns), while administrative HTTP routes (used by CLI) sanitize using built-in secret rules only.
 
 ## Using it from an agent (MCP, primary path)
 
@@ -39,9 +71,9 @@ ships with the memory tool.
 
 | Tool | Role | Main parameters | Returns |
 |---|---|---|---|
-| `memory_message_send` | Send a message to the inbox of `to_workspace` + `to_project`. | `to_workspace`, `to_project`, `body` (required); `subject`, `from_workspace`, `from_project` (optional) | `{ "message_id": "<id>" }` |
-| `memory_message_list` | List pending mail. Read-only. | `box` (`"inbox"` default, or `"outbox"`); `limit` (default 50, clamped to 1–200); `workspace`, `project` | `{ "messages": [ ... ] }` |
-| `memory_message_pop` | Claim the next inbox message: the oldest, or the one with `message_id`. | `message_id`, `workspace`, `project` (all optional) | `{ "message", "security_notice" }`, or `{ "message": null }` |
+| `memory_message_send` | Send a message to the inbox of `to_workspace` + `to_project`. | `to_workspace`, `to_project`, `body` (required); `to_agent`, `subject`, `from_workspace`, `from_project`, `nature`, `evidence` (optional) | `{ "message_id": "<id>" }` |
+| `memory_message_list` | List pending mail. Read-only. | `box` (`"inbox"` default, or `"outbox"`); `limit` (default 50, clamped to 1–200); `workspace`, `project`, `to_agent` | `{ "messages": [ ... ] }` |
+| `memory_message_pop` | Claim the next inbox message: the oldest, or the one with `message_id`. | `message_id`, `workspace`, `project`, `to_agent` (all optional) | `{ "message", "security_notice" }`, or `{ "message": null }` |
 | `memory_message_cancel` | Retract one sent message (`message_id`), or every pending message the project has sent (no `message_id`). | `message_id`, `workspace`, `project` (all optional) | `{ "cancelled": N }` |
 
 **In Kimi (project A), sending:**

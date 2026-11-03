@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 010
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (ingestão, spool, cliente de hook, `install-*` do Claude Code); 007 e 009 para credenciais por pessoa e OIDC nos hooks
@@ -21,7 +21,7 @@ A promessa do produto é trocar de agente no meio da tarefa sem reexplicar o con
 - **Eventos por agente** (`docs/support-matrix.md` § captura): eventos instalados, onde o handoff é entregue (início de sessão, `additionalContext`, primeiro prompt no Kimi, primeiro `PostToolUse` no Grok, só a invocação 0 no Antigravity) e o evento de fim.
 - **Normalização por agente** (`docs/lifecycle-event-ingestion.md` §3.3 a §3.5): marca de versão do Cursor, agentes de esquema fechado (nomes e ids de chamada por agente, desfecho do pós-ferramenta), caminho genérico (Gemini, Kimi, Devin), extensões (`extension`, `source_event`).
 - **Captura comum** (`docs/support-matrix.md`): `--capture-mode`, captura da resposta do assistente com opt-in duplo (Claude Code, Codex, OpenCode 2; `capture_assistant` no servidor), descarte de subagente com conjunto de sessões para agentes que não marcam a sessão pai (limite 4096), cópia redundante do Cursor descartada, checkpoint de turno do OpenCode (`docs/lifecycle-event-ingestion.md` §5, §4.5 e §8.4).
-- **Agentes adicionais ao original:** Factory Droid, Muse Code (hooks e MCP), CodeBuddy Code, IBM Bob, Prime Agent (só MCP), DeepSeek Harness (só impressão) e GrizzyBot (externo); regras de fusão que preservam hooks de terceiros e reconhecimento de entrada própria (`docs/install.md` § "How `install-hooks --apply` merges…").
+- **Agentes adicionais:** Factory Droid, Muse Code (hooks e MCP), CodeBuddy Code, IBM Bob, Prime Agent (só MCP), DeepSeek Harness (DSH), Cline CLI, Qwen Code, Qoder e GrizzyBot (externo); totalizando as 31 variantes do domínio (`sessions.agent_kind`); regras de fusão que preservam hooks de terceiros e reconhecimento de entrada própria (`docs/install.md` § "How `install-hooks --apply` merges…").
 - **Lista de descarte do servidor** (`[ingest] drop_tool_use_id_prefixes` / `drop_tool_names`, `docs/lifecycle-event-ingestion.md` §4.6) e **motor de decisão da política de captura** (§4.4a), inclusive reinspeção no servidor.
 - **`finalize-session`** para agentes sem evento de fim (Command Code, Kiro, Antigravity, ZCode, Pool, IBM Bob).
 - **Scripts de hook** POSIX e PowerShell com o mesmo contrato do hook nativo, seleção por `AI_MEMORY_HOOK_PLATFORM`, aviso de que não aplicam a política de captura (`docs/hook-scripts-and-container-deploy.md` §1 a §3, `docs/cli.md` §5.4).

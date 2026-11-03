@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 008
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 007 (ator identificado e capacidade de pular a cadeia), 002 a 004 (operações admitidas)
@@ -89,7 +89,7 @@ Um componente de cadeia no `wiki` (para a escrita de página, que é dele) chama
 
 ## Correções da auditoria
 
-Auditoria "Chinese Wall" de 2026-10-25 contra o original (relatório: `reports/013-auditoria-008-011-restantes.md`). O `docs/admission-webhooks.md` foi confirmado linha a linha e completado; o escopo acima continua válido, com estes acréscimos:
+Auditoria "Chinese Wall" de 2026-10-25 contra o original (auditoria consolidada nas regras e tabelas desta spec e dos docs). O `docs/admission-webhooks.md` foi confirmado linha a linha e completado; o escopo acima continua válido, com estes acréscimos:
 
 - **Sem assinatura, sem autenticação, sem retentativa.** Nenhum cabeçalho HMAC ou de autenticação é enviado; os únicos cabeçalhos do motor são `Content-Type: application/json` e `X-Memory-Op`. Cada gancho inscrito recebe exatamente uma tentativa por operação; envio fire-and-forget descartado não é reenfileirado.
 - **Classificação "indisponível" só no caminho de escrita de página.** Nas operações de notificação e de decisão (exclusão, purga, movimento, pré-voo, handoff, mensagem) a recusa tem os mesmos textos mas não é classificada.

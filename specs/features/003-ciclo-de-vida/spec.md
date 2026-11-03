@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 003
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (servidor, rotas administrativas, `.serve.lock`, guarda de processo vivo, escritas rastreadas no git, ponteiro de projeto ativo)
@@ -26,6 +26,7 @@ Importa agora porque, com a captura automática da 002 ligada, sessões caem em 
   - `rename-project` (`--workspace`, `--from` ou `--project-id <uuid>`, `--to`) e `POST /admin/rename-workspace` (`from`, `to`);
   - `POST /admin/delete-workspace` (`workspace`, `force`, `compact`, `dry_run`; sem `confirm`);
   - `move-project` (`--from-workspace`, `--project` ou `--project-id <uuid>`, `--to-workspace`, `--confirm`, `--force`, `--on-conflict` `block|overwrite|duplicate`), com movimento real (`moved_via: "true-move"`) e fusão por cópia e purga (`moved_via: "copy-purge"`);
+  - `merge-project` (`--workspace`, exatamente um de `--from` ou `--from-project-id <uuid>`, exatamente um de `--into` ou `--into-project-id <uuid>`, `--confirm`; na rota HTTP `POST /admin/merge-project`: `workspace`, `from`/`from_project_id`, `into`/`into_project_id`, `confirm`): une sem perdas dois projetos dentro do **mesmo** workspace (simulação `dry_run: true` por padrão quando `confirm: false`), preservando ambos os históricos de página (aposentando cabeças colidentes na origem e gravando cabeça mesclada no destino), sessões, observações, handoffs, workstreams (desambiguando colisões com `-from-<hex(src)>-<hex(id)>`), entidades de mesmo nome, grants e candidatos de perfil (`docs/lifecycle-ops.md`, `docs/api-reference.md` §3.5);
   - `POST /admin/merge-workspace` (`from`, `to`, `confirm` obrigatório, `force`, `on_conflict`): move cada projeto do workspace de origem (projetos `_profile.*` não são filtrados: o movimento de um deles falha com 422 e a fusão para; ver "Correções da auditoria") e apaga o workspace vazio, respondendo `{from, to, projects_merged[], source_workspace_deleted}` (`docs/api-reference.md` §3.5);
   - `POST /admin/compact` (corpo `{confirm: true}` obrigatório; sem ele 400; a CLI também exige `--confirm` e recusa localmente): compactação isolada do armazenamento, respondendo `{bytes_before, bytes_after, bytes_reclaimed}` (`docs/api-reference.md` §3.4);
   - `move-session` (id posicional ou `--from-project`, `--to`, `--to-workspace`, `--pages` `move|regenerate` (não existe `keep`), `--confirm`, `--force`, `--create`; na rota HTTP: `session_id` (único) **ou** `from_project` + `from_workspace` (lote, todas as sessões que tocam o escopo), destino `workspace`/`project`, `pages`, `confirm`, `force`, `create`), simulação por padrão (o movimento roda numa transação revertida);
@@ -109,7 +110,7 @@ Rotas administrativas no servidor da 002, uma por operação, cada uma seguindo 
 
 ## Correções da auditoria
 
-Auditoria 011 (2026-10-25), validação linha a linha contra o original. Relatório: `reports/011-auditoria-003-004-005.md`.
+Auditoria 011 (2026-10-25), validação linha a linha contra o original. Auditoria consolidada nas regras e tabelas desta spec e dos docs.
 
 - **`POST /admin/compact` exige `confirm: true` no corpo** (antes: "corpo `{}` aceito"). Sem ele: 400 `compact rewrites the whole database under an exclusive lock; pass confirm: true to proceed`. A operação passa pela fila do escritor único do banco, **não** pela trava de mutação da wiki; depois tenta truncar o WAL (falha só gera aviso). Mensagens literais da CLI (`Compacted: …`, `Nothing to reclaim — …`) e formatação de bytes em `docs/lifecycle-ops.md` ("What compaction does").
 - **Conflito `project`/`project_id`** (ambos ou nenhum; UUID inválido) em purga, renomeação e movimento de projeto: **400**, não 422.

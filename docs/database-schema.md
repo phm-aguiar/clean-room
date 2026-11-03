@@ -3,7 +3,7 @@
 > **Escopo:** este documento contém partes que dependem de LLM ou de embeddings. Essas partes são opcionais e não fazem parte do escopo inicial, que funciona sem LLM. Podem ser removidas ou adiadas junto com as funções correspondentes.
 
 > Referência do **esquema de dados** para quem vai reimplementar o armazenamento. Apresenta o
-> resultado consolidado de todas as migrações (versões 1 a 83, aplicadas em ordem, versão 3.1.1 da referência), sem repetir
+> resultado consolidado de todas as migrações (versões 1 a 96, aplicadas em ordem), sem repetir
 > reconstruções de tabela nem reparos de dados. Nomes de tabela e de coluna são contrato.
 > Para a lógica que usa essas tabelas, ver [storage-and-retrieval.md](storage-and-retrieval.md). Os diagramas de
 > entidade e relacionamento (chaves, cardinalidade, regras de exclusão, ligações sem chave estrangeira e ordem de
@@ -197,6 +197,18 @@ CREATE TRIGGER pages_fts_au AFTER UPDATE OF title, body, path_search ON pages BE
   VALUES ('delete',old.rowid,old.title,old.body,old.path_search);
   INSERT INTO pages_fts(rowid,title,body,path_search) VALUES (new.rowid,new.title,new.body,new.path_search);
 END;
+
+-- Índices auxiliares para texto CJK (Han, Kana, Hangul - versão 87)
+CREATE VIRTUAL TABLE pages_cjk_fts USING fts5(
+  title, body, path_search,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER pages_cjk_fts_ad AFTER DELETE ON pages BEGIN
+  DELETE FROM pages_cjk_fts WHERE rowid = old.rowid;
+END;
+CREATE TRIGGER pages_cjk_fts_au AFTER UPDATE OF title, body, path_search ON pages BEGIN
+  DELETE FROM pages_cjk_fts WHERE rowid = old.rowid;
+END;
 ```
 
 Tokenizer: `unicode61`, **sem diacríticos** (`remove_diacritics 2`), com `/`, `_` e `-` como caracteres
@@ -242,7 +254,7 @@ CREATE TABLE sessions (
     'claude-code','codex','open-code','cursor','gemini-cli','claude-desktop','openclaw',
     'antigravity-cli','omp','pi','crush','grok','zero','devin','kimi-code','kiro-cli',
     'command-code','hermes','pool','zcode','grizzybot','copilot-cli','droid','muse',
-    'codebuddy','ibm-bob','other')),
+    'codebuddy','ibm-bob','dsh','cline','qwen-code','qoder','other')),
   cwd TEXT,
   started_at INTEGER NOT NULL,
   ended_at INTEGER,
@@ -303,6 +315,18 @@ CREATE TRIGGER observations_fts_au AFTER UPDATE ON observations BEGIN   -- qualq
   VALUES ('delete',old.rowid,old.title,old.body);
   INSERT INTO observations_fts(rowid,title,body) VALUES (new.rowid,new.title,new.body);
 END;
+
+-- Índice auxiliar para texto CJK em observações (Han, Kana, Hangul - versão 87)
+CREATE VIRTUAL TABLE observations_cjk_fts USING fts5(
+  title, body,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER observations_cjk_fts_ad AFTER DELETE ON observations BEGIN
+  DELETE FROM observations_cjk_fts WHERE rowid = old.rowid;
+END;
+CREATE TRIGGER observations_cjk_fts_au AFTER UPDATE OF title, body ON observations BEGIN
+  DELETE FROM observations_cjk_fts WHERE rowid = old.rowid;
+END;
 ```
 
 ```sql
@@ -349,6 +373,59 @@ CREATE INDEX idx_session_consolidation_jobs_due ON session_consolidation_jobs(st
 - Um job `running` cuja reivindicação expirou (`started_at` antigo) pode ser reivindicado de novo.
 
 ---
+
+
+---
+
+## 2.1 Uso de Tokens e Chamadas de Modelo (versões 91, 92, 94)
+
+```sql
+CREATE TABLE session_usage (
+  session_id BLOB PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  model TEXT,
+  updated_at INTEGER NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE token_calls (
+  session_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  call_id TEXT NOT NULL,
+  model TEXT,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cache_write_tokens INTEGER NOT NULL,
+  cache_read_tokens INTEGER NOT NULL,
+  observed_at INTEGER NOT NULL,
+  turn_id TEXT,
+  native_response_id TEXT,
+  response_at INTEGER,
+  PRIMARY KEY (session_id, call_id)
+) WITHOUT ROWID;
+CREATE INDEX idx_token_calls_session_observed ON token_calls(session_id, observed_at);
+CREATE INDEX idx_token_calls_session_turn ON token_calls(session_id, turn_id) WHERE turn_id IS NOT NULL;
+
+CREATE TABLE token_call_tools (
+  session_id BLOB NOT NULL,
+  call_id TEXT NOT NULL,
+  tool_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  relation TEXT NOT NULL CHECK (relation IN ('requested','input','turn')),
+  is_error INTEGER CHECK (is_error IN (0,1)),
+  PRIMARY KEY(session_id, call_id, tool_id, relation),
+  FOREIGN KEY(session_id, call_id) REFERENCES token_calls(session_id, call_id) ON DELETE CASCADE
+) WITHOUT ROWID;
+
+CREATE TABLE api_credential_pepper_state (   -- vinculação de pepper nativo (versão 84)
+  singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+  verifier TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+```
+
+> **Nota sobre migração V92 (`token_calls`):** além de criar `token_calls`, a migração corrige retrospectivamente a contagem de `input_tokens` de sessões `codex` já registradas: `UPDATE session_usage SET input_tokens = MAX(0, input_tokens - cache_read_tokens) WHERE session_id IN (SELECT id FROM sessions WHERE agent_kind = 'codex');`.
 
 ## 3. Handoffs e mensagens entre projetos
 
@@ -413,14 +490,19 @@ CREATE TABLE agent_messages (               -- caixa de entrada entre projetos
   to_workspace_id BLOB NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   to_project_id   BLOB NOT NULL REFERENCES projects(id)   ON DELETE CASCADE,
   subject TEXT, body TEXT NOT NULL,
-  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','claimed','cancelled')),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','claimed','cancelled','editing')),
   created_at INTEGER NOT NULL,
   claimed_at INTEGER,
   claimed_by_session BLOB REFERENCES sessions(id) ON DELETE SET NULL,
-  claimed_by_agent TEXT, claimed_by_user TEXT
+  claimed_by_agent TEXT, claimed_by_user TEXT,
+  nature TEXT CHECK (nature IS NULL OR nature IN ('unknown','measured','reported','inferred')),
+  evidence TEXT,
+  to_agent TEXT,
+  edited_at INTEGER
 );
 CREATE INDEX idx_agent_messages_inbox  ON agent_messages(to_workspace_id, to_project_id, created_at) WHERE state='pending';
 CREATE INDEX idx_agent_messages_outbox ON agent_messages(from_workspace_id, from_project_id, created_at) WHERE state='pending';
+CREATE INDEX idx_messages_agent_inbox  ON agent_messages(to_workspace_id, to_project_id, state, to_agent, created_at);
 ```
 
 ---
@@ -777,7 +859,8 @@ CREATE TABLE managed_runs (
   ended_at INTEGER, exit_code INTEGER,
   native_session_linked_at INTEGER,
   owner_user TEXT,
-  previous_agent_kind TEXT, previous_native_session_id TEXT);   -- versão 82
+  previous_agent_kind TEXT, previous_native_session_id TEXT,
+  scope_by_id INTEGER NOT NULL DEFAULT 0 CHECK (scope_by_id IN (0, 1)));   -- versões 82 e 96
 CREATE UNIQUE INDEX idx_managed_runs_one_active ON managed_runs(workstream_id) WHERE state = 'active';
 CREATE INDEX idx_managed_runs_lease ON managed_runs(state, lease_expires_at);
 CREATE INDEX idx_managed_runs_adoption ON managed_runs(state, agent_kind, owner_user, context_delivered, native_session_linked_at, lease_expires_at);
@@ -847,21 +930,22 @@ e para entender a origem de cada coluna.
 
 | Tabela(s) | Versões | Quem escreve |
 |---|---|---|
-| `workspaces, projects, pages, pages_fts, sessions, observations, links, audit_log` | 1, 3, 5, 7, 8, 10, 12, 13, 15–18, 35, 36, 37, 40, 62, 65, 69, 70, 74, 76 | escritor único (escrita de página; admissão de evento de hook) |
+| `workspaces, projects, pages, pages_fts, pages_cjk_fts, sessions, observations, observations_cjk_fts, links, audit_log` | 1, 3, 5, 7, 8, 10, 12, 13, 15–18, 35, 36, 37, 40, 62, 65, 69, 70, 74, 76, 86, 87, 89, 90, 93 | escritor único (escrita de página; admissão de evento de hook) |
 | `handoffs` | 2, 39, 41, 48 | hooks (encerramento de sessão), camada de MCP |
 | `page_embeddings, page_abstract_embeddings, page_embed_failures` | 4, 53, 61 | job de backfill e de embeddings |
-| `users, api_credentials, web_sessions, human_auth_state, project_grants` | 14, 54, 55, 68 | comandos de usuário, fluxo de autenticação, administração |
+| `users, api_credentials, api_credential_pepper_state, web_sessions, human_auth_state, project_grants` | 14, 54, 55, 68, 84 | comandos de usuário, fluxo de autenticação, administração |
 | `auto_improve_*` | 21–24, 42, 57, 66 | fluxo de auto-melhoria |
-| `workstreams, workstream_native_sessions, workstream_events, managed_runs` | 31, 67, 71 | comando de workstream gerenciado e rotas de workstream |
-| `ingest_keys, session_consolidation_jobs` | 33, 34, 35 | roteador de hooks, consolidador |
-| `entities, entity_page_links, page_feedback, page_access, page_evidence, agent_messages` | 37, 38, 43, 56, 58, 63, 64 | escritor de entidades, feedback e mensagens |
+| `workstreams, workstream_native_sessions, workstream_events, managed_runs` | 31, 67, 71, 82, 96 | comando de workstream gerenciado e rotas de workstream |
+| `ingest_keys, session_consolidation_jobs` | 33, 34, 35, 77 | roteador de hooks, consolidador |
+| `entities, entity_page_links, page_feedback, page_access, page_evidence, agent_messages` | 37, 38, 43, 56, 58, 63, 64, 85, 88, 95 | escritor de entidades, feedback e mensagens |
 | `purged_sessions, purged_scopes, maintenance_scheduler_state, bootstrap_chunk_progress, client_activity, wiki_migrations` | 6, 29, 46, 52, 59, 60 | manutenção |
 | `profile_candidates, profile_entry_ledger, profile_harvest_marks` | 75 | colhedor de perfil |
+| `session_usage, token_calls, token_call_tools` | 91, 92, 94 | roteador de hooks (eventos ao vivo `_ai_memory_usage_calls` e encerramento `_ai_memory_usage`) |
 
 A reconstrução de `sessions` para ampliar o tipo de agente acontece nas versões 9, 11, 20, 25, 26, 28, 30,
-32, 44, 45, 47, 50, 51, 72, 73, 78, 80, 81 e 83. A reconstrução de `links` está na versão 13 e a de `users`
+32, 44, 45, 47, 50, 51, 72, 73, 78, 80, 81, 83, 86, 87, 89, 90 e 93 (totalizando 31 variantes em `agent_kind`). A reconstrução de `links` está na versão 13 e a de `users`
 nas versões 54 e 79. Também alteram tabelas do mapa acima: 77 (`ingest_keys`, colunas de recuperação), 79
-(`users`, remoção das colunas legadas de token) e 82 (`managed_runs`, sessão nativa anterior).
+(`users`, remoção das colunas legadas de token), 82 e 96 (`managed_runs`, sessão nativa anterior e `scope_by_id`), 85/88/95 (`agent_messages`, `nature`, `evidence`, `to_agent`, estado `editing` e `edited_at`).
 
 **Migrações sem tabela nova (só dados ou índice):**
 

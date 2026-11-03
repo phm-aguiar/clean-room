@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 016
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (configuração, servidor, `/admin/status`, `status`), 015
@@ -80,7 +80,7 @@ Pacote `internal/llm` sem dependência de `storage` nem de `wiki`: interface `Pr
 
 ## Correções da auditoria
 
-Auditoria de 2026-10-20/22 contra o comportamento original (o relatório dessa rodada não está mais em `reports/`). Os docs foram corrigidos; esta spec passa a exigir:
+Auditoria de 2026-10-20/22 contra o comportamento original (auditoria consolidada diretamente nesta spec e nos docs). Os docs foram corrigidos; esta spec passa a exigir:
 
 - **Classes de erro:** além das listadas, `serde` (rótulo literal), `truncated-response` (resposta estruturada com `finish_reason=length`) e `empty-content` (2xx sem conteúdo). Ambas são terminais, livres de conteúdo, e o modo estrito do `openai-compat` não recorre ao tolerante para elas. Textos de erro literais em `llm-client.md` §3.1.
 - **Corpo de erro:** segredos são redigidos e sequências de controle removidas **antes** do corte em 1 KiB; marcador de leitura `<failed to read provider error body: ...>`; excesso vira `provider response exceeded <N> bytes`.

@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 022
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 020 (projeção de observações, sanitização de caminho, retentativa), 021 (filtro de entropia), 016 (provedor), 014 (navegador web), 008 (admissão), 007 (atores e slots por usuário), 004 (curador)

@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 006
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (conformidade OKF na escrita; servidor e rotas administrativas)
@@ -80,7 +80,7 @@ Executor e migração no pacote `wiki`, chamados pelo `serve` na ordem do doc; a
 
 ## Correções da auditoria
 
-Auditoria 012 (Chinese Wall, contra o código original). Relatório: `reports/012-auditoria-006-007-009.md`.
+Auditoria 012 (Chinese Wall, contra o código original). Auditoria consolidada nas regras e tabelas desta spec e dos docs.
 
 - `docs/wiki-migrations.md`: acrescentados o nome registrado e a descrição literal da migração OKF, a inspeção de confinamento prévia (link simbólico ou reparse point, inclusive junção no Windows, é erro), o texto literal da recusa de formato mais novo, as mensagens de log do executor e o `applied_at = 0` com relógio antes da época.
 - `docs/okf.md`: frontmatter que não é mapeamento vira mapeamento vazio antes da conformidade; chaves de origem só contam quando são texto; `generated` mapeamento sem `by` recebe `by` preservando as demais chaves.

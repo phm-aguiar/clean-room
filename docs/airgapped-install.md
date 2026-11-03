@@ -226,7 +226,7 @@ running or remote server.
    the files `ai-memory` / `ai-memory.exe` at the root and everything under
    `hooks/` are extracted; a fixed list of support entries is validated but not
    extracted (`LICENSE`, `README.md`, `docs/install.md`, `docs/macos.md`,
-   `docs/windows.md`, `crates/ai-memory-cli/templates/config.default.toml`,
+   `docs/windows.md`, `	emplates/config.default.toml`,
    `packaging/env/ai-memory.env`,
    `packaging/launchd/com.github.akitaonrails.ai-memory.plist`,
    `packaging/systemd/ai-memory-user.service`,

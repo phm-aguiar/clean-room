@@ -13,7 +13,7 @@ ordenação. Onde uma regra depende de configuração, a configuração é indic
 
 | | O que é possível | O que não é possível |
 |---|---|---|
-| `/api/v1/*` | Navegar por workspaces, projetos e páginas; ler a página completa (markdown, frontmatter, links e backlinks); buscar por texto completo (global, de um projeto ou de vários projetos); obter snapshots agregados ("overview"); listar páginas recentes e atualizações incrementais; listar handoffs; listar as sessões de um projeto e ler as observações brutas de uma sessão; ler o histórico de versões de uma página com diff (4.14); listar arestas entre projetos. | Escrever, apagar, renomear, rodar lint, consolidar, executar varreduras ou alterar handoffs. Esta superfície não possui nenhuma operação de escrita. Escritas passam pelas rotas `/admin/*` (usadas pela CLI) ou pelas ferramentas MCP. |
+| `/api/v1/*` | Navegar por workspaces, projetos e páginas; ler a página completa (markdown, frontmatter, links e backlinks); buscar por texto completo (global, de um projeto ou de vários projetos); obter snapshots agregados ("overview"); listar páginas recentes e atualizações incrementais; listar handoffs; listar as sessões de um projeto e ler as observações brutas de uma sessão; ler o histórico de versões de uma página com diff (4.14); listar arestas entre projetos e o grafo interno de um projeto (4.10); consultar o catálogo interativo de documentação e probes de runtime de features (4.15). | Escrever, apagar, renomear, rodar lint, consolidar, executar varreduras ou alterar handoffs. Esta superfície não possui nenhuma operação de escrita. Escritas passam pelas rotas `/admin/*` (usadas pela CLI) ou pelas ferramentas MCP. |
 | Hospedagem de interface própria (`--web-ui-dir`) | Servir uma SPA em `/web` (ou no slug configurado), com mesma origem da API. Sem essa opção, o navegador HTML embutido continua disponível. | Hospedar a SPA em outra origem sem proxy reverso. Use mesma origem ou configure CORS (seção 9). |
 
 A API `/api/v1` só é montada quando `--enable-web` (variável
@@ -721,15 +721,17 @@ A chave qualificada tem o formato `user:<nome>` ou
 Esta leitura não altera o estado do handoff. Aceitar um handoff é uma operação
 de escrita, fora desta superfície.
 
-### 4.10 Grafo entre projetos
+### 4.10 Grafo entre projetos e grafo interno de projeto
 
 ```http
 GET /api/v1/graph
+GET /api/v1/graph?workspace=default&project=ai-memory
+GET /api/v1/workspaces/{workspace}/projects/{project}/graph
 ```
 
-Retorna as arestas resolvidas de links entre páginas de projetos diferentes.
+`GET /api/v1/graph` retorna as arestas resolvidas de links entre páginas de projetos diferentes.
 Só entram páginas `is_latest = 1`, não expiradas, e arestas cujos dois extremos
-são legíveis pelo chamador. Não há filtro por workspace ou projeto nesta versão.
+são legíveis pelo chamador. Aceita opcionalmente o filtro `?workspace=W&project=P` (valores aparados; quando ambos são fornecidos, retorna apenas arestas entre projetos diferentes em que pelo menos uma das extremidades pertence a `W/P`; se apenas um dos dois for informado, responde `400` com `{"error": "workspace and project must be provided together"}`).
 Cache: `private, max-age=30`.
 
 ```json
@@ -742,6 +744,33 @@ Cache: `private, max-age=30`.
       "to_workspace": "default",
       "to_project": "infra",
       "to_path": "runbooks/wal-mode.md"
+    }
+  ]
+}
+```
+
+`GET /api/v1/workspaces/{workspace}/projects/{project}/graph` retorna o grafo interno de links resolvidos entre páginas atuais (`is_latest = 1`) e não expiradas do mesmo projeto. Cache: `private, max-age=30`.
+
+- `nodes`: até **120** páginas (`PROJECT_LINK_GRAPH_MAX_NODES = 120`), ordenadas por `degree` decrescente, `updated_at` decrescente e `path` crescente. Cada item contém `{"path": string, "title": string, "degree": integer}`, onde `degree` é o número de arestas resolvidas dentro do mesmo projeto conectadas à página (entrada + saída, sem contar auto-loops duas vezes).
+- `edges`: arestas distintas `{"from_path": string, "to_path": string}` dentro do projeto cujos dois extremos estão entre os `nodes` retornados, ordenadas por `from_path` crescente e `to_path` crescente.
+- `truncated`: `true` quando o projeto possui mais de 120 páginas atuais e não expiradas (caso contrário `false`).
+
+```json
+{
+  "workspace": "default",
+  "project": "ai-memory",
+  "truncated": false,
+  "nodes": [
+    {
+      "path": "decisions/0014-storage.md",
+      "title": "Storage layout",
+      "degree": 3
+    }
+  ],
+  "edges": [
+    {
+      "from_path": "decisions/0014-storage.md",
+      "to_path": "concepts/wal-mode.md"
     }
   ]
 }
@@ -937,6 +966,23 @@ vazio com `same`, `too_large` e na diferença só de fim de linha). Cada `hunk`:
 o fim de linha.
 
 Cache: `private, no-store`.
+
+### 4.15 Catálogo de documentação e probes de features
+
+```http
+GET /api/v1/docs/features/status
+GET /api/v1/docs?q=TERMO
+GET /api/v1/docs/{slug}?release=VERSAO
+```
+
+- `GET /api/v1/docs/features/status`: retorna `{"version": "<versão>", "features": [...]}` com a avaliação ao vivo do estado de **21** funcionalidades da instalação, cada item com `id`, `title`, `state`, `detail`, `next_step` (string ou `null`) e `guide` (slug do guia em `/docs/{guide}`).
+  - **12 públicas** (visíveis a qualquer chamador autenticado): `knowledge`, `capture`, `tokens`, `themes`, `inbox`, `handoffs`, `embeddings`, `reranking`, `observation-recall`, `external-clients`, `capture-policy` e `documentation`.
+  - **9 restritas a administrador** quando o controle de acesso multiusuário está ativo: `workstreams`, `consolidation`, `learning`, `review`, `assistant`, `backfill`, `retention`, `human-login` e `management`. Para um chamador não administrador em modo multiusuário, esses 9 itens retornam `state: "Restricted"`, `detail: "Administrator access is required to inspect this installation setting."` e `next_step: null`.
+  - Cache: `private, no-store`.
+- `GET /api/v1/docs`: retorna `{"version": "<versão>", "documents": [...]}` com os metadados dos documentos embutidos (`slug`, `title`, `section`, `summary`, `order`), filtráveis por `q` (aparado; se `q` tiver mais de **200 caracteres**, responde `400 Bad Request` com corpo vazio). Cache: `private, no-store`.
+- `GET /api/v1/docs/{slug}`: retorna `{"version": "<versão>", "document": {...}, "markdown": "<corpo>", "release": "<selecionado>" | null, "releases": [...]}`.
+  - Em documentos de changelog (`releases` não vazio), aceita `?release=all` ou `?release=<id>` (por padrão seleciona a versão mais recente); se `release` não existir na lista, responde `404` com corpo vazio. Em documentos que não possuem `releases`, passar `?release=` não vazio responde `400` com corpo vazio.
+  - Quando `{slug}` não existe, responde `404` com corpo vazio. Cache: `private, no-store`.
 
 ## 5. Limites, paginação e cache
 

@@ -17,15 +17,16 @@
 
 | Superfície | Autenticação | Conteúdo | Documento |
 |---|---|---|---|
-| `POST /mcp` | Bearer de máquina | Transporte MCP (Streamable HTTP) com 24 ferramentas. Sem estado por padrão; com a opção `--http-stateful`, mantém sessão MCP | [mcp-server.md](mcp-server.md) |
+| `POST /mcp` | Bearer de máquina | Transporte MCP (Streamable HTTP) com 25 ferramentas. Sem estado por padrão; com a opção `--http-stateful`, mantém sessão MCP | [mcp-server.md](mcp-server.md) |
 | `POST /hook`, `POST /hook/batch`, `GET /handoff`, `GET /recap` | Bearer de máquina | Ingestão de eventos, contexto de início de sessão e recapitulação de compactação (somente leitura) | [lifecycle-event-ingestion.md](lifecycle-event-ingestion.md) |
 | `/workstream/*` | Bearer de máquina | Execuções gerenciadas e continuidade (§6) | [managed-workstreams.md](managed-workstreams.md) |
 | `/admin/*` | Bearer ou sessão web com CSRF; nível de administração (§3) | Operação, manutenção, estrutura e usuários | esta página |
+| `/management/v1/*` | Somente sessão web humana (com CSRF em mutações e `must_change_password = false`) | Autoatendimento de chaves de API e gestão/purga de sessões pelo operador (§3.6.1) | esta página |
 | `/auth/login`, `/auth/logout`, `/auth/me`, `/auth/password`, `/auth/recovery` | Pública ou sessão | Login humano (§4) | esta página |
 | `GET /identity` | Bearer de máquina | Versão, nível, operador (§5) | esta página |
 | `GET /healthz` | Nenhuma | Resposta fixa de vida do processo (§5) | esta página |
 | `/api/v1/*` | Bearer ou sessão | API somente leitura; disponível com as opções de API ou de navegador habilitadas | [frontend-api.md](frontend-api.md) |
-| Páginas do navegador (raiz, login, busca, páginas, pendências, estáticos) | Pública (login e estáticos) ou sessão | HTML somente leitura | [wiki-browser.md](wiki-browser.md) |
+| Páginas do navegador (raiz, login, busca, páginas, pendências, caixa de entrada `/inbox`, `/messages*`, console `/manage*`, `/docs*`, estáticos) | Pública (login e estáticos) ou sessão | HTML de navegação, caixa de correio e console de gestão | [wiki-browser.md](wiki-browser.md) |
 
 ### 1.1 Credenciais aceitas
 
@@ -69,7 +70,7 @@ não pode começar com os prefixos reservados `ams_`, `aim_` ou `amk_`. Só é a
 
 ## 2. Ferramentas MCP
 
-As 24 ferramentas (argumentos, padrões, saídas, regras de escopo e erros) estão descritas em
+As 25 ferramentas (argumentos, padrões, saídas, regras de escopo e erros, incluindo `memory_patch_page`) estão descritas em
 [mcp-server.md](mcp-server.md) (§3). Esta página define apenas o contrato de metadados de página,
 compartilhado com `POST /admin/write-page`.
 
@@ -139,6 +140,7 @@ usuário cadastrado ou quando há um proxy de identidade confiável configurado.
 | `/admin/status` | — | Contadores, caminhos, versão, endereço de bind, índices derivados, armazenamento, saúde dos provedores, métricas de ingestão, fila de escrita (`[usado, capacidade]`), formato da wiki |
 | `/admin/projects` | — | Lista de projetos |
 | `/admin/search` | `q` (obrigatório), `workspace?` e `project?` (juntos), `limit` (padrão 10, máximo 100) | Busca de texto completo |
+| `/admin/recent` | `workspace?`, `project?`, `limit` (padrão 10, máximo 100) | Páginas atuais mais recentemente atualizadas no escopo |
 | `/admin/read-page` | `workspace`, `project` (obrigatórios); `path?` ou `q?` | `path` tem precedência. Com `q`, devolve a página do melhor resultado |
 | `/admin/audit-log` | `workspace?`, `project?`, `op?`, `before_id?`, `limit` (padrão 50) | Paginação por identificador anterior |
 | `/admin/audit-contamination` | `workspace?`, `project?` | Auditoria somente leitura: sessão cujo diretório resolve para outro projeto, ou observação cujo projeto diverge da sessão. Não altera dados |
@@ -222,6 +224,7 @@ sidecar_paths[], skipped[], report}` quando há estágio.
 
 | Rota | Corpo | Resposta e efeito |
 |---|---|---|
+| `/admin/llm-test` | Sem corpo | Envia prompt `"ping"` com `temperature = 0.2` ao provedor LLM configurado. Sucesso (200): `{ok: true, provider, model, latency_ms, reply_chars}`. Sem provedor: 503. Falha do provedor: 502 `{ok: false, provider, model, latency_ms, error, status}` (com `error` higienizado pelo sanitizador) |
 | `/admin/lint` | `workspace`, `project` (padrões); `dry_run` (false; não grava a página de relatório); `no_llm` (false; pula a passada de contradição por LLM, mantendo as regras determinísticas) | Relatório de lint |
 | `/admin/forget-sweep` | `workspace`, `project`, `dry_run` (false) | Relatório de remoção por tempo de vida e poda de versões antigas |
 | `/admin/embed` | `workspace`, `project` (padrões); `reembed` (false; regenera mesmo quando já existe); `dry_run` (false); `all_projects` (false; ignora `project`) | `{embedded, skipped, failed, would_embed, provider, model, dim}`. Sem embedder: 503 |
@@ -236,6 +239,7 @@ sidecar_paths[], skipped[], report}` quando há estágio.
 | `/admin/rename-workspace` | `from`, `to` | 404 se `from` ausente; 422 se nome inválido (vazio ou com `/`) **e também** se `to` já existe (`workspace name '<to>' is already taken`; não é 409); `from == to` não é tratado à parte (200). `{from, to, checkpoint?, manifests_refreshed, manifest_warning?}` |
 | `/admin/rename-project` | `workspace`, exatamente um de `from` ou `project_id` (UUID), `to` | 404 se ausente; 422 se nome inválido (vazio, com `/`, alvo `_profile`/`_profile.*` ou origem de perfil) **e também** se `to` já existe no workspace (`project name '<to>' is already taken in this workspace`; não é 409); 404 se o projeto sumiu entre a busca e a atualização; `from == to` não é tratado à parte (200, com auditoria). `{workspace, from, to, pages, checkpoint?, manifest_warning?}` |
 | `/admin/move-project` | `from_workspace` (ou `workspace`), exatamente um de `project` ou `project_id` (UUID), `to_workspace`; `confirm` (obrigatório); `force` (false); `on_conflict` (`block`, padrão, ou `overwrite` ou `duplicate`) | Move um projeto para outro workspace. Política de conflito de caminho: `block` aborta tudo (409), deixa a origem intacta e lista os conflitos; `overwrite` faz a página de origem substituir a de destino; `duplicate` grava a página de origem em `<nome>-from-<slug>.md` (e `-1`, `-2`, … se já ocupado). Se houver `pages_skipped`, faz commit `move-project-partial` com `source_purged: false`. Resposta: `{from, to, merged_into_existing, moved_via, pages_copied, workstreams_moved, pages_skipped[], source_purged, source_pages_deleted, source_sessions_deleted, source_observations_deleted, source_handoffs_deleted, source_embeddings_deleted, files_deleted[], files_failed[], conflicts[{path, moved_to}], pre_checkpoint?, checkpoint?, manifest_warning?}` |
+| `/admin/merge-project` | `workspace`, exatamente um de `from` ou `from_project_id` (UUID), exatamente um de `into` ou `into_project_id` (UUID), `confirm` (false = dry run) | Une sem perdas dois projetos do **mesmo** workspace. Recusa com 400 se `source == target` ou se não estiverem no mesmo workspace; 404 se ausentes; 409 se houver sessões abertas, runs gerenciadas ativas na origem ou colisão de chave portável de página. Preserva ambos os históricos de página (aposentando cabeças colidentes na origem e gravando cabeça mesclada no destino), sessões, observações, handoffs, workstreams, entidades, grants e candidatos de perfil. Resposta: `{from, into, dry_run, page_versions, sessions, observations, handoffs, workstreams, page_conflicts, checkpoint?, manifest_warning?}` |
 | `/admin/merge-workspace` | `from`, `to`; `confirm` (obrigatório); `force` (false); `on_conflict` (padrão `block`) | sem `confirm`: 400; 422 `from and to are identical; nothing to merge` se `from == to` (nomes comparados como enviados); 404 se `from` não existe. **Não** filtra projetos `_profile.*`: um projeto de perfil privado na origem faz o movimento dele falhar com 422 e a fusão parar ali (verificado no original). Move cada projeto do workspace de origem e remove o workspace vazio. Em falha no meio: `{error, failed_project, reason, projects_merged, source_workspace_deleted: false}`. Sucesso: `{from, to, projects_merged[<resposta de mover projeto>], source_workspace_deleted}` |
 | `/admin/move-session` | Exatamente um de `session_id` (mover uma sessão) ou `session_ids` (lista de UUIDs em lote); `to_workspace?` (ou `workspace?`, padrão `default`); `to_project` (ou `project`, obrigatório); `pages` (`move`, padrão, `keep` ou `regenerate`); `confirm`; `create` (false; autoriza criar o projeto de destino ausente) | Sem `confirm`, devolve o plano (`dry_run: true`). `move` regrava as versões da página no escopo de destino (em caso de conflito no destino, mantém a página na origem e reporta conflito no campo `page` sem falhar com 409). `regenerate` aposenta as versões na origem e remove o arquivo para que a próxima consolidação grave uma página nova no destino. Resposta única: `{session_id, dry_run, session_moved, would_create_project?, source_scopes?[{workspace, project, observations}], from{workspace, project}, to{workspace, project}, summary{observations, handoffs, consolidation_jobs, auto_improve_runs, auto_improve_claims, page_versions_moved, pages_regenerated}, page, cwd?, cwd_warning?, pre_checkpoint?, checkpoint?, manifest_warning?}`. Lote: `{dry_run, count, results[…], pre_checkpoint?, checkpoint?, manifest_warning?}` |
 | `/admin/purge-session` | `session_id`, `confirm` (obrigatório quando `dry_run: false`), `compact` (false), `dry_run` (false) | Resolve o escopo pela própria `session_id` e remove a sessão e seus dados. `{session_id, workspace, project, observations_deleted, handoffs_deleted, pages_deleted, auto_improve_runs_deleted, removed_paths[], collateral_observations_deleted, collateral_handoffs_denulled, files_deleted[], files_failed[], compacted, pre_checkpoint?, checkpoint?, dry_run?}` |
@@ -260,6 +264,20 @@ sidecar_paths[], skipped[], report}` quando há estágio.
 | `POST /admin/api-credentials` | `username`, `label` | `{credential, token}`. Token `aim_…` exibido uma vez. Sem *pepper* configurado: 503 |
 | `POST /admin/api-credentials/{id}/rotate` | — | `{credential, token}` |
 | `POST /admin/api-credentials/{id}/revoke` | — | `{credential}` |
+
+### 3.6.1 Autoatendimento e gestão de sessões pelo navegador (`/management/v1/*`)
+
+Montadas quando o console de gerenciamento está habilitado. Exigem **exclusivamente** sessão web humana (`require_session`, nunca Bearer de máquina), `must_change_password == false` (senão 403 `password change required`), proteção CSRF em `POST` e respondem com `Cache-Control: private, no-store`.
+
+| Rota | Corpo / Query | Resposta e efeito |
+|---|---|---|
+| `GET /management/v1/credentials` | — | `{credentials[]}` — chaves de API pertencentes ao usuário da sessão |
+| `POST /management/v1/credentials` | `{label}` | `{id, token}` — emite chave `aim_…` própria. `label` aparado deve ter **1..128** caracteres (senão 400); máximo de **20** chaves ativas (não revogadas e não expiradas) por usuário (acima disso 409); sem *pepper* configurado: 409 `API keys are not configured` |
+| `POST /management/v1/credentials/{id}/revoke` | — | `{revoked: true}` — revoga chave própria ativa; chave de outro usuário ou já revogada responde **404** `credential not found` (sem confirmar existência) |
+| `GET /management/v1/projects` | — | `{projects[]}` — projetos legíveis pelo usuário com estatísticas |
+| `GET /management/v1/sessions` | Query: `workspace`, `project`, `offset` (0) | `{sessions[], page_size: 50}` — sessões do projeto filtradas por dono (ou todas se o usuário tiver capacidade `Admin`) |
+| `GET /management/v1/sessions/{id}/observations` | Query: `workspace`, `project`, `offset` (0) | `{records[], total, elided_other_scope, page_size: 50}` — observações em ordem `asc` da sessão (404 se sessão fora do escopo ou de outro dono) |
+| `POST /management/v1/sessions/{id}/purge` | `{workspace, project, confirm (false), dry_run (false)}` | Purga (ou simula com `dry_run: true`) uma sessão pertencente ao próprio operador (ou qualquer sessão se `Admin`) dentro do escopo informado, gravando checkpoints `pre-management-purge-session <id>` e `management-purge-session <id>`. Resposta: `{dry_run, observations_deleted, handoffs_deleted, pages_deleted, auto_improve_runs_deleted, removed_paths[], collateral_observations_deleted, collateral_handoffs_denulled, files_deleted[], files_failed[]}` |
 
 ### 3.7 Convenções de resposta
 
@@ -361,6 +379,7 @@ Comportamento das execuções gerenciadas (lease, estados, lançamento) está em
 | `POST /workstream/runs/{run_id}/cancel` | — | 204 (idempotente: também quando a execução já não está ativa) | 403; 404 `not found: managed run not found` |
 | `POST /workstream/runs/{run_id}/recover/finish` | igual a `finish` | igual a `finish` | Usado por `ai-memory recover`. Aceita execução `expired` (reativa-a com lease de 90 s, desde que nenhuma execução mais nova exista no workstream; senão 400 `… was superseded and cannot be recovered`) e `finished` somente como repetição exata (senão 400 `finished managed run recovery is not an exact replay` ou `… contains uncommitted or changed events`) |
 | `POST /workstream/recent` | `workspace`, `project`, `repo_fingerprint`, `worktree_fingerprint`, `limit`, `offset` (0) | Lista de `{workstream_id, name, created_at, last_active_at, current, linked_harnesses[]}` | 400 (campo vazio ou com mais de 256 bytes); 403; 404 (projeto inexistente). `limit` é limitado a 1–100; a ordem é a atual primeiro, depois `updated_at` e `id` decrescentes; `linked_harnesses` do vínculo mais recente ao mais antigo |
+| `POST /workstream/project-candidates` | `workspace`, `project` | `{candidates[{project_id, name, canonical_name, legacy_name, identity, identity_source, repo_path}], truncated}` | Exige capacidade de escrita normal (`NormalWrite`). Lista até **100** projetos candidatos no workspace que casam por coordenada (`name`, `canonical_name` ou `legacy_name`) e nos quais o chamador tem acesso de escrita (`ProjectAccess::Write`), para desambiguação de identidade de repositório |
 | `POST /workstream/rename` | `workspace`, `project`, `repo_fingerprint`, `worktree_fingerprint`, `from?` ou `workstream_id?`, `to` | `{workstream_id, from, to}` | 400 (`from`/`to` vazio ou longo; `from` e `workstream_id` juntos ou nenhum; nome inválido); 403; 404 (workstream ou projeto inexistente); 409 (nome já tomado). Exige escrita normal e escrita no projeto |
 | `GET /workstream/{workstream_id}/events` | Query: `q` (busca de texto completo, padrão vazio), `limit` (padrão 20) | Lista de eventos (campos abaixo) | 400 `invalid workstream id`; 403; 500. `limit` limitado a 1–100. `q` vazio devolve os eventos mais recentes (sequência decrescente); com texto, busca de texto completo (prefixos de coluna `title:`/`body:`/`content:` no início de palavra são removidos) ordenada por relevância |
 

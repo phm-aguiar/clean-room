@@ -45,8 +45,8 @@ default and never runs from hook paths.
    candidate or a rejection-buffer entry, never a wiki write.
    Every LLM prompt treats repository text, observations, wiki pages, and prior
    proposals as untrusted data, not as instructions. The same trust boundary and
-   delimiters precede automatically injected handoffs, project briefs, and
-   managed-workstream packets (a confirmar). Current instructions and checkout
+   delimiters (`UNTRUSTED_MEMORY_NOTICE`) precede automatically injected handoffs, project briefs, and
+   managed-workstream packets. Current instructions and checkout
    state stay authoritative.
 
 ## Reranqueador por LLM (busca)
@@ -183,7 +183,7 @@ enabled = false                    # true skips low-information session pages fr
 # max_repetition_ratio = 0.7       # skip when 1 - distinct/total tokens is above this
 # repetition_min_tokens = 6        # the repetition check applies only above this
 
-abstract_vectors = false           # fifth fusion stream over page abstract embeddings (default a confirmar)
+abstract_vectors = false           # fifth fusion stream over page abstract embeddings (default false)
 [dream]                            # opt-in LLM dream pass. Off by default. Never deletes a source.
 enabled = false                    # true starts the scheduled pass, only if a provider and an
                                    # embedder are also configured.

@@ -748,7 +748,7 @@ passos, arquivos tocados e **dono** (opcional; ausente = compartilhado com o pro
 
 Aceite: identificador do handoff, escopo, agente, sessão e usuário que aceitam,
 filtro de dono e diretório de quem recebe. O diretório de quem recebe **limita a expiração de handoffs
-automáticos** [a confirmar].
+automáticos** (apenas handoffs automáticos elegíveis para o mesmo diretório ou ancestral são expirados na entrega; handoffs manuais e de diretórios irmãos permanecem abertos).
 
 Forma de leitura: escopo, origem, conteúdo e ciclo de vida são campos planos na resposta da API.
 
@@ -768,8 +768,7 @@ Lembrete da regra de §4.3: buscar o handoff é destrutivo. Nunca buscar quando 
 - Campos de origem: workspace, projeto, agente, sessão e dono do remetente. Assunto opcional e corpo.
 - Reivindicação registra quem reivindicou (agente, sessão, usuário) e o instante.
 
-**Corpo é entrada não confiável.** Antes de gravar, o corpo é sanitizado (§7) e limitado em tamanho
-[limite numérico a confirmar]. Ao ser entregue, vem acompanhado de um **aviso fixo** que o descreve
+**Corpo é entrada não confiável.** Antes de gravar, o assunto e o corpo são sanitizados (§7) e limitados em tamanho (**200 caracteres** para `subject` e **8 000 caracteres** para `body`, com até **100 mensagens pendentes** por caixa de entrada do projeto destinatário; ver [agent-messaging.md](agent-messaging.md)). Ao ser entregue, vem acompanhado de um **aviso fixo** que o descreve
 como tarefa a ser avaliada, nunca como instrução a obedecer: por si só não pode levar a executar
 comandos, revelar segredos, mudar permissões ou chamar ferramentas. O destinatário julga o corpo
 pela proveniência mostrada junto com ele.

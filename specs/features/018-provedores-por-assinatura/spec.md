@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 018
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (interface de provedor, cadeia, saúde), 017 (interface de embedder), 009 (`auth.json`, comandos `auth`)
@@ -74,7 +74,7 @@ Arquivos novos em `internal/llm` (um por provedor e um para o stream de Response
 
 ## Correções da auditoria
 
-Auditoria de 2026-10-20/22 contra o comportamento original (o relatório dessa rodada não está mais em `reports/`).
+Auditoria de 2026-10-20/22 contra o comportamento original (auditoria consolidada diretamente nesta spec e nos docs).
 
 - **Decisão em aberto resolvida:** o `auth login openai-oauth` usa **fluxo de dispositivo** (não navegador/PKCE): URLs `https://auth.openai.com/api/accounts/deviceauth/usercode` e `.../deviceauth/token`, página `https://auth.openai.com/codex/device`, troca em `https://auth.openai.com/oauth/token` com `redirect_uri=https://auth.openai.com/deviceauth/callback`, cliente `app_EMoamEEZ73f0CkXaXp7hrann`, polling `interval + 3 s` com 403/404 = pendente. Texto completo em `llm-client.md` §4.5. Não há decisão nossa a registrar.
 - **`openai-oauth`:** endpoint `https://chatgpt.com/backend-api/codex/responses`; cabeçalhos fixos (`openai-beta: responses=experimental`, `originator: codex_cli_rs`, `session_id` UUID v4); `max_output_tokens` nunca enviado; `temperature` omitida para `gpt-5*`, `gpt-6*` e qualquer modelo iniciado por `o`; extração de `chatgpt-account-id` (3 locais do JWT); parser SSE detalhado; evento terminal = erro 502 sintético (transitório, aciona fallback).

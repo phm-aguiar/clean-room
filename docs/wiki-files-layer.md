@@ -435,6 +435,52 @@ Detalhes:
   observador não distingue as próprias escritas. Ele ignora os temporários pelo prefixo e absorve a
   escrita já instalada pela regra de conteúdo idêntico (seção 13, item 3).
 
+### 4.1 Algoritmo em Pseudocódigo: Escrita Atômica
+
+```text
+ALGORITMO EscreverPaginaAtomica(diretorioWiki, workspaceId, projectId, caminhoRelativo, conteudoBytes):
+    // 1. Validação de portabilidade
+    SE caminhoRelativo contém caracteres inválidos OU começa com "/" ENTÃO:
+        RETORNAR Erro("Caminho não portável")
+    FIM SE
+
+    diretorioAlvo = diretorioWiki / workspaceId / projectId / DiretorioPai(caminhoRelativo)
+    GarantirDiretorioExiste(diretorioAlvo)
+
+    caminhoFinal = diretorioAlvo / NomeArquivo(caminhoRelativo)
+    sufixoAleatorio = GerarHexAleatorio(6)
+    caminhoTemporario = diretorioAlvo / (".ai-memory-tmp." + sufixoAleatorio)
+
+    // 2. Gravação do arquivo temporário com sincronização forçada (fsync)
+    arquivo = AbrirArquivoEscrita(caminhoTemporario) // Unix: 0600, Windows: herda ACL
+    arquivo.Escrever(conteudoBytes)
+    arquivo.SincronizarDados() // fsync
+    arquivo.Fechar()
+
+    // 3. Renomeação atômica com repetição para Windows (códigos 32 e 33)
+    tentativas = 0
+    ENQUANTO tentativas < 5 FAÇA:
+        resultado = RenomearArquivoComSubstituicao(caminhoTemporario, caminhoFinal)
+        SE resultado.Sucesso ENTÃO:
+            SincronizarDados(caminhoFinal) // fsync dos dados renomeados
+            SincronizarDiretorioPaiMelhorEsforco(diretorioAlvo) // fsync do diretório
+            RETORNAR Sucesso(caminhoFinal)
+        SENÃO SE PlataformaWindows() E resultado.CodigoErro EM [32, 33] ENTÃO:
+            // Violação de compartilhamento transitória (antivírus, indexador)
+            AguardarLinear((tentativas + 1) * 10) // 10, 20, 30, 40, 50 ms
+            tentativas = tentativas + 1
+        SENÃO:
+            // Erro 5 (acesso negado) ou erro permanente: falha imediata sem repetição
+            RemoverArquivoSeExistir(caminhoTemporario)
+            RETORNAR Erro(resultado.Mensagem)
+        FIM SE
+    FIM ENQUANTO
+
+    RemoverArquivoSeExistir(caminhoTemporario)
+    RETORNAR Erro("Tempo esgotado na substituição atômica no Windows")
+FIM ALGORITMO
+```
+
 ---
 
 ## 5. Escrita de página: fluxo passo a passo
@@ -609,6 +655,43 @@ a remoção por decaimento usa quarentena):
    ou se a condição deixou de valer dentro da transação, o arquivo volta da quarentena para o caminho
    original e o resultado é o erro, ou "não removeu";
 7. sucesso: a cópia em quarentena é apagada e os webhooks não bloqueantes são disparados.
+
+#### 5.4.1 Algoritmo em Pseudocódigo: Exclusão com Quarentena
+
+```text
+ALGORITMO ExcluirPaginaComQuarentena(diretorioWiki, workspaceId, projectId, caminhoRelativo, conexaoBanco, idPagina):
+    caminhoArquivo = diretorioWiki / workspaceId / projectId / caminhoRelativo
+    
+    // Se o arquivo já não existe no disco, apenas reflete a remoção no banco
+    SE NÃO ArquivoExiste(caminhoArquivo) ENTÃO:
+        transacao = conexaoBanco.IniciarTransacao()
+        transacao.ExecutarExclusaoPagina(idPagina)
+        transacao.Commit()
+        RETORNAR Sucesso()
+    FIM SE
+
+    sufixoAleatorio = GerarHexAleatorio(8)
+    caminhoQuarentena = DiretorioPai(caminhoArquivo) / (".ai-memory-delete." + sufixoAleatorio)
+
+    // 1. Move arquivo para a quarentena no mesmo diretório (ainda recuperável)
+    RenomearArquivo(caminhoArquivo, caminhoQuarentena)
+
+    // 2. Executa a exclusão na transação do banco
+    transacao = conexaoBanco.IniciarTransacao()
+    SUCESSO_BANCO = transacao.ExecutarExclusaoPagina(idPagina)
+
+    SE SUCESSO_BANCO ENTÃO:
+        transacao.Commit()
+        RemoverArquivo(caminhoQuarentena) // Exclusão física definitiva do arquivo
+        RETORNAR Sucesso()
+    SENÃO:
+        transacao.Rollback()
+        // Reverte arquivo da quarentena de volta ao caminho original
+        RenomearArquivo(caminhoQuarentena, caminhoArquivo)
+        RETORNAR Erro("Falha ao atualizar o banco de dados; arquivo restaurado da quarentena")
+    FIM SE
+FIM ALGORITMO
+```
 
 A lápide criada pela reconciliação quando o arquivo sumiu (opção desligada por padrão, seção 8) não
 usa esse fluxo: não roda a cadeia bloqueante nem mexe no disco; confere de novo, sob a guarda

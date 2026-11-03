@@ -15,8 +15,7 @@
 >    instalação da integração em cada agente (`install-hooks`, `install-mcp`,
 >    `install-instructions`) e lançamento gerenciado de agentes (`run`).
 >
-> A leitura das variáveis de ambiente do processo é concentrada neste executável.
-> A confirmar: nenhum outro componente lê variáveis de ambiente diretamente.
+> A leitura das variáveis de ambiente do processo é concentrada neste executável durante a carga inicial da configuração (e nas exceções explícitas de `serve`, `hook`, `backup` e isolamento do `run` listadas na seção 2.1); os demais módulos de domínio, armazenamento, wiki, MCP e web recebem estruturas de configuração já resolvidas e nunca leem o ambiente diretamente.
 
 Documentos relacionados: [harness-adapters.md](harness-adapters.md) (adaptadores de
 agentes), [managed-workstreams.md](managed-workstreams.md) (workstreams gerenciados),
@@ -109,25 +108,25 @@ depois:
 | `allowed_hosts` | `localhost`, `127.0.0.1`, `::1` | Lista de `Host` aceitos; defesa contra *DNS rebinding*. |
 | `cors_allow_origins` | vazio | Origens CORS permitidas. |
 | `llm_provider`, `llm_model`, `llm_base_url` | ausentes (LLM desligado) | Provedor e modelo do cliente LLM ([llm-providers.md](llm-providers.md)); sem `llm_model`, vale o modelo padrão do provedor (obrigatório em `openai-compat`). |
-| `llm_compat_strict` | `true` | Modo estrito de compatibilidade do cliente LLM. |
-| `llm_timeout_secs` | `300` | Tempo máximo por requisição LLM. |
+| `llm_compat_strict` | `true` | Modo estrito de compatibilidade do cliente LLM (`AI_MEMORY_LLM_COMPAT_STRICT`). |
+| `llm_compat_disable_thinking` | `false` | Em `openai-compat`, envia `chat_template_kwargs: {"enable_thinking": false}` para desligar raciocínio em servidores compatíveis (`AI_MEMORY_LLM_COMPAT_DISABLE_THINKING`). |
+| `llm_timeout_secs` | `300` | Tempo máximo por requisição LLM (`AI_MEMORY_LLM_TIMEOUT_SECS`). |
+| `rerank_timeout_secs` | `20` | Tempo máximo por requisição ao reranqueador LLM (`AI_MEMORY_RERANK_TIMEOUT_SECS`). |
 | `llm_reasoning_effort` | ausente | Esforço de raciocínio do provedor (omitido = padrão do modelo). |
 | `llm_headers` | vazio | Cabeçalhos extras (validados na carga). |
 | `llm_fallbacks[]` | vazio | Provedores de contingência, cada um com provedor, modelo e, opcionalmente, URL base e variável de ambiente da chave. |
 | `reranker` | desligado | Único valor aceito: `llm` (sem diferenciar maiúsculas e minúsculas). Qualquer outro valor é erro. |
 | `embedding_provider`, `embedding_model`, `embedding_dim`, `embedding_base_url`, `embedding_query_prefix`, `embedding_document_prefix` | ausentes (embedder local em melhor esforço; `none`/`off`/`disabled` desligam) | Configuração do embedding ([local-embeddings.md](local-embeddings.md), [llm-client.md](llm-client.md) §8). Os prefixos não são aparados. |
+| `contradiction_band_min`, `contradiction_band_max` | `0.4`, `0.75` | Faixa de similaridade de cosseno considerada candidata à detecção de contradição (`AI_MEMORY_CONTRADICTION_BAND_MIN`, `AI_MEMORY_CONTRADICTION_BAND_MAX`). |
 | `consolidate_on_session_end` | `false` | Liga a consolidação ao fim de sessão (seção 4). |
 | `capture_assistant` | `false` | Captura também as respostas do assistente. |
 | `backfill_on_start` | `true` | Importa o histórico local no primeiro início de projeto vazio. Desligável por configuração ou por variável de ambiente. |
 | `run_autowire` | `true` | Instala hooks e MCP automaticamente ao lançar um agente (seção 7). |
 | `strip_root_combinators` | `false` | Remove combinadores na raiz dos esquemas de ferramentas na listagem de ferramentas (`tools/list`), para todos os clientes. Destinado a provedores estritos que rejeitam esses combinadores. A validação em tempo de execução continua ativa. |
 | `gemini_safe_schemas` | `false` | Ativa o modo de esquemas compatível com Gemini. Implica o item anterior. |
-| `hook_rate_per_sec`, `hook_rate_burst` | `0` | Limite de taxa para hooks. A confirmar o significado exato do valor `0`. |
+| `hook_rate_per_sec`, `hook_rate_burst` | `0`, `0` | Limite de taxa por chave de origem para ingestão de hooks (`POST /hook`, `POST /hook/batch`). Quando `hook_rate_per_sec <= 0.0` (padrão `0`), o limitador fica **desativado** (todas as requisições passam); quando `> 0`, aplica um balde de fichas (*token bucket*) por chave com capacidade `max(hook_rate_burst, 1.0)`. |
 
-Seções agrupadas: `[decay]`, `[maintenance]`, `[dream]`, `[retrieval]`, `[slots]`,
-`[consolidation]`, `[auto_improve]` (com subseções de avaliação e agendador),
-`[sanitize]`, `[auth]`, `[auto_scope]`, `[routing]` e `[[admission_webhooks]]`
-([admission-webhooks.md](admission-webhooks.md)).
+Seções agrupadas no `config.toml`: `[decay]`, `[maintenance]`, `[dream]`, `[sessions]`, `[search]` (incluindo `[search.fts]`), `[retrieval]`, `[query_answer]`, `[handoff]`, `[profile]`, `[slots]`, `[consolidation]`, `[auto_improve]` (com subseções `[auto_improve.judge]` e `[auto_improve.scheduler]`), `[sanitize]`, `[hook_spool]`, `[ingest]`, `[auth]`, `[auto_scope]`, `[routing]`, `[run]` e `[[admission_webhooks]]` ([admission-webhooks.md](admission-webhooks.md)).
 
 ### 2.4 Autenticação
 
@@ -183,11 +182,8 @@ A ordem importa.
    recebido durante backup ou migração precisa ser capturado.
 2. Validação do diretório da interface web, das credenciais de contingência do LLM e
    das origens CORS.
-3. **Trava de instância única** (`.serve.lock`, com informação do detentor). Um segundo
-   `serve` sobre o mesmo diretório seria um segundo escritor, um segundo processo git e
-   um segundo ponteiro de projeto ativo. A opção `--force` ignora a trava.
-4. **Backup pré-migração**, antes de abrir o armazenamento. O arquivo precisa conter o
-   esquema anterior para que o *rollback* seja possível.
+3. **Trava de instância única** (`.serve.lock` com trava exclusiva do sistema operacional, acompanhado do arquivo auxiliar sem trava `.serve.lock.holder` contendo `pid=<n>\n` para que diagnósticos no Windows leiam o PID mesmo com trava exclusiva ativa, e até 5 tentativas com espera de 25 ms para falhas transitórias de descritores). Um segundo `serve` sobre o mesmo diretório seria um segundo escritor, um segundo processo git e um segundo ponteiro de projeto ativo. A opção `--force` ignora a trava.
+4. **Backup pré-migração**, antes de abrir o armazenamento (executado apenas quando há uma loja pré-2.0 não migrada para OKF; em lojas novas ou já em 2.x é um no-op). O arquivo precisa conter o esquema anterior para que o *rollback* seja possível.
 5. Abertura do armazenamento (aplica as migrações do banco) e configuração da
    recuperação de busca herdada por todos os clones de leitura.
 6. Limpeza de caminhos de repositório que viraram "catch-all" (diretório pessoal, raiz
@@ -235,21 +231,27 @@ rotas administrativas aceitam até **32 MiB**, para a importação de bootstrap.
 ### 3.3 Roteamento HTTP
 
 ```text
-máquina   = /mcp (MCP) + /hook + /hook/batch + /handoff + /workstream/*
+máquina   = /mcp (MCP) + /hook + /hook/batch + /handoff + /workstream/* + /identity
             limite de corpo 10 MiB, autenticação por bearer
 admin     = /admin/*  limite de corpo 32 MiB (bootstrap), autenticação dupla
 roteador  = máquina
           + /healthz
           + admin
-          + autenticação pública (/auth/login, /auth/recovery)
-          + autenticação de sessão (/auth/me e demais rotas de sessão)
-          + autenticação interna
-          + interface web protegida (/api/v1 e wiki embutida), autenticação dupla
-          + interface web pública (SPA)
+          + autenticação pública (POST /auth/login, POST /auth/recovery)
+          + autenticação de sessão (GET /auth/me, POST /auth/password, POST /auth/logout)
+          + autenticação interna (POST /internal/auth/session-introspect)
+          + autoatendimento de sessões/chaves (/management/v1/*, quando --enable-session-management ou --enable-self-service-keys estão ativos)
+          + interface web protegida (/api/v1, wiki embutida e /manage quando --enable-management-ui está ativo), autenticação dupla
+          + interface web pública (SPA e formulários /login e /change-password)
 → filtro de Host (allowed_hosts) → prefixo base_path → /favicon.ico na raiz do host
 ```
 
-A confirmar: lista completa das rotas de sessão e de autenticação interna.
+Flags adicionais do `serve` para superfícies HTTP e sessões humanas:
+- `--enable-web` (`AI_MEMORY_ENABLE_WEB`), `--enable-api` (`AI_MEMORY_ENABLE_API`), `--web-ui-dir` (`AI_MEMORY_WEB_UI_DIR`), `--web-slug` (`AI_MEMORY_WEB_SLUG`, padrão `/web`), `--base-path` (`AI_MEMORY_BASE_PATH`), `--cors-allow-origin` (`AI_MEMORY_CORS_ALLOW_ORIGINS`);
+- `--enable-session-management` (`AI_MEMORY_ENABLE_SESSION_MANAGEMENT`): habilita listagem e revogação de sessões humanas em `/management/v1/sessions*`;
+- `--enable-self-service-keys` (`AI_MEMORY_ENABLE_SELF_SERVICE_KEYS`): habilita criação, rotação e revogação de chaves próprias em `/management/v1/keys*`;
+- `--enable-management-ui` (`AI_MEMORY_ENABLE_MANAGEMENT_UI`): habilita o console HTML `/manage` (e reserva o prefixo `/manage` mesmo quando `--web-ui-dir` serve uma SPA customizada);
+- `--allow-insecure-no-auth` (`AI_MEMORY_ALLOW_INSECURE_NO_AUTH`) e `--allow-insecure-human-auth` (`AI_MEMORY_ALLOW_INSECURE_HUMAN_AUTH`).
 
 ### 3.4 Exposição de rede
 
@@ -260,8 +262,7 @@ A confirmar: lista completa das rotas de sessão e de autenticação interna.
   estruturado de log também é emitido.
 - Autenticação ativa em endereço que não é de loopback com HTTP sem TLS gera aviso
   para colocar um proxy TLS na frente ([https-via-proxy.md](https-via-proxy.md)).
-- Autenticação de usuário humano sobre HTTP simples só é aceita em loopback, porque
-  cookies não seguros não devem trafegar em rede.
+- Autenticação de usuário humano sobre HTTP simples (`auth.cookie_secure = false`) só é aceita em loopback; em endereço que não é de loopback a subida é recusada, a menos que `--allow-insecure-human-auth` (`AI_MEMORY_ALLOW_INSECURE_HUMAN_AUTH=true`) seja passado explicitamente.
 
 ### 3.5 Conexões e encerramento
 
@@ -425,7 +426,7 @@ diretórios procurando o arquivo de marcação e enviam o evento ao endpoint de 
 `session-start`, fazem a leitura de handoff e imprimem JSON. Têm **o mesmo contrato**
 do hook nativo, verificado por testes de paridade.
 
-A confirmar: valores de timeout de rede e código de saída dos scripts.
+Os scripts saem sempre com código de saída `0` (nunca bloqueiam nem falham o agente). Na variante POSIX, o timeout de rede é de `0,2 s` para `POST /hook` e `1,0 s` para `GET /handoff`; na variante PowerShell, `3 s` (ver [hook-scripts-and-container-deploy.md](hook-scripts-and-container-deploy.md) §2.3–2.4).
 
 ---
 
@@ -663,15 +664,15 @@ parênteses.
 
 | Família | Comandos |
 |---|---|
-| Servidor | `serve`, `init`, `generate-auth-token` |
+| Servidor | `serve`, `setup`, `init`, `generate-auth-token`, `service-host` (oculto) |
 | Operação e diagnóstico | `status`, `list-projects`, `doctor`, `audit-contamination`, `llm-test`, `auth` (`login`, `logout`, `status`, `enable`), `completions` |
-| Páginas da wiki | `search`, `read-page`, `write-page`, `delete-page`, `restore-page`, `checkpoints` |
+| Páginas da wiki | `search`, `recent`, `read-page`, `write-page`, `delete-page`, `restore-page`, `checkpoints` |
 | Manutenção | `forget-sweep`, `lint`, `curator`, `compact`, `reclaim-ledger-versions`, `embed`, `reindex`, `reorg`, `commit` |
 | Aprendizado | `auto-improve`, `auto-improve-report`, `pending-writes` (`list`, `show`, `diff`, `approve`, `reject`), `bootstrap`, `backfill`, `repair-backfill-timestamps`, `finalize-session` |
-| Continuidade | `run`, `show`, `continue`, `resume`, `workstreams`, `rename-workstream`, `workstream-search`, `handoffs`, `message` (`send`, `list`, `pop`, `cancel`) |
-| Ciclo de vida | `backup`, `backup-agents`, `restore`, `restore-agents`, `reset`, `export-okf`, `purge-project`, `purge-session`, `rename-project`, `move-project`, `move-session`, `uninstall`, `upgrade` |
-| Usuários e credenciais | `user` (`add-human`, `list`, `reset-password`, `disable`, `enable`, `patch`, `grant`, `revoke`, `grants`; os comandos `add`, `expire`, `revive` e `rotate-token` da série 1.x foram removidos), `api-key` (`add`, `list`, `rotate`, `revoke`), `project` (`access`, `grants`), `profile` (`status`, `list`, `show`, `forget`, `review`, `rebuild`, `apply`), `server` (`add`, `list`, `remove`) |
-| Integração | `install-hooks`, `install-mcp`, `install-instructions`, `install-skills`, `setup-agent`, `hook` (oculto), `hook-drain` (oculto), `mcp-bridge` (oculto) |
+| Continuidade | `run`, `show`, `continue`, `resume`, `recover`, `workstreams`, `rename-workstream`, `workstream-search`, `handoffs`, `message` (`send`, `list`, `pop`, `cancel`) |
+| Ciclo de vida | `backup`, `backup-agents`, `restore`, `restore-agents`, `reset`, `export-okf`, `purge-project`, `purge-session`, `rename-project`, `move-project`, `merge-project`, `move-session`, `uninstall`, `upgrade` |
+| Usuários e credenciais | `user` (`add-human`, `list`, `reset-password`, `disable`, `enable`, `patch`, `grant`, `revoke`, `grants`; os comandos `add`, `expire`, `revive` e `rotate-token` da série 1.x foram removidos), `api-key` (`add`, `list`, `rotate`, `revoke`), `project` (`init`, `access`, `grants`), `profile` (`status`, `list`, `show`, `forget`, `review`, `rebuild`, `apply`), `server` (`add`, `list`, `remove`) |
+| Integração | `install-hooks`, `install-mcp`, `install-instructions`, `install-skills`, `setup-agent`, `render-plugins` (oculto), `upgrade-refresh-hooks` (oculto), `hook` (oculto), `hook-drain` (oculto), `mcp-bridge` (oculto) |
 
 Regras de implementação dos comandos:
 
@@ -791,18 +792,19 @@ URL e autenticação em um único lugar.
 
 Filtro de nível, em ordem de prioridade:
 
-1. Variável de ambiente de filtro de log global, se definida (nome a confirmar).
+1. Variável de ambiente de filtro de log global (`RUST_LOG` na implementação de referência, ou o equivalente do runtime), se definida e válida.
 2. Senão, `log_level` da configuração, com dois ajustes:
    - O módulo do protocolo MCP é fixado em `warn` no início do filtro, então é o nível mais fraco e não reabilita
      mensagens de nível `error` ou `off`. Não é adicionado se `log_level` já for `warn` ou
-     mais restrito.
+     mais restrito (`error`, `off`).
    - `tracing_appender=warn` é acrescentado no fim e **não pode ser rebaixado** pela
      configuração. Esse ajuste impede que o próprio registrador em arquivo gere um laço de
      realimentação que encheu o disco em uma instalação de referência.
-3. Log em arquivo degrada, **comandos não**. Se o diretório de logs do diretório de
-   dados não puder ser usado, tenta o diretório temporário do sistema, e por fim só a saída
-   de erro. Cada degradação informa o caminho que falhou (a confirmar a ordem exata de
-   tentativas).
+3. Log em arquivo degrada, **comandos não**. Ordem exata de tentativas para o arquivo diário `ai-memory.log.YYYY-MM-DD`:
+   1. `<data_dir>/logs/ai-memory.log.YYYY-MM-DD`;
+   2. `<os_temp_dir>/ai-memory.log.YYYY-MM-DD` (aviso de degradação: `ai-memory: warning: cannot write logs to <data_dir>/logs (...); falling back to <temp_dir>/ai-memory.log.*`);
+   3. Somente `stderr` (aviso de degradação adicional: `ai-memory: warning: cannot write fallback logs to <temp_dir> (...); file logging disabled (stderr only)`).
+   Os avisos de degradação são impressos em `stderr` apenas no modo verboso (`serve`); comandos de execução única da CLI usam o modo silencioso para não poluir a saída nem quebrar `--json`.
 
 ---
 

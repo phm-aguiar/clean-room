@@ -5,23 +5,23 @@
 >
 > **Docs antes adiados:** os 14 docs de LLM, embeddings e auto-melhoria (antes em `docs-adiados/`, fora do repositório) foram incorporados a `docs/` em 2026-10-13; só os links relativos entre as duas pastas foram ajustados.
 >
-> **Estado em 2026-10-25:** nenhuma feature tem `plan.md` nem `tasks.md`, e não há código de reimplementação no workspace. Todas as `spec.md` foram auditadas contra o original (relatórios em `reports/`, de `009` a `014`) e seguem a regra: em toda dúvida, reproduzir o comportamento do original, inclusive nos defeitos conhecidos descritos nos docs. O plano e as tasks serão gerados depois, a partir dos docs corrigidos.
+> **Estado em 2026-10-25:** nenhuma feature tem `plan.md` nem `tasks.md`, e não há código de reimplementação no workspace. Todas as `spec.md` foram auditadas contra o original (regras e invariantes consolidadas nas próprias specs e em `docs/`) e seguem a regra: em toda dúvida, reproduzir o comportamento do original, inclusive nos defeitos conhecidos descritos nos docs. O plano e as tasks serão gerados depois, a partir dos docs corrigidos.
 
 ## Ordem recomendada
 
 | # | Feature | Estado | Depende de | Por que nesta posição |
 |---|---|---|---|---|
-| 001 | [Núcleo](001-nucleo/spec.md) | spec auditada (`reports/009-auditoria-001.md`); sem plan/tasks | — | Domínio, armazenamento, busca e wiki. |
-| 002 | [Captura e acesso](002-captura-e-acesso/spec.md) | spec auditada (`reports/010-auditoria-002.md`); sem plan/tasks | 001 | Hooks do Claude Code, sessões, handoffs, MCP e servidor. |
-| 003 | [Ciclo de vida dos dados](003-ciclo-de-vida/spec.md) | spec auditada (`reports/011-auditoria-003-004-005.md`); sem plan/tasks | 002 | Purga, renomear, mover, mesclar workspace, restaurar, reset e compactação do banco. |
-| 004 | [Manutenção sem LLM](004-manutencao-sem-llm/spec.md) | spec auditada (`reports/011-auditoria-003-004-005.md`); sem plan/tasks | 002, 003 | Retenção, varredura, compactação, lint e curador. Produz a lápide de decaimento. |
-| 005 | [Validade temporal, arestas tipadas e sinais de ranking](005-validade-temporal/spec.md) | spec auditada (`reports/011-auditoria-003-004-005.md`); sem plan/tasks | 002, 004 | `as_of`, `include_superseded`, arestas tipadas, reapontamento de links, confiança derivada, peso de crença, recall de sessão e `settled_first`. |
-| 006 | [OKF e migrações de wiki](006-okf-e-migracoes-de-wiki/spec.md) | spec auditada (`reports/012-auditoria-006-007-009.md`); sem plan/tasks | 002 | Leitura e exportação OKF e migração de lojas antigas. |
-| 007 | [Multiusuário e autorização](007-multiusuario-e-autorizacao/spec.md) | spec auditada (`reports/012-auditoria-006-007-009.md`); sem plan/tasks | 002 | Usuários, chaves, login humano, acesso por projeto, `init` e `generate-auth-token`. Base de 008 a 015. |
-| 008 | [Cadeia de admissão](008-cadeia-de-admissao/spec.md) | spec auditada (`reports/013-auditoria-008-011-restantes.md`); sem plan/tasks | 007, 002 a 004 | Webhooks antes da persistência; precisa do ator identificado. |
-| 009 | [SSO e OIDC](009-sso-oidc/spec.md) | spec auditada (`reports/012-auditoria-006-007-009.md`); sem plan/tasks | 007 | Provedor de identidade externo sobre o modelo de usuários. |
+| 001 | [Núcleo](001-nucleo/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | — | Domínio, armazenamento, busca e wiki. |
+| 002 | [Captura e acesso](002-captura-e-acesso/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 001 | Hooks do Claude Code, sessões, handoffs, MCP e servidor. |
+| 003 | [Ciclo de vida dos dados](003-ciclo-de-vida/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 002 | Purga, renomear, mover, mesclar workspace, restaurar, reset e compactação do banco. |
+| 004 | [Manutenção sem LLM](004-manutencao-sem-llm/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 002, 003 | Retenção, varredura, compactação, lint e curador. Produz a lápide de decaimento. |
+| 005 | [Validade temporal, arestas tipadas e sinais de ranking](005-validade-temporal/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 002, 004 | `as_of`, `include_superseded`, arestas tipadas, reapontamento de links, confiança derivada, peso de crença, recall de sessão e `settled_first`. |
+| 006 | [OKF e migrações de wiki](006-okf-e-migracoes-de-wiki/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 002 | Leitura e exportação OKF e migração de lojas antigas. |
+| 007 | [Multiusuário e autorização](007-multiusuario-e-autorizacao/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 002 | Usuários, chaves, login humano, acesso por projeto, `init` e `generate-auth-token`. Base de 008 a 015. |
+| 008 | [Cadeia de admissão](008-cadeia-de-admissao/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 007, 002 a 004 | Webhooks antes da persistência; precisa do ator identificado. |
+| 009 | [SSO e OIDC](009-sso-oidc/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 007 | Provedor de identidade externo sobre o modelo de usuários. |
 | 010 | [Outros agentes](010-outros-agentes/spec.md) | spec auditada; sem plan/tasks | 002, 007, 009 | Hooks e MCP nos demais agentes, scripts de hook, adaptadores de transcrição, `mcp-bridge`, backfill, `doctor`, `backup-agents`. |
-| 011 | [Mensagens entre projetos](011-mensagens-entre-projetos/spec.md) | spec auditada (`reports/013-auditoria-008-011-restantes.md`); sem plan/tasks | 002, 007, 008 | Caixa de entrada entre projetos e o aviso no `/handoff`. |
+| 011 | [Mensagens entre projetos](011-mensagens-entre-projetos/spec.md) | spec auditada (regras consolidadas nos docs e nesta spec); sem plan/tasks | 002, 007, 008 | Caixa de entrada entre projetos e o aviso no `/handoff`. |
 | 012 | [Perfil entre projetos e brief](012-perfil-e-brief/spec.md) | spec auditada; sem plan/tasks | 002, 004, 007 | Preferências globais e resumo no início de sessão (caminho sem LLM). |
 | 013 | [Workstreams gerenciados](013-workstreams-gerenciados/spec.md) | spec auditada; sem plan/tasks | 010, 002, 007 | `ai-memory run` entre harnesses. |
 | 014 | [Navegador web e API](014-navegador-web-e-api/spec.md) | spec auditada; sem plan/tasks | 007, 002 | Navegador HTML e `/api/v1`, somente leitura. |
@@ -34,7 +34,7 @@
 | 021 | [Curadoria por embeddings](021-curadoria-por-embeddings/spec.md) | spec auditada; sem plan/tasks | 017, 016, 004, 008 | Deduplicação A3, banda de contradição, filtro de entropia e *dream*. |
 | 022 | [Auto-melhoria](022-auto-melhoria/spec.md) | spec auditada; sem plan/tasks | 020, 021, 016, 014, 008, 007, 004 | Revisão, validação, portão de avaliação, pendências, aprovação, experiência e `/pending`. |
 
-Todas as specs também passaram pela varredura de vazamentos (`reports/014-varredura-vazamentos.md`) e pela revisão de fidelidade (`reports/016-specs-fidelidade.md`). Relatórios de rodadas anteriores (citados em algumas specs) não estão mais em `reports/`.
+Todas as specs também passaram pela varredura de vazamentos (regras consolidadas nos docs e nesta spec) e pela revisão de fidelidade (regras consolidadas nos docs e nesta spec). Todas as correções de fidelidade e regras de negócio estão consolidadas diretamente nos docs e specs.
 
 Critério da ordem: primeiro o que completa o produto local sem LLM (003 a 006); depois identidade, que destrava rede e colaboração (007 a 009); depois os outros agentes e a colaboração entre projetos (010 a 013); depois as superfícies extras e a implantação (014 e 015); por último o bloco opcional de LLM e embeddings (016 a 022), na ordem fronteira → vetores → provedores por login → leitura → escrita → curadoria → auto-melhoria.
 

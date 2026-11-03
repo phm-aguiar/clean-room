@@ -23,7 +23,7 @@ Além disso, a recuperação temporal (janelas de validade e consulta `as_of`) j
 - **Caminho padrão sem provedor de LLM.** Captura, busca e contagem de evidência funcionam sem provedor configurado. A contagem de evidência é baseada em regras. O passe de experiência é opt-in.
 - **Escrita única.** Toda escrita passa por um único ator de escrita. A evidência de uma página é gravada na mesma transação da escrita da página.
 - **Migrações com arquivo de segurança.** Antes de uma migração de esquema avançar, o sistema grava um arquivo de segurança pré-migração.
-- **Superfície de ferramentas MCP fixa.** A lista tem 24 ferramentas e um teste confere o conjunto registrado. Nenhum empréstimo adiciona ferramenta. Os novos campos entram como parâmetros opcionais ou campos de explicação.
+- **Superfície de ferramentas MCP fixa.** A lista tem 25 ferramentas e um teste confere o conjunto registrado. Nenhum empréstimo adiciona ferramenta. Os novos campos entram como parâmetros opcionais ou campos de explicação.
 - **Correção vence contagem.** Uma nova versão que diverge substitui a versão atual, mas o histórico continua acessível. A quantidade de evidência nunca impede uma correção de ser gravada ou retornada.
 
 ## 3. P1: rótulos tipados de redação

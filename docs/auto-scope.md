@@ -122,7 +122,7 @@ Creation is limited to explicit write paths:
     `memory_consolidate` (session lookup), and the sender side of
     `memory_message_send`.
   - **Find-only, write access** (mutate something that must already exist):
-    `memory_feedback`, `memory_forget_sweep`, `memory_lint`,
+    `memory_patch_page`, `memory_feedback`, `memory_forget_sweep`, `memory_lint`,
     `memory_auto_improve`, `memory_delete_page`, `memory_restore_page`,
     `memory_handoff_accept`, `memory_handoff_cancel`, `memory_message_pop`,
     `memory_message_cancel`, and the recipient side of `memory_message_send`.

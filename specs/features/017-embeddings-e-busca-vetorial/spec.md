@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 017
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (erros, HTTP limitado, saúde passiva), 004 (agendador de manutenção), 002 (busca híbrida, status)
@@ -82,7 +82,7 @@ Pacote `internal/embed` (interface, remotos, sintético) e `internal/embed/minil
 
 ## Correções da auditoria
 
-Auditoria de 2026-10-20/22 contra o comportamento original (o relatório dessa rodada não está mais em `reports/`).
+Auditoria de 2026-10-20/22 contra o comportamento original (auditoria consolidada diretamente nesta spec e nos docs).
 
 - **Retentativa dos embeddings remotos:** `openai` e `openai-compat` repetem **429 e 503**, respeitam `Retry-After` inteiro (máx. 32 s) e têm orçamento de 62 s; Google e Copilot repetem só 429 (2, 4, 8, 16, 32 s); Voyage nunca. O cenário "seis 429 = 62 s" vale sem `Retry-After`.
 - **Identidade Google:** o nome gravado inclui `models/`. Modelos `embedding-2` não enviam `taskType` e reformatam o texto (`title: none | text: ...` / `task: search result | query: ...`).

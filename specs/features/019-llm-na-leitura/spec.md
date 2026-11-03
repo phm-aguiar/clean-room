@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 019
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (provedor), 017 (fluxo vetorial na mesma consulta), 005 (`explain`), 002 (`memory_query`, `memory_briefing`)

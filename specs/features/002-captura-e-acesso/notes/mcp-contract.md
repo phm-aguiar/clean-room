@@ -1,10 +1,10 @@
-# Contrato das 12 tools MCP e resolução de escopo
+# Contrato das 13 tools MCP do núcleo e resolução de escopo
 
 Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-captura-e-acesso/spec.md`. Em toda dúvida vale o comportamento do original. Siglas: MS = `docs/mcp-server.md`; AR = `docs/architecture.md` (seção "MCP tool surface"); SR = `docs/storage-and-retrieval.md`; DV = `docs/domain-vocabulary.md`; HO = `docs/design-handoff-offer-not-claim.md`; DD = `docs/design-decisions.md`.
 
 ## 0. Escopo
 
-- O servidor do original tem **24** ferramentas (MS §1, corrigido na auditoria de 2026-10-25). A 002 implementa um **subconjunto de 12** (spec.md "Dentro do escopo"). Ficam **fora** da 002: `memory_feedback`, `memory_forget_sweep`, `memory_lint`, `memory_install_self_routing`, `memory_explore`, `memory_consolidate`, `memory_auto_improve`, `memory_restore_page`, `memory_message_*` (spec.md "Fora do escopo").
+- O servidor do original tem **25** ferramentas (MS §1 e §3). A 002 implementa um **subconjunto de 13** (spec.md "Dentro do escopo", incluindo `memory_patch_page`). Ficam **fora** da 002: `memory_feedback`, `memory_forget_sweep`, `memory_lint`, `memory_install_self_routing`, `memory_explore`, `memory_consolidate`, `memory_auto_improve`, `memory_restore_page`, `memory_message_*` (spec.md "Fora do escopo").
 - O handoff são 4 tools separadas (AR; MS §3.3; HO §7).
 - Os contratos abaixo resumem MS §3; onde divergirem, vale o doc.
 
@@ -59,7 +59,7 @@ Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-capt
 - Limite: `n` ou `top_k` em `memory_query`; `n` em `memory_recent`.
 - Em `memory_write_page`, `body` aceita alias `content`. Se canônico e alias vierem juntos, o canônico vence.
 
-## 3. Contrato por tool (12)
+## 3. Contrato por tool (13)
 
 ### 3.1 `memory_query` (leitura) — MS §3.1
 - **Argumentos:** `query` (aliases `q`, `search`, obrigatório, não vazio), `workspace`, `project`, `scopes` (≤ 25), `global` (bool), `limit` (padrão 10, clamp 1..100; aliases `n`, `top_k`), `include_expired`, `include_superseded`, `explain`, `pin_first`, `answer` (bool), `reasoning` (`minimal|low|medium|high|max`).
@@ -67,15 +67,15 @@ Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-capt
 - **Resposta:** `{query, scope, scopes, hits, raw_hits, global_hits, global_scope_hits, profile_hits: [], answer, answer_unavailable, warnings}` (e `streams_active` / `score_details` quando `explain=true`).
 
 ### 3.2 `memory_read_page` (leitura) — MS §3.2
-- **Argumentos:** `path` ou `query` (`path` vence; erro `-32602` se ambos ausentes), `workspace`, `project`, `related` (bool, padrão `false`), `related_depth` (padrão 1, clamp 1..3).
-- **Resposta:** `{id, path, title, tier, version, pinned, tags, body, frontmatter, served_from?, related?, scope, warnings}` (`served_from: "db-fallback"` quando o `.md` falta no disco).
+- **Argumentos:** `path` ou `query` (aliases `q`, `search`; `path` vence; erro `-32602` se ambos ausentes/vazios/nulos), `workspace`, `project`, `scope` (`"global"` para ler `default/_global`, proibido combinar com `workspace`/`project`), `include_related` (bool, padrão `false`), `related_depth` (padrão 1, clamp 1..3), `max_chars` (padrão 12000, clamp 500..64000).
+- **Resposta:** `{path, page_id, title, body, frontmatter, sections, sections_truncated, truncated, total_chars, expired?, served_from?, related?}` (`sections`: até 100 entradas `{anchor, level, sha256}` para `memory_patch_page`; `served_from: "db-fallback"` quando o `.md` falta no disco).
 
 ### 3.3 `memory_recent` (leitura) — MS §3.2
 - **Argumentos:** `limit` (padrão 10, clamp 1..100; alias `n`), `workspace`, `project`.
 - **Resposta:** `{pages: [{id, path, title, summary, tier, updated_at, tags, importance}], scope, warnings}`.
 
 ### 3.4 `memory_read_session_observations` (leitura) — MS §3.2
-- **Argumentos:** `session_id` (**obrigatório**, UUID ou string convertida via UUID v5 OID), `workspace`, `project`, `kinds` (array de tipos), `query` (busca FTS na sessão), `limit` (padrão 50, clamp 1..200), `offset` (padrão 0), `order` (`asc` padrão ou `desc`), `body_max_chars` (padrão 4000, clamp 200..16384; trunca com `\n...[truncated — full body is <N> chars]`).
+- **Argumentos:** `session_id` (**opcional**, UUID ou id nativo do harness; quando omitido, seleciona a sessão com atividade capturada mais recente visível ao chamador no projeto resolvido, varrendo até 16 sessões recentes, priorizando o `cwd` do chamador e excluindo a própria sessão ativa), `workspace`, `project`, `kinds` (array de tipos), `query` (busca FTS na sessão), `limit` (padrão 20, clamp 1..200), `offset` (padrão 0), `order` (`asc` padrão ou `desc`), `body_max_chars` (padrão 1000, clamp 200..16384; trunca com marcador visível).
 - **Resposta:** `{session, observations, total, returned, offset, limit, has_more, body_max_chars, elided_other_scope, scope, warnings}`.
 
 ### 3.5 `memory_status` (leitura) — MS §3.2
@@ -93,7 +93,12 @@ Fontes, em ordem de prioridade: `docs/` (vence), depois `specs/features/002-capt
 ### 3.8 `memory_write_page` (escrita) — MS §3.3
 - **Argumentos:** `path`, `body` (alias `content`), `title`, `tier` (padrão `"episodic"`), `tags`, `pinned`, `expires_at`, `session_id`, `expected_page_id` (`-32600` em divergência), `create_only` (`-32600` se já existir), campos OKF (`kind`, `entities`, `abstract`, `relations`, `applies_to`, `enforced_by`), `workspace`, `project`, `scope` (`"global"` ou `"profile"`).
 - **Commits:** tenta `pre-checkpoint before mcp write-page <path>` antes e `mcp write-page <path>` depois (falhas viram aviso).
-- **Resposta:** `{page_id, path, checkpoint}` (e `manifest_warning` opcional) (MS §3.3).
+- **Resposta:** `{page_id, path, checkpoint}` (e `manifest_warning` / `digest_warning` opcionais) (MS §3.3).
+
+### 3.8.1 `memory_patch_page` (escrita) — MS §3.3
+- **Argumentos:** `path`, `expected_page_id` (obrigatório, UUID da versão atual retornado por `memory_read_page`), `edits` (1..32 operações: `append` com `target: "section" | "end_of_page"` e `anchor` opcional, `add_section` com cabeçalho ATX nível 2..6 único como `anchor`, ou `replace_section` com `anchor` e `section_sha256` comparado em tempo constante; cada `content` ≤ 64 KiB chars e lote total ≤ 256 KiB chars), `workspace`, `project`.
+- **Comportamento:** valida `expected_page_id` (`-32600` `precondition_failed` se divergir), aplica todas as edições sobre o mesmo corpo base preservando o frontmatter original, grava via escrita condicional (`PagePrecondition::Latest(expected)`) e faz commit git `memory_patch_page: <path>`. Erros de validação do patch retornam `-32602` com `data: {reason, path, anchor}` (`anchor_not_found`, `ambiguous_anchor`, `heading_exists`, `section_precondition_failed`, `duplicate_target`, `overlapping_edits`, `invalid_patch`).
+- **Resposta:** `{page_id, path, checkpoint}` (MS §3.3).
 
 ### 3.9 `memory_delete_page` (escrita) — MS §3.3
 - **Argumentos:** `path`, `expected_page_id` (opcional; `-32600` em divergência), `workspace`, `project`, `scope` (apenas `"profile"` é aceito na validação; `"global"` retorna `-32602`).

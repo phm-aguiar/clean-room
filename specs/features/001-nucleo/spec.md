@@ -2,11 +2,11 @@
 
 ## Metadados
 - **ID:** 001
-- **Status:** spec auditada contra o original (relatório `reports/009-auditoria-001.md`); sem plano nem tasks; não há código de reimplementação no workspace
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; não há código de reimplementação no workspace
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-12 (revisada em 2026-10-25)
 - **Feature Anterior:** — (primeira feature)
-- **Discovery Report:** — (o relatório de discovery não está mais em `reports/`)
+- **Discovery Report:** — (conteúdo incorporado diretamente nas regras da spec e dos docs)
 - **Aprovado:** true
 
 ## Propósito
@@ -96,7 +96,7 @@ backpressure natural). A wiki usa uma biblioteca Git embutida (`go-git`), com fa
 | Mutex sobre uma conexão | Mais simples | Sem backpressure nem lote de comandos |
 
 ## Correções da auditoria (2026-10-25)
-> Passada "chinese wall" contra a referência 3.1.1, focada nos docs da 001. Os docs foram corrigidos em regras e tabelas, sem código. Relatório: `reports/009-auditoria-001.md`. Neste projeto o doc vence a spec. Todas as decisões que antes estavam em aberto foram **resolvidas: reproduzir o original** (sem criação de escopo na escrita, sem herança de `pinned`, regravar arquivo idêntico, `refinery_schema_history`, reindex sem higienizar, sem nomes reservados na validação de caminho, allowlist/extras vazios aceitos, fluxo de observações ligado por padrão).
+> Passada "chinese wall" contra a referência 3.1.1, focada nos docs da 001. Os docs foram corrigidos em regras e tabelas, sem código. Auditoria consolidada nas regras e tabelas desta spec e dos docs. Neste projeto o doc vence a spec. Todas as decisões que antes estavam em aberto foram **resolvidas: reproduzir o original** (sem criação de escopo na escrita, sem herança de `pinned`, regravar arquivo idêntico, `refinery_schema_history`, reindex sem higienizar, sem nomes reservados na validação de caminho, allowlist/extras vazios aceitos, fluxo de observações ligado por padrão).
 
 | Doc (seção) | Dizia, ou deixava em aberto | Referência 3.1.1, agora no doc | Efeito na 001 |
 |---|---|---|---|
@@ -110,12 +110,12 @@ backpressure natural). A wiki usa uma biblioteca Git embutida (`go-git`), com fa
 | `storage-and-retrieval.md` §11.3 | descritor e tokenização de entidades resumidos | algoritmo do descritor (600 de entrada, 240 de saída, linhas puladas); tokenização exata das entidades | busca |
 | `storage-and-retrieval.md` §12 | `_slots/` e `working` "a confirmar"; TTL sem detalhe | slots só isentos por fixação; `working` sem regra de fim de sessão; TTL remove de vez, sem lápide | — |
 | `storage-and-retrieval.md` §19 | só categorias | textos literais dos erros do núcleo | mensagens da 001 |
-| `database-schema.md` §0, §10 | colunas do histórico sem tipo | tipos de `refinery_schema_history`; reconstruções 78, 80, 81, 83 e `users` em 54 e 79; 77 e 82 | nome e tipos da tabela de migrações |
+| `database-schema.md` §0, §10 | colunas do histórico sem tipo; parava na V83 | tipos de `refinery_schema_history`; reconstruções 78, 80, 81, 83 e `users` em 54 e 79; migrações V84–V96 (`api_credential_pepper_state`, mensagens V85–V86, FTS5 auxiliar de unigramas/bigramas CJK `pages_cjk_fts` e `observations_cjk_fts` na V87, consolidação/auto-improve/slots V88–V90, telemetria de uso de tokens `session_usage`, `token_calls` e `token_call_tools` sem colunas de custo em USD em V91–V94, `managed_runs.scope_by_id` na V96) | nome e tipos da tabela de migrações e DDL até V96 |
 | `overview.md` invariantes 4, 6, 11 e sanitizador | "a confirmar" | cobertura do escopo por tabela; barreira de tipo só para observações (os outros textos são higienizados pelo chamador); caminho absoluto só se o caminho ou o pai existe; motor sem retrocesso com classes Unicode | INV-06 e INV-11 da 001 |
 | `data-model.md` §6 | reindexação "reconstrói só" | também grava auditoria e, com embedder, embedding | — |
 | `test-fixtures.md` | fixtures 01 a 05 sem descrição | 01 a 05 descritos (avaliação de LLM); 06 e 07 ausentes | 002 |
 
-Conferidos sem mudança: esquema das tabelas, índices e gatilhos do núcleo (83 migrações), tokenizador e gatilhos FTS, `path_search`, pragmas e `journal_size_limit`, pool de leitura, casos A, B e C do upsert (incluindo carimbo de `generated.at` só com o mapeamento `generated` e escolha da lápide mais recente), janela de candidatos, constantes do fluxo de observações, caminhada relacionada (3 e 50), tipos de observação e grafias aceitas, derivação de `type` OKF, os 27 padrões de segredo e sua ordem, constantes do watcher (300 ms, 30 s, 5 falhas, disjuntor). O original não tem um tipo `PageKind`: o "tipo" da página é o `kind` livre do frontmatter, o tipo de ranking (`storage-and-retrieval.md` §11.5) ou o `type` OKF (`okf.md`), todos derivados (`notes/domain-contract.md`).
+Conferidos sem mudança: esquema das tabelas, índices e gatilhos do núcleo (96 migrações, incluindo `pages_cjk_fts` e `observations_cjk_fts` na V87 e `session_usage`/`token_calls`/`token_call_tools` nas V91–V94), tokenizador e gatilhos FTS, `path_search`, pragmas e `journal_size_limit`, pool de leitura, casos A, B e C do upsert (incluindo carimbo de `generated.at` só com o mapeamento `generated` e escolha da lápide mais recente), janela de candidatos, constantes do fluxo de observações, caminhada relacionada (3 e 50), tipos de observação e grafias aceitas, derivação de `type` OKF, os 27 padrões de segredo e sua ordem, constantes do watcher (300 ms, 30 s, 5 falhas, disjuntor). O original não tem um tipo `PageKind`: o "tipo" da página é o `kind` livre do frontmatter, o tipo de ranking (`storage-and-retrieval.md` §11.5) ou o `type` OKF (`okf.md`), todos derivados (`notes/domain-contract.md`).
 
 Regra "nenhum handler escreve direto na wiki": confirmada, com uma exceção (`design-decisions.md` §3): só `reset`, `uninstall --purge-data` e `restore` apagam ou trocam diretórios inteiros, com o servidor parado e a guarda de processo vivo. O rótulo `ensure_portable` é o **nome da regra** de portabilidade, não um identificador de código.
 

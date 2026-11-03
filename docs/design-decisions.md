@@ -30,7 +30,7 @@ O ai-memory é um binário único que:
    linha nele, ver [wiki-files-layer.md](wiki-files-layer.md) §5.2 e §9). O
    `index.md` existe só como arquivo criado pela migração OKF da wiki
    ([okf.md](okf.md)); a escrita de página não o garante nem o atualiza.
-4. **Expõe uma superfície MCP estreita**: 24 ferramentas, não dezenas. A lista
+4. **Expõe uma superfície MCP estreita**: 25 ferramentas, não dezenas. A lista
    está na seção 10. *Comportamento verificado.* Essa escolha é uma decisão de
    produto: menos ferramentas reduzem a confusão do usuário e do agente.
 5. **Distribui-se como imagem de contêiner e binário**, para trocar de máquina
@@ -468,7 +468,7 @@ de turno) pode publicar um checkpoint de continuação sem encerrar a sessão.
 
 ## 10. Superfície MCP
 
-Há 24 ferramentas. A coluna "Anotação" traduz as dicas de tipo de operação
+Há 25 ferramentas. A coluna "Anotação" traduz as dicas de tipo de operação
 declaradas pelo servidor: *leitura* (somente leitura), *escrita* (não
 destrutiva) e *escrita destrutiva*.
 
@@ -496,6 +496,7 @@ destrutiva) e *escrita destrutiva*.
 | `memory_consolidate` | Consolidação por LLM da sessão; `multi_page` gera lote atômico | escrita |
 | `memory_auto_improve` | Revisão manual de aprendizado de sessão concluída | escrita |
 | `memory_write_page` | Grava página durável pedida pelo usuário | escrita |
+| `memory_patch_page` | Aplica edições cirúrgicas ancoradas por cabeçalho (`append`, `add_section`, `replace_section`) sobre `expected_page_id` | escrita |
 | `memory_handoff_begin` | Cria handoff para a próxima sessão | escrita |
 | `memory_message_send` | Envia mensagem à caixa de entrada de outro projeto | escrita |
 

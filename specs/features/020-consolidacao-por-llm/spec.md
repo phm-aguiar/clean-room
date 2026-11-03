@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 020
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 016 (provedor), 008 (admissão `consolidate`), 007 (slots por usuário), 004 (lint), 012 (perfil), 002 (fim de sessão, checkpoints, página de sessão por regras)

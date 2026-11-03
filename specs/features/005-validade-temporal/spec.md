@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 005
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 002 (`memory_query`, `memory_write_page`, `memory_status`), 004 (aposentadoria por decaimento que fecha janelas)
@@ -103,7 +103,7 @@ Um caminho de consulta `as_of` separado dentro da busca do `storage`, com os doi
 
 ## Correções da auditoria
 
-Auditoria 011 (2026-10-25), validação linha a linha contra o original. Relatório: `reports/011-auditoria-003-004-005.md`.
+Auditoria 011 (2026-10-25), validação linha a linha contra o original. Auditoria consolidada nas regras e tabelas desta spec e dos docs.
 
 - Confiança derivada (amplitude por sessões distintas, resíduo 0,2 com teto 1,0, saturação 3, recência 0,5 + 0,5·e^(−idade/30 d), penalidade 1/(1+n), teto 0,95), janelas de validade, regra de supersessão/ressurreição e consulta `as_of`: **conferidos e fiéis**.
 - **`settled_first`:** documentada a derivação do tipo (`kind` do frontmatter, que prevalece, senão prefixo de caminho → `rule`/`slot`/`session`/`decision`/`gotcha`/`concept`/`procedure`/`note`/`preference`, senão `fact`). Só `rule` e `decision` entram na lista. Página sem evidência entra com contagem 0. A ordem em caso de empate não é especificada.

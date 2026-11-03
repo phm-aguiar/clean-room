@@ -1371,12 +1371,12 @@ Você: Liste as ferramentas MCP que você pode chamar. Use uma delas para verifi
 
 Modelo: (qualquer cliente) Posso chamar as ferramentas do ai-memory, incluindo
       memory_query, memory_recent, memory_status, memory_briefing, memory_explore,
-      memory_handoff_begin, memory_handoff_accept, memory_write_page e
+      memory_handoff_begin, memory_handoff_accept, memory_write_page, memory_patch_page e
       memory_install_self_routing, entre outras. memory_status reporta: 0 páginas,
       0 observações, 0 sessões.
 ```
 
-O servidor expõe 24 ferramentas MCP. A lista completa, com entradas e saídas, está em
+O servidor expõe 25 ferramentas MCP. A lista completa, com entradas e saídas, está em
 [mcp-server.md](mcp-server.md). O exemplo acima é ilustrativo.
 
 Se o modelo vir as ferramentas mas não as usar por iniciativa própria, atualize o pacote

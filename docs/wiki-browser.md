@@ -39,19 +39,30 @@ Caminhos relativos ao ponto de montagem (normalmente `/web`).
 | Método e rota | Conteúdo |
 |---|---|
 | `GET /` | Cards de projetos. |
+| `GET /docs` e `GET /docs/{slug}` | Documentação embutida correspondente à versão do binário, com busca (`?q=`, máx. 200 caracteres) e seletor de versão (`?release=`) em páginas de changelog (`Cache-Control: private, no-store`). |
+| `GET /inbox` | Caixa de correio histórico (não consome mensagens) e compositor web autorizado (`?workspace&project&box=inbox\|outbox&state=pending\|claimed\|cancelled\|editing&agent&offset`, paginado de 50 em 50). |
+| `GET /inbox/notifications` | JSON leve sem conteúdo sensível (`Cache-Control: no-store`) para o badge da barra de navegação: `{ pending, project_count, projects: [{ workspace, project, pending }] }` (top 5 projetos). |
+| `POST /messages` | Envia mensagem pelo navegador (`from_workspace`, `from_project`, `to_workspace`, `to_project`, `to_agent` obrigatório e com sessão registrada no projeto destinatário, `subject` máx. 200 chars, `body` 1..8000 chars). Exige cabeçalho `X-AI-Memory-UI: 1`, mesmo `Origin`/`Host`, capacidade `NormalWrite` e acesso de escrita nos dois projetos. |
+| `POST /messages/{id}/edit` | Retira temporariamente uma mensagem `pending` da fila para o estado `editing` para que nenhum agente a consuma durante a edição. Exige `X-AI-Memory-UI: 1` e acesso de escrita tanto no projeto destinatário quanto no projeto remetente. |
+| `POST /messages/{id}/save` | Salva novo `subject` e `body` de uma mensagem em `editing`, grava `edited_at` e a devolve para `pending`. |
+| `POST /messages/{id}/release` | Devolve uma mensagem em `editing` para `pending` sem alterá-la. |
 | `GET /w/{workspace}/{projeto}` | Árvore de páginas e atividade recente. |
+| `GET /w/{workspace}/{projeto}/agents/{agent}` | Diagnóstico de sessões e uso por tipo de agente (`agent_kind`) dentro do projeto, paginado em lotes de 50 sessões (`?offset=`). |
 | `GET /w/{workspace}/{projeto}/p/{caminho}` | Página renderizada e metadados; ou listagem de namespace quando o caminho é uma pasta (2.3). |
 | `GET /w/{workspace}/{projeto}/h/{caminho}` | Histórico de versões da página e diff (2.8). |
 | `GET /w/{workspace}/{projeto}/s/{id_da_sessão}` | Linha do tempo de uma sessão (2.9). |
+| `GET /graph` e `GET /w/{workspace}/{projeto}/graph` | Visualizador do grafo de conhecimento (entre projetos e dentro de um projeto). |
 | `GET /search?q=` | Lista de resultados da busca, global ou de um projeto (2.4). |
 | `GET /pending` | Triagem de propostas pendentes (somente raiz). |
+| `GET /workstreams` | Lista de workstreams gerenciados e estado de continuidade entre harnesses. |
 | `GET /health` | Painel de saúde do servidor (somente raiz, 2.10). |
+| `GET /manage`, `GET /manage/{screen}`, `POST /manage/action` | Console HTML opcional de autoatendimento e administração (`screen` em `sessions`, `session`, `login`, `password`, `users`, `keys`), com CSP estrito (`script-src 'sha256-...'`, `frame-ancestors 'none'`) e delegação interna às rotas `/auth/*`, `/admin/*` e `/management/v1/*`. |
 | `GET /login` e `GET /change-password` | Formulários públicos de autenticação. |
 | `GET /static/...` | Folha de estilo e logo embutidos, públicos. |
 | `GET /favicon.ico` | Ícone, montado na raiz do host e não sob o prefixo nem sob `/web`, pois o navegador busca esse caminho na origem. Só existe quando a interface web está habilitada. |
 | `GET {slug}/` | Redirecionamento permanente com status **308** (não 301: método e corpo são preservados) para `{slug}`, preservando a query string. Ver 5.4. |
 
-Todas as rotas HTML são só `GET`. Rotas inexistentes caem no tratamento de
+As rotas de leitura HTML são `GET`; as rotas de caixa de correio (`/messages*`) e do console (`/manage/action`) aceitam `POST` autenticado com proteção CSRF e cabeçalho `X-AI-Memory-UI: 1`. Rotas inexistentes caem no tratamento de
 rota desconhecida do servidor (sem página 404 estilizada: a página "Page not
 found" só existe para páginas, projetos e sessões não encontrados).
 
@@ -634,6 +645,19 @@ lido do cookie `ai_memory_csrf`). Título "Pending writes".
   is now marked as a conflict. Reload the page."; outros erros "Approve|Reject failed for <caminho>
   (<status>): <erro>"; falha de rede "Network error. Try again.".
 
+---
+
+### 2.12 Grafo visual, documentação embutida e diagnóstico por agente
+
+- **Grafo entre projetos (`GET /graph`) e grafo de projeto (`GET /w/{ws}/{proj}/graph`):**
+  - `GET /graph` renderiza um diagrama SVG em círculo com um nó por projeto legível que participa de ao menos uma aresta entre projetos diferentes e uma lista textual das arestas (`from_workspace/from_project : from_path -> to_workspace/to_project : to_path`).
+  - `GET /w/{ws}/{proj}/graph` verifica acesso de leitura ao projeto (404 se inexistente, 403 em texto simples se proibido) e consulta o grafo interno de links resolvidos do projeto (limitado às **120** páginas atuais e não expiradas de maior grau, ordenadas por `degree DESC, updated_at DESC, path ASC`). Renderiza um SVG em círculo para até **48** nós (`MAX_SVG_NODES = 48`), a tabela de páginas ordenadas por conexões e a lista de arestas internas; quando `truncated = true`, exibe aviso indicando que o grafo foi limitado às 120 páginas mais conectadas.
+- **Documentação embutida (`GET /docs` e `GET /docs/{slug}`):**
+  - `GET /docs` exibe a central de documentação embutida para a versão do binário, com busca (`?q=`, máx. **200 caracteres**; acima disso responde `400`) e a tabela ao vivo das **21** funcionalidades da instalação (12 públicas e 9 restritas a administrador quando o controle multiusuário está ativo, exibidas como `Restricted` para não administradores).
+  - `GET /docs/{slug}` renderiza o documento em HTML sanitizado; se `{slug}` terminar com `.md` (ex.: `/docs/install.md`), devolve o markdown bruto correspondente com `Content-Type: text/markdown; charset=utf-8`. Em documentos de changelog, aceita `?release=all` ou `?release=<id>` (valor desconhecido responde `404`; passar `release` em documento que não é changelog responde `400`). Ambos respondem com `Cache-Control: private, no-store`.
+- **Diagnóstico por agente (`GET /w/{ws}/{proj}/agents/{agent}?offset=N`):**
+  - Verifica leitura do projeto e valida `{agent}` contra os tipos de agente conhecidos. Lista o resumo de atividade daquele agente no projeto (sessões totais/abertas, observações, páginas atribuídas, handoffs, consolidações) e pagina suas sessões em blocos de **50** (`offset`). Se `{agent}` for inválido ou não tiver atividade registrada no projeto, responde com a página 404.
+
 ## 3. API `/api/v1`
 
 ### 3.1 Acesso e CORS
@@ -656,6 +680,8 @@ Todas com prefixo `/api/v1`.
 
 | Rota | Retorno |
 |---|---|
+| `/docs/features/status` | Estado das funcionalidades instaladas/configuradas visíveis ao chamador (`Cache-Control: private, no-store`). |
+| `/docs` e `/docs/{slug}` | Índice e páginas da documentação embutida em JSON (`?q=`, `?release=`; `Cache-Control: private, no-store`). |
 | `/workspaces` | Lista de workspaces com estatísticas. |
 | `/projects` | Lista de projetos com estatísticas. Filtro opcional `workspace`; valor vazio ou só com espaços equivale a todos. |
 | `/workspaces/{ws}/projects/{p}/pages` | Lista de páginas do projeto. |
@@ -670,6 +696,7 @@ Todas com prefixo `/api/v1`.
 | `…/sessions` | Sessões do projeto. |
 | `…/sessions/{id}/observations` | Observações de uma sessão. |
 | `/graph` | Arestas entre projetos diferentes (seção 3.3). |
+| `/workspaces/{ws}/projects/{p}/graph` | Grafo de páginas e links dentro de um projeto específico. |
 
 ### 3.3 Parâmetros e limites
 
@@ -687,7 +714,8 @@ Todas com prefixo `/api/v1`.
 | `handoffs` | `state`: `open`, `accepted` ou `expired`. Vazio ou ausente lista todos. Valor desconhecido: 400. `limit`, padrão 50, faixa 1 a 200. `all_owners`: só a raiz pode usar; outros chamadores recebem 403. Sem autorização para o corpo, o resumo, as perguntas em aberto e os próximos passos são omitidos e o campo `redacted` fica verdadeiro. |
 | `sessions` | `limit`, padrão 20, faixa 1 a 100. `offset`, padrão 0. `include_open`, padrão falso: inclui sessões que ainda não foram encerradas. |
 | `sessions/{id}/observations` | `limit`, padrão 50, faixa 1 a 200. `offset`. `order`: `asc` (padrão) ou `desc`, sem diferenciar maiúsculas; outro valor é 400. `kinds`: lista separada por vírgula; tipo desconhecido é 400. `q`: busca de texto restrita à sessão. `body_max_chars`, padrão 4000, faixa 200 a 16384. Corpos mais longos são cortados e recebem um marcador com a quantidade de caracteres omitidos. ID de sessão inválido: 400. Sessão inexistente ou não visível: 404. |
-| `graph` | Arestas em que as duas extremidades estão em projetos diferentes e são legíveis pelo visualizador. Não há filtro por projeto. |
+| `graph` | Arestas em que as duas extremidades estão em projetos diferentes e são legíveis pelo visualizador. Aceita filtro opcional `workspace` e `project` (devem vir juntos; um sem o outro = 400 `workspace and project must be provided together`) para restringir às arestas entre projetos que tocam aquele projeto. |
+| `workspaces/{ws}/projects/{p}/graph` | Grafo de links resolvidos dentro do projeto: `{workspace, project, truncated, nodes, edges}`, com até **120** nós (`{path, title, degree}`) ordenados por `degree DESC, updated_at DESC, path ASC` e arestas `{from_path, to_path}` entre os nós retornados. |
 
 Campos da página completa: `id` (da versão atual; muda a cada nova versão, e
 por isso também o ETag), workspace, projeto, caminho, título, tipo, tier,

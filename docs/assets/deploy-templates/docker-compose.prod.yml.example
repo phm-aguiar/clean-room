@@ -37,8 +37,8 @@ services:
     env_file:
       - .env.production
     environment:
-      # Tracing filter; promote modules to debug here without rebuilding.
-      - RUST_LOG=ai_memory=info,ai_memory_store=info,ai_memory_wiki=info,ai_memory_mcp=info,tracing_appender=warn
+      # Log level configuration (debug, info, warn, error).
+      - AI_MEMORY_LOG_LEVEL=info
     healthcheck:
       test: ["CMD", "/usr/local/bin/ai-memory", "status"]
       interval: 30s

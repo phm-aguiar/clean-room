@@ -2,7 +2,7 @@
 
 ## Metadados
 - **ID:** 009
-- **Status:** spec auditada contra o original (ver "Correções da auditoria" e os relatórios em `reports/`); sem plano nem tasks; em toda dúvida, reproduzir o original
+- **Status:** spec auditada contra o original (regras consolidadas nesta spec e em docs/); sem plano nem tasks; em toda dúvida, reproduzir o original
 - **Autor:** phm-aguiar
 - **Data:** 2026-10-13
 - **Feature Anterior:** 007 (níveis, chaves de identidade, ponto único de autenticação)
@@ -87,7 +87,7 @@ Cliente OIDC no `cli` (fluxo de dispositivo, armazenamento e renovação), usado
 
 ## Correções da auditoria
 
-Auditoria 012 (Chinese Wall, contra o código original). Relatório: `reports/012-auditoria-006-007-009.md`.
+Auditoria 012 (Chinese Wall, contra o código original). Auditoria consolidada nas regras e tabelas desta spec e dos docs.
 
 - `docs/sso.md` verificado contra o original sem divergência material: escopo `openid profile offline_access`, sufixo de descoberta, regra https/loopback, parâmetros do device grant e do refresh, desfechos da sondagem, gravação em `auth.json` sob `oidc`, e ausência total de validação do token no servidor.
 - `docs/threat-model-and-data-handling.md`: o "a confirmar" sobre validação de JWT OIDC no servidor foi resolvido — não existe; a validação cabe ao gateway.

@@ -26,6 +26,7 @@ Operations come in two groups:
 | `/admin/rename-workspace` | yes | no | yes (rename back) | Changes the name only. Manifests are refreshed and a checkpoint is taken. HTTP route; no CLI subcommand. |
 | `/admin/delete-workspace` | yes | the workspace and every child project | no | Logical delete unless `compact: true`. HTTP route; no CLI subcommand. Supports a dry run. |
 | `move-project --confirm` | yes | the source project only in the merge case | no | Fresh destination: lossless true move, same project id. Destination already has a same-named project: copy-then-purge merge, where only latest page versions migrate. |
+| `merge-project --from <src> --into <dst> [--confirm]` | yes | deletes the source project row after re-stamping all dependent rows into `<dst>` | no | Losslessly joins two projects in the **same** workspace. Dry run by default (`confirm: false`). Refuses open sessions or active managed runs on the source (409). Preserves both page histories, sessions, observations, handoffs, workstreams, entities, grants, and profile candidates. |
 | `move-session <id> --to <project> --confirm` | yes | no | yes (move it back, if nothing else changed) | Re-stamps one session, or every session touching a scope, into another project. Dry run by default. Refuses with 409 an open session or a pending consolidation job unless `--force`. |
 | `backup --to <file>` | yes | no | not applicable | Writes a gzip tarball of a consistent snapshot of the database plus the wiki tree. |
 | `checkpoints` | yes | no | not applicable | Lists recent wiki git checkpoints. Read-only. |
@@ -710,6 +711,80 @@ Failure modes:
 - **Merge: a page was unreadable**: 200 with `source_purged: false` and the
   paths in `pages_skipped`.
 - **Merge: live managed run under the source**: 409, source intact.
+
+### `merge-project`
+
+```bash
+# Preview the merge (dry run by default when --confirm is omitted):
+ai-memory merge-project --workspace default --from old-name --into canonical-name
+
+# Apply the merge:
+ai-memory merge-project --workspace default --from old-name --into canonical-name --confirm
+
+# Or target either side by UUID:
+ai-memory merge-project --workspace default --from-project-id <src-uuid> --into-project-id <dst-uuid> --confirm
+```
+
+Flags: `--workspace`, `--from` (or `--from-project-id`, mutually exclusive), `--into` (or `--into-project-id`, mutually exclusive), `--confirm`.
+
+Unlike `move-project`, which crosses workspace boundaries and drops historical sessions/observations on a copy-merge, `merge-project` (`POST /admin/merge-project`) **losslessly joins two project identities inside the same workspace**:
+
+1. **Resolution & validation:** Both source and target projects must exist in `workspace` (404 otherwise) and must be distinct (`source != target`, otherwise 400 `"source and target project must be different"`).
+2. **Preconditions (409 Conflict):**
+   - The source project must have **zero open sessions** (`ended_at IS NULL`).
+   - The source project must have **zero active managed runs** (`state = 'active' AND lease_expires_at > now`).
+   - No portable page-key collision (`portable_page_key(src_path) == portable_page_key(dst_path)` with different spelling) may exist between source and target.
+3. **Dry run (`confirm: false`):** Runs all checks and counts inside a rolled-back transaction, returning `{ from, into, dry_run: true, page_versions, sessions, observations, handoffs, workstreams, page_conflicts }` without touching disk or committing.
+4. **Committed merge (`confirm: true`):**
+   - **Stricter policy wins on `projects`:** `access_mode` becomes `'restricted'` if either project is `'restricted'`; `profile_contribute = min(dst, src)` and `profile_consume = min(dst, src)`.
+   - **Page histories:** For paths present in both projects (`page_conflicts`), the colliding source head is retired (`is_latest = 0, valid_to = now`, open `entity_page_links` closed) and a merged head version is written on disk and in `pages` under the target project; all `pages` rows (including historical versions) are re-stamped `project_id = dst`.
+   - **Sessions, observations, handoffs, audit & auto-improve:** Re-stamped `project_id = dst`. Pending `auto_improve_proposals` in `src` whose `target_path` collides with a pending proposal in `dst` are marked `status = 'conflict'` (`decision_reason = 'source project merged into another project'`) before moving.
+   - **Coalesced singletons & grants:**
+     - `auto_improve_scheduler_state`: `watermark_ended_at = max(...)`, `initialized_at = min(...)`, `updated_at = max(...)`.
+     - `project_grants`: merged per user (`'write'` wins over `'read'`, `granted_at = min(...)`).
+     - `profile_entry_ledger`, `profile_harvest_marks`, `ingest_keys`: merged keeping latest timestamps/watermarks.
+   - **Entities, workstreams & profile candidates:**
+     - Same-name `entities` merge into the target entity row while preserving all `entity_page_links`.
+     - Colliding `workstreams` (same `repo_fingerprint`, `worktree_fingerprint`, `name`) in `src` are renamed to `<name>-from-<hex(src_project_id)>-<hex(workstream_id)>` before moving.
+     - Colliding `profile_candidates` in `src` have `#merged-<substr(hex(id), 1, 8)>` appended to `source_ref` before moving.
+   - **Messages & cleanup:** `agent_messages` (`from_project_id` and `to_project_id`) are re-stamped to `dst`, the source `projects` row and wiki directory are removed, active-project pointers and scope caches for `src` are cleared, scope manifests are refreshed, and git checkpoint `merge-project <ws>/<src> -> <ws>/<dst>` is committed.
+
+```text
+PROCEDIMENTO MesclarProjetoSemPerdas(conexao, idWorkspace, idOrigem, idDestino, planoPaginas, confirmar)
+  INICIAR TRANSAÇÃO EM conexao
+  VerificarExistenciaNoWorkspace(conexao, idWorkspace, idOrigem, idDestino)
+  SE ContarSessoesAbertas(conexao, idOrigem) > 0 RETORNE ErroConflito("ProjectSessionsOpen")
+  SE ContarRunsGerenciadasAtivas(conexao, idOrigem) > 0 RETORNE ErroConflito("ManagedRunActive")
+  ValidarPlanoDePaginasESemColisaoDeChavePortavel(conexao, idOrigem, idDestino, planoPaginas)
+
+  // Política mais restrita vence no projeto de destino
+  AtualizarPoliticaMaisRestrita(conexao, idDestino, idOrigem)
+
+  // Aposenta cabeças colidentes da origem antes de reatribuir todas as versões
+  PARA CADA pagina EM planoPaginas ONDE pagina.idAlvo != NULO FAÇA
+    AposentarVersaoCorrente(conexao, pagina.idOrigem, agora)
+  FIM PARA
+
+  versoesMovidas <- ReatribuirProjeto(conexao, "pages", idOrigem, idDestino)
+  sessoesMovidas <- ReatribuirProjeto(conexao, "sessions", idOrigem, idDestino)
+  observacoesMovidas <- ReatribuirProjeto(conexao, "observations", idOrigem, idDestino)
+  handoffsMovidos <- ReatribuirProjeto(conexao, "handoffs", idOrigem, idDestino)
+
+  MarcarPropostasColidentesComoConflito(conexao, idOrigem, idDestino, agora)
+  ReatribuirTabelasAuxiliares(conexao, idOrigem, idDestino)
+  CoalescerEstadoAgendadorEGrants(conexao, idOrigem, idDestino)
+  FundirEntidadesDeMesmoNome(conexao, idOrigem, idDestino)
+  DesambiguarWorkstreamsECandidatosDePerfilColidentes(conexao, idOrigem, idDestino)
+  ReatribuirMensagensERemoverProjetoOrigem(conexao, idOrigem, idDestino)
+
+  SE confirmar ENTÃO
+    GravarVersoesMescladasDePaginasColidentes(conexao, idDestino, planoPaginas)
+    COMMIT TRANSAÇÃO
+  SENÃO
+    ROLLBACK TRANSAÇÃO // dry_run
+  FIM SE
+FIM PROCEDIMENTO
+```
 
 ### `move-session`
 

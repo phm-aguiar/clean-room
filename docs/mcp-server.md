@@ -3,8 +3,8 @@
 > **Escopo:** este documento contém partes que dependem de LLM ou de embeddings. Essas partes são opcionais e não fazem parte do escopo inicial, que funciona sem LLM. Podem ser removidas ou adiadas junto com as funções correspondentes.
 
 > **Papel:** a superfície de entrada de agentes e operadores. Reúne:
-> 1. **Servidor MCP** com as **24 ferramentas** de memória;
-> 2. **Rotas administrativas** sob `/admin/*` (ciclo de vida, manutenção, usuários, perfil entre projetos);
+> 1. **Servidor MCP** com as **25 ferramentas** de memória;
+> 2. **Rotas administrativas** sob `/admin/*` (ciclo de vida, manutenção, usuários, perfil entre projetos) e rotas de autoatendimento sob `/management/v1/*`;
 > 3. **Autenticação HTTP**: token portador (administrador, usuário do banco ou proxy de identidade confiável)
 >    e **autenticação humana** (senha, sessão web, proteção CSRF e recuperação).
 >
@@ -101,10 +101,9 @@ provedor não resolve `$ref` em nenhuma profundidade e rejeita a requisição.
 
 ---
 
-## 3. As 24 ferramentas
+## 3. As 25 ferramentas
 
-(A auditoria 002 contou 24 ferramentas registradas no código original: as 23 anteriores mais
-`memory_restore_page`, descrita no §3.3.)
+(O servidor registra **25 ferramentas** MCP no total, incluindo `memory_restore_page` e `memory_patch_page`, descritas no §3.3.)
 
 Os detalhes de propósito e de flags estão em [architecture.md](architecture.md). Aqui está o
 comportamento.
@@ -188,20 +187,27 @@ Fluxo:
 
 - **`memory_recent`:** páginas mais recentes por `updated_at` decrescente. Limite padrão do servidor
   (10), limitado a 1..100 (aceita alias `n`). Retorna `{ recent: [...] }`.
-- **`memory_read_page`:** lê uma página por `path` ou por `query`.
-  - Se os dois forem dados, `path` tem precedência. Se nenhum for dado, retorna erro `-32602`.
-  - Com `query`, faz busca FTS e devolve o corpo completo do primeiro resultado.
-  - Retorna `page_id`, `path`, `title`, `body` e `frontmatter` (mais `expired: true` quando a página está expirada). Quando o arquivo Markdown falta no disco e a página é
-    servida do banco, inclui `served_from: "db-fallback"`.
+- **`memory_read_page`:** lê uma página por `path` ou por `query` (aceita aliases `q` e `search`).
+  - Se os dois forem dados, `path` tem precedência. Se nenhum for dado (ou se ambos forem vazios/nulos), retorna erro `-32602` instrutivo exigindo exatamente um de `path` ou `query`.
+  - Com `query`, faz busca FTS e devolve o corpo completo do primeiro resultado (ou `-32602` `no pages found for query ...` quando nenhum resultado casa).
+  - Aceita `scope: "global"` para ler do escopo reservado `default/_global` (sem criar escopo; proibido combinar com `workspace` ou `project`, retornando `-32602`).
+  - Limita o corpo retornado a `max_chars` caracteres (padrão **12 000**, mínimo **500**, máximo **64 000**; valores fora do intervalo são limitados com clamp). Corpos maiores são truncados com marcador visível e retornam `truncated: true`.
+  - Retorna `{ path, page_id, title, body, frontmatter, sections, sections_truncated, truncated, total_chars }` (mais `expired: true` quando a página está expirada).
+    - `sections`: lista de até **100** cabeçalhos ATX (`MAX_SECTION_HASHES = 100`, ignorando cabeçalhos dentro de blocos de código cercados por `` ``` `` ou `~~~`), cada um com `{ anchor, level, sha256 }`, onde `sha256` é o digest SHA-256 hexadecimal do intervalo completo da seção (`whole`: da linha do cabeçalho até o início do próximo cabeçalho de nível `<= level` ou fim do corpo), usado por `memory_patch_page`.
+    - `sections_truncated`: booleano indicando se a página tinha mais de 100 cabeçalhos.
+    - `truncated`: booleano indicando se `body` foi truncado em `max_chars`.
+    - `total_chars`: comprimento total do corpo antes do truncamento.
+    - Quando o arquivo Markdown falta no disco e a página é servida do banco, inclui `served_from: "db-fallback"`.
   - Erro `-32603` se a página não existe no escopo resolvido.
-  - `related` (booleano opt-in, padrão `false`) percorre o grafo de links em volta da página e devolve `related`.
-    Com `related_depth = 1` (padrão), `related` tem `{ links, backlinks }`. Com `related_depth` em `2..3`, `related` tem `{ depth, nodes }` (onde cada nó traz `path`, `title`, `kind`, `workspace`, `project`, `depth` e `direction` `link` ou `backlink`, limitado a **50** nós, incluindo projetos cruzados). Sem `related: true`, o campo `related` é omitido.
+  - `include_related` (booleano opt-in, padrão `false`) percorre o grafo de links em volta da página e devolve `related`.
+    Com `related_depth = 1` (padrão), `related` tem `{ links, backlinks }`. Com `related_depth` em `2..3`, `related` tem `{ depth, nodes }` (onde cada nó traz `path`, `title`, `kind`, `workspace`, `project`, `depth` e `direction` `link` ou `backlink`, limitado a **50** nós, incluindo projetos cruzados). Sem `include_related: true`, o campo `related` é omitido.
   - Em caso de sucesso, reforça a página lida e os vizinhos percorridos (mesmo incremento de acesso
     descrito em 3.1, com a mesma janela por operador). Leitura com erro não reforça nada.
 - **`memory_read_session_observations`:** observações brutas de uma sessão, com paginação.
-  - `session_id` é obrigatório (UUID da sessão). Aceita filtros opcionais `kinds` (lista de tipos de observação) e `query` (busca FTS nas observações da sessão).
-  - `offset` padrão **0**; `limit` padrão **50**, limitado a **1..200**.
-  - `body_max_chars` padrão **4000**, limitado a **200..16 384**. Corpo acima do limite é cortado com
+  - `session_id` é **opcional**: aceita o UUID da sessão ou o identificador nativo do harness (por exemplo `ses_…`). Quando omitido, seleciona automaticamente a sessão com trabalho capturado mais recente visível ao operador no projeto resolvido (varrendo até **16** sessões recentes, priorizando uma no mesmo `cwd` do chamador e excluindo a própria sessão ativa do chamador; se não houver atividade nos últimos 30 dias, usa a última sessão concluída).
+  - Aceita filtros opcionais `kinds` (lista de tipos de observação: `session-start`, `user-prompt`, `pre-tool-use`, `post-tool-use`, `pre-compact`, `post-compaction`, `notification`, `stop`, `session-end`, `other`) e `query` (busca FTS nas observações da sessão).
+  - `offset` padrão **0**; `limit` padrão **20**, limitado a **1..200**.
+  - `body_max_chars` padrão **1 000**, limitado a **200..16 384**. Corpo acima do limite é cortado com
     marcador `\n… [truncated <N> chars]`.
   - `order`: `"asc"` (padrão) ou `"desc"`.
   - A resposta traz `{ session, observations, total, offset, limit, order, elided_other_scope, body_max_chars }`.
@@ -243,7 +249,88 @@ Fluxo:
   - Identidade do ator e do autor vem da camada de autenticação. A cadeia de admissão só é
     acionada se houver ator identificado ou lista de pulo.
   - Antes da escrita tenta um checkpoint prévio (`pre-checkpoint before mcp write-page <path>`) e depois da escrita tenta um checkpoint (`mcp write-page <path>`). Falha no checkpoint gera aviso, não erro.
-  - Resposta: `{ page_id, path, checkpoint }` (e `manifest_warning` opcional).
+  - Resposta: `{ page_id, path, checkpoint }` (e `manifest_warning` / `digest_warning` opcionais).
+- **`memory_patch_page`:** aplica um lote limitado de edições ancoradas em cabeçalhos ATX a uma página existente, sem reemitir o corpo inteiro nem alterar o frontmatter (todo o frontmatter, `tier` e `pinned` existentes são preservados).
+  - **Parâmetros:** `path` (obrigatório, validado e portável, com posicionamento de slot `_slots/`), `expected_page_id` (obrigatório, UUID da versão atual lida em `memory_read_page`), `edits` (lista de operações), `workspace` e `project` (opcionais em clientes com sessão; obrigatórios em par em clientes estáticos).
+  - **Limites do lote:** `MAX_EDITS = 32` operações por chamada; cada `content` tem no máximo `MAX_EDIT_CHARS = 65 536` caracteres (64 KiB); a soma dos caracteres de todos os `content` do lote tem no máximo `MAX_CHANGED_CHARS = 262 144` caracteres (256 KiB).
+  - **Operações suportadas (`op` em `snake_case`):**
+    1. `append`: `{ op: "append", target: "section" | "end_of_page", anchor?: string, content: string }`.
+       - Com `target: "section"`, `anchor` é obrigatório e deve resolver para exatamente uma seção da página base; o texto é anexado ao final do intervalo da seção.
+       - Com `target: "end_of_page"`, `anchor` deve ser omitido ou vazio; o texto é anexado ao final da página.
+    2. `add_section`: `{ op: "add_section", anchor: string, content: string }`.
+       - `anchor` deve ser uma única linha de cabeçalho ATX de nível **2 a 6** (`##` a `######`; nível 1 `#` é rejeitado com `add_section anchor must be one ATX level 2-6 heading`).
+       - O cabeçalho normalizado não pode existir na página base nem colidir com outra operação do mesmo lote. A nova seção (`<anchor>\n\n<content>\n`) é anexada ao final da página.
+    3. `replace_section`: `{ op: "replace_section", anchor: string, section_sha256: string, content: string }`.
+       - Exige `anchor` não ambíguo e `section_sha256` idêntico (comparado em tempo constante) ao SHA-256 hexadecimal do intervalo completo (`whole`: cabeçalho + conteúdo) retornado em `sections` por `memory_read_page`.
+       - Substitui apenas o corpo da seção (`section.content`, após a quebra de linha do cabeçalho), preservando a linha do cabeçalho original.
+  - **Regras de parsing de seções e normalização de âncoras:**
+    - Cabeçalhos dentro de blocos de código cercados (`` ``` `` ou `~~~` com até 3 espaços iniciais) são ignorados.
+    - O intervalo `whole` de uma seção de nível $L$ vai do início da sua linha de cabeçalho até o início do próximo cabeçalho ATX de nível $\le L$ (ou até o fim do documento).
+    - A normalização de `anchor` remove o prefixo ATX (`#`..`######` opcional) e qualquer sufixo de `#` precedido por espaço/tab, colapsa sequências de espaço em um único espaço e converte para minúsculas.
+    - Todas as edições são resolvidas contra o **mesmo corpo base** capturado; duas edições nunca podem atingir a mesma âncora/alvo nem ter intervalos de substituição sobrepostos (`overlapping_edits`).
+  - **Erros estruturados:**
+    - Divergência de `expected_page_id` retorna `-32600` (`precondition_failed`).
+    - Arquivo ausente no disco retorna `-32602` com `data: { reason: "not_found", path }`.
+    - Falhas de validação do patch retornam `-32602` (`cannot patch <path>: <erro>; nothing was changed`) com `data: { reason, path, anchor }`, onde `reason` é um de: `"anchor_not_found"`, `"ambiguous_anchor"`, `"heading_exists"`, `"section_precondition_failed"`, `"duplicate_target"`, `"overlapping_edits"` ou `"invalid_patch"`.
+  - **Gravação e checkpoint:** grava via escrita condicional (`PagePrecondition::Latest(expected)`), operação de admissão `write_page`, faz commit git `"memory_patch_page: <path>"` e retorna `{ page_id, path, checkpoint }`.
+
+```text
+PROCEDIMENTO AplicarPatchEmPagina(corpoBase, edicoes)
+  SE edicoes ESTÁ VAZIO RETORNE Erro("invalid_patch")
+  SE Tamanho(edicoes) > 32 RETORNE Erro("invalid_patch")
+
+  secoes <- ExtrairSecoesAtxForaDeBlocoDeCodigo(corpoBase)
+  totalCaracteres <- 0
+  alvosVistos <- ConjuntoVazio()
+  substituicoes <- ListaVazia() // tuplas (inicio, fim, ordem, texto)
+
+  PARA CADA (ordem, edicao) EM Enumerar(edicoes) FAÇA
+    tamanhoConteudo <- ContarCaracteres(edicao.content)
+    SE tamanhoConteudo > 65536 RETORNE Erro("invalid_patch")
+    totalCaracteres <- totalCaracteres + tamanhoConteudo
+    SE totalCaracteres > 262144 RETORNE Erro("invalid_patch")
+
+    ESCOLHA edicao.op
+      CASO "append":
+        SE edicao.target == "section" ENTÃO
+          secao <- ResolverSecaoUnica(secoes, edicao.anchor)
+          MarcarAlvoUnico(alvosVistos, "section:" + secao.chaveNormalizada)
+          texto <- FormatarTextoAnexado(corpoBase[..secao.fimTotal], edicao.content)
+          Adicionar(substituicoes, (secao.fimTotal, secao.fimTotal, ordem, texto))
+        SENÃO SE edicao.target == "end_of_page" ENTÃO
+          SE edicao.anchor NÃO ESTÁ VAZIO RETORNE Erro("invalid_patch")
+          MarcarAlvoUnico(alvosVistos, "end_of_page")
+          texto <- FormatarTextoAnexado(corpoBase, edicao.content)
+          Adicionar(substituicoes, ( Comprimento(corpoBase), Comprimento(corpoBase), ordem, texto ))
+        FIM SE
+
+      CASO "add_section":
+        cabecalho <- ValidarCabecalhoAtxNivel2A6(edicao.anchor)
+        SE ExisteSecaoComChave(secoes, cabecalho.chaveNormalizada) ENTÃO
+          RETORNE Erro("heading_exists", edicao.anchor)
+        FIM SE
+        MarcarAlvoUnico(alvosVistos, "section:" + cabecalho.chaveNormalizada)
+        bloco <- cabecalho.linha + "\n\n" + GarantirQuebraDeLinhaFinal(edicao.content)
+        texto <- FormatarTextoAnexado(corpoBase, bloco)
+        Adicionar(substituicoes, (Comprimento(corpoBase), Comprimento(corpoBase), ordem, texto))
+
+      CASO "replace_section":
+        secao <- ResolverSecaoUnica(secoes, edicao.anchor)
+        MarcarAlvoUnico(alvosVistos, "section:" + secao.chaveNormalizada)
+        hashAtual <- Sha256Hex(corpoBase[secao.inicioTotal .. secao.fimTotal])
+        SE NÃO CompararTempoConstante(hashAtual, Minusculas(Trim(edicao.section_sha256))) ENTÃO
+          RETORNE Erro("section_precondition_failed", edicao.anchor)
+        FIM SE
+        texto <- GarantirQuebraDeLinhaFinalSeNaoVazio(edicao.content)
+        Adicionar(substituicoes, (secao.inicioConteudo, secao.fimTotal, ordem, texto))
+    FIM ESCOLHA
+  FIM PARA
+
+  OrdenarPorInicioDepoisFimDepoisOrdem(substituicoes)
+  SE HaIntervalosSobrepostos(substituicoes) RETORNE Erro("overlapping_edits")
+  RETORNE MaterializarSubstituicoes(corpoBase, substituicoes)
+FIM PROCEDIMENTO
+```
 - **`memory_delete_page`:** operação de exclusão física de todas as versões do caminho no banco e do arquivo em disco (com limpeza de entidades órfãs e registro em `audit_log` se alguma linha foi apagada). Aceita `expected_page_id` opcional (retornando `-32600` `precondition_failed` se a versão atual divergir ou se a página não existir). Sem `expected_page_id`, a operação é idempotente e retorna sempre `{ path, deleted: true, pre_checkpoint?, checkpoint? }`.
   `scope: "profile"` é aceito e não combina com `workspace` nem `project` (`scope: "global"` não é aceito na exclusão).
 - **`memory_restore_page`:** lista os checkpoints de uma página ou restaura uma versão anterior
@@ -483,16 +570,17 @@ operadores gera **500** `admin authorization unavailable`.
 | Grupo | Rotas |
 |---|---|
 | Backup e exportação | `POST /admin/backup`: arquivo comprimido com cópia online do banco e da wiki, além do arquivo de configuração quando existir. Resposta binária em streaming. `POST /admin/export-okf` |
-| Bootstrap e aprendizado | `POST /admin/bootstrap` (recebe fontes já coletadas pela CLI), `POST /admin/auto-improve`, `POST /admin/auto-improve/report`, `POST /admin/curator`, `POST /admin/embed` |
+| Bootstrap e aprendizado | `POST /admin/bootstrap` (recebe fontes já coletadas pela CLI), `POST /admin/auto-improve`, `POST /admin/auto-improve/report`, `POST /admin/curator`, `POST /admin/embed`, `POST /admin/llm-test` (envia prompt `"ping"` com `temperature=0.2` para testar o provedor LLM configurado e retorna `{ ok, provider, model, latency_ms, reply_chars }` ou **502** com mensagem higienizada / **503** sem provedor) |
 | Escritas pendentes | `GET /admin/pending-writes`, `GET /admin/pending-writes/{id}`, `GET /admin/pending-writes/{id}/diff`, `POST /admin/pending-writes/{id}/approve`, `POST /admin/pending-writes/{id}/reject` |
 | Manutenção | `POST /admin/lint`, `POST /admin/forget-sweep`, `POST /admin/reorg`, `POST /admin/compact`, `POST /admin/commit`, `GET /admin/checkpoints`, `POST /admin/restore-page`, `POST /admin/reclaim-ledger-versions`, `POST /admin/repair-session-times` |
 | Métricas | `GET /admin/metrics` (formato de texto Prometheus; ver abaixo) |
-| Leitura | `GET /admin/status`, `GET /admin/projects`, `GET /admin/project-coordinate`, `GET /admin/open-sessions`, `GET /admin/sessions/by-agent`, `GET /admin/activity/by-client`, `GET /admin/audit-contamination`, `GET /admin/audit-log`, `GET /admin/search`, `GET /admin/read-page`, `GET /admin/handoffs`, `GET /admin/messages` |
+| Leitura | `GET /admin/status`, `GET /admin/projects`, `GET /admin/project-coordinate`, `GET /admin/open-sessions`, `GET /admin/sessions/by-agent`, `GET /admin/activity/by-client`, `GET /admin/audit-contamination`, `GET /admin/audit-log`, `GET /admin/search`, `GET /admin/recent`, `GET /admin/read-page`, `GET /admin/handoffs`, `GET /admin/messages` |
 | Acesso a projetos | `GET /admin/projects/grants`, `POST /admin/projects/access` |
 | Bastões e mensagens | `POST /admin/handoffs/expire`, `POST /admin/messages/send`, `POST /admin/messages/pop`, `POST /admin/messages/cancel` |
-| Ciclo de vida | `POST /admin/purge-project`, `POST /admin/purge-session`, `POST /admin/rename-project`, `POST /admin/rename-workspace`, `POST /admin/move-project`, `POST /admin/move-session`, `POST /admin/merge-workspace`, `POST /admin/delete-workspace` |
+| Ciclo de vida | `POST /admin/purge-project`, `POST /admin/purge-session`, `POST /admin/rename-project`, `POST /admin/rename-workspace`, `POST /admin/move-project`, `POST /admin/merge-project`, `POST /admin/move-session`, `POST /admin/merge-workspace`, `POST /admin/delete-workspace` |
 | Páginas | `POST /admin/write-page`, `POST /admin/delete-page` |
 | Usuários e credenciais | `GET /admin/users`; `POST /admin/human-users`; `PATCH /admin/users/{username}`; `POST` em `/admin/users/{username}/` com `reset-password`, `disable`, `enable`, `grant` e `revoke`; `GET /admin/users/{username}/grants`; `GET` e `POST /admin/api-credentials`; `POST /admin/api-credentials/{id}/rotate`; `POST /admin/api-credentials/{id}/revoke` |
+| Autoatendimento e gestão de sessões (`/management/v1/*`, somente sessão web humana e com `must_change_password = false`, `Cache-Control: private, no-store`) | `GET /management/v1/credentials` (lista chaves do usuário logado); `POST /management/v1/credentials` (emite chave nativa `aim_...`, `label` de 1..128 chars após trim, limite de **20** chaves ativas por usuário); `POST /management/v1/credentials/{id}/revoke` (revoga chave própria; **404** se de outro usuário ou já revogada); `GET /management/v1/projects`; `GET /management/v1/sessions?workspace&project&offset` (página de **50** sessões filtrada por dono ou todas para administrador); `GET /management/v1/sessions/{id}/observations?workspace&project&offset` (página de **50** observações em ordem `asc`); `POST /management/v1/sessions/{id}/purge` (purga ou pré-visualiza purga da própria sessão ou de qualquer sessão para administrador, com `workspace`, `project`, `confirm` e `dry_run`) |
 
 Regras relevantes:
 
